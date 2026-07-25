@@ -154,13 +154,19 @@ fn build_deferred_profile_event(
     let name = current.get("name").and_then(Value::as_str);
     let about = current.get("about").and_then(Value::as_str);
     let nip05 = current.get("nip05").and_then(Value::as_str);
+    let existing = current.as_object().cloned().unwrap_or_default();
 
-    Ok(
-        events::build_profile(display_name, name, Some(avatar_url), about, nip05)?
-            .custom_created_at(monotonic_created_at(
-                prior_event.map(|event| event.created_at.as_secs() as i64),
-            )),
-    )
+    Ok(events::build_profile_with_existing(
+        &existing,
+        display_name,
+        name,
+        Some(avatar_url),
+        about,
+        nip05,
+    )?
+    .custom_created_at(monotonic_created_at(
+        prior_event.map(|event| event.created_at.as_secs() as i64),
+    )))
 }
 
 fn capture_expected_signer(state: &AppState, expected_pubkey: &str) -> Result<nostr::Keys, String> {
