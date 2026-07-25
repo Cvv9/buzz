@@ -541,7 +541,30 @@ pub fn build_profile(
     about: Option<&str>,
     nip05: Option<&str>,
 ) -> Result<EventBuilder, SdkError> {
-    let mut map = serde_json::Map::new();
+    build_profile_with_existing(
+        &serde_json::Map::new(),
+        display_name,
+        name,
+        picture,
+        about,
+        nip05,
+    )
+}
+
+/// Build a NIP-01 profile metadata event while preserving unmodeled fields
+/// from an existing kind:0 snapshot.
+///
+/// Kind 0 is replaceable, so updates must merge into the complete current
+/// object or fields introduced by other clients and future NIPs are deleted.
+pub fn build_profile_with_existing(
+    existing: &serde_json::Map<String, serde_json::Value>,
+    display_name: Option<&str>,
+    name: Option<&str>,
+    picture: Option<&str>,
+    about: Option<&str>,
+    nip05: Option<&str>,
+) -> Result<EventBuilder, SdkError> {
+    let mut map = existing.clone();
     if let Some(v) = display_name {
         map.insert("display_name".into(), serde_json::Value::String(v.into()));
     }
@@ -620,9 +643,18 @@ pub fn build_update_channel(
             ));
         }
     }
+    if name
+        .map(buzz_core::channel::canonical_channel_name)
+        .is_some_and(|name| name.trim().is_empty())
+    {
+        return Err(SdkError::InvalidTag("channel name is required".into()));
+    }
     let mut tags = vec![tag(&["h", &channel_id.to_string()])?];
     if let Some(n) = name {
-        tags.push(tag(&["name", n])?);
+        tags.push(tag(&[
+            "name",
+            buzz_core::channel::canonical_channel_name(n),
+        ])?);
     }
     if let Some(a) = about {
         tags.push(tag(&["about", a])?);
@@ -670,6 +702,10 @@ pub fn build_create_channel(
     about: Option<&str>,
     ttl: Option<i32>,
 ) -> Result<EventBuilder, SdkError> {
+    let name = buzz_core::channel::canonical_channel_name(name);
+    if name.trim().is_empty() {
+        return Err(SdkError::InvalidTag("channel name is required".into()));
+    }
     let mut tags = vec![tag(&["h", &channel_id.to_string()])?, tag(&["name", name])?];
     if let Some(v) = visibility {
         tags.push(tag(&["visibility", v.as_str()])?);
@@ -1293,6 +1329,8 @@ pub struct GitPullRequestMeta {
     pub euc: Option<String>,
     /// Additional pubkeys to `p`-tag besides the repo owner.
     pub recipients: Vec<String>,
+    /// NIP-29 channel where the pull request originated (`h` tag).
+    pub channel_id: Option<String>,
     /// PR subject line (`subject` tag) — required, used as the header.
     pub subject: String,
     /// Labels (`t` tags).
@@ -1352,6 +1390,11 @@ pub fn build_git_pull_request(
         tags.push(tag(&["t", label])?);
     }
     tags.push(tag(&["c", &meta.commit])?);
+    if let Some(ref channel_id) = meta.channel_id {
+        let channel_id = Uuid::parse_str(channel_id)
+            .map_err(|e| SdkError::InvalidInput(format!("channel_id must be a valid UUID: {e}")))?;
+        tags.push(tag(&["h", &channel_id.to_string()])?);
+    }
     let mut clone_tag = vec!["clone"];
     clone_tag.extend(meta.clone_urls.iter().map(String::as_str));
     tags.push(tag(&clone_tag)?);
@@ -2335,6 +2378,32 @@ mod tests {
     }
 
     #[test]
+    fn profile_update_preserves_unmodeled_fields() {
+        let existing = serde_json::json!({
+            "display_name": "Old name",
+            "bot": true,
+            "website": "https://example.com",
+            "lud16": "alice@example.com"
+        });
+        let ev = sign(
+            build_profile_with_existing(
+                existing.as_object().unwrap(),
+                Some("New name"),
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap(),
+        );
+        let value: serde_json::Value = serde_json::from_str(&ev.content).unwrap();
+        assert_eq!(value["display_name"], "New name");
+        assert_eq!(value["bot"], true);
+        assert_eq!(value["website"], "https://example.com");
+        assert_eq!(value["lud16"], "alice@example.com");
+    }
+
+    #[test]
     fn add_member_with_role() {
         let cid = uuid();
         let pubkey = "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234";
@@ -2379,6 +2448,21 @@ mod tests {
         assert_eq!(ev.kind.as_u16(), 9002);
         assert!(has_tag(&ev, "name", "new-name"));
         assert!(has_tag(&ev, "about", "new about"));
+    }
+
+    #[test]
+    fn update_channel_strips_all_leading_hashes_from_name() {
+        let ev =
+            sign(build_update_channel(uuid(), Some("  ###new-name  "), None, None, None).unwrap());
+        assert!(has_tag(&ev, "name", "new-name"));
+    }
+
+    #[test]
+    fn update_channel_rejects_hash_only_name() {
+        assert!(matches!(
+            build_update_channel(uuid(), Some("  ###  "), None, None, None),
+            Err(SdkError::InvalidTag(_))
+        ));
     }
 
     #[test]
@@ -2469,6 +2553,37 @@ mod tests {
         );
         assert_eq!(ev.kind.as_u16(), 9007);
         assert!(has_tag(&ev, "name", "dev"));
+    }
+
+    #[test]
+    fn create_channel_strips_all_leading_hashes_from_name() {
+        let ev = sign(
+            build_create_channel(
+                uuid(),
+                "  ###dev  ",
+                None::<Visibility>,
+                None::<ChannelKind>,
+                None,
+                None,
+            )
+            .unwrap(),
+        );
+        assert!(has_tag(&ev, "name", "dev"));
+    }
+
+    #[test]
+    fn create_channel_rejects_hash_only_name() {
+        assert!(matches!(
+            build_create_channel(
+                uuid(),
+                "  ###  ",
+                None::<Visibility>,
+                None::<ChannelKind>,
+                None,
+                None,
+            ),
+            Err(SdkError::InvalidTag(_))
+        ));
     }
 
     #[test]
@@ -3351,6 +3466,7 @@ mod tests {
             clone_urls: vec!["https://example.com/repo.git".to_string()],
             branch_name: Some("feat/x".to_string()),
             labels: vec!["enhancement".to_string()],
+            channel_id: Some("11111111-1111-4111-8111-111111111111".to_string()),
             ..Default::default()
         };
         let ev = sign(build_git_pull_request(&pr_repo(), "PR body", &meta).unwrap());
@@ -3361,6 +3477,7 @@ mod tests {
         assert!(has_tag(&ev, "subject", "Add feature X"));
         assert!(has_tag(&ev, "c", &"c".repeat(40)));
         assert!(has_tag(&ev, "t", "enhancement"));
+        assert!(has_tag(&ev, "h", "11111111-1111-4111-8111-111111111111"));
         assert!(has_tag(&ev, "branch-name", "feat/x"));
         assert_eq!(
             full_clone_tag(&ev),
@@ -3417,6 +3534,34 @@ mod tests {
         };
         let err = build_git_pull_request(&pr_repo(), "body", &meta).unwrap_err();
         assert!(matches!(err, SdkError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn git_pr_rejects_invalid_channel_id() {
+        for channel_id in ["not-a-uuid", " 11111111-1111-4111-8111-111111111111 "] {
+            let meta = GitPullRequestMeta {
+                subject: "s".to_string(),
+                commit: "c".repeat(40),
+                clone_urls: vec!["https://example.com/repo.git".to_string()],
+                channel_id: Some(channel_id.to_string()),
+                ..Default::default()
+            };
+            let err = build_git_pull_request(&pr_repo(), "body", &meta).unwrap_err();
+            assert!(matches!(err, SdkError::InvalidInput(_)));
+        }
+    }
+
+    #[test]
+    fn git_pr_canonicalizes_channel_id() {
+        let meta = GitPullRequestMeta {
+            subject: "s".to_string(),
+            commit: "c".repeat(40),
+            clone_urls: vec!["https://example.com/repo.git".to_string()],
+            channel_id: Some("AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE".to_string()),
+            ..Default::default()
+        };
+        let ev = sign(build_git_pull_request(&pr_repo(), "body", &meta).unwrap());
+        assert!(has_tag(&ev, "h", "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"));
     }
 
     #[test]

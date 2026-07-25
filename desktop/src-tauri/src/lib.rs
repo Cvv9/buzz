@@ -28,6 +28,7 @@ mod reset;
 mod secret_store;
 mod shutdown;
 mod templates;
+mod tray;
 mod util;
 use app_state::{build_app_state, resolve_persisted_identity, AppState};
 use builderlab::*;
@@ -343,6 +344,7 @@ pub fn run() {
     let builder = builder;
 
     let app = builder
+        .on_window_event(tray::handle_window_event)
         .register_asynchronous_uri_scheme_protocol("buzz-media", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -387,6 +389,10 @@ pub fn run() {
                     .store(true, std::sync::atomic::Ordering::Release);
                 return Ok(());
             }
+
+            // On Windows and Linux, the background-mode tray icon is created
+            // lazily when the frontend pushes the persisted preference. macOS
+            // uses its standard Dock icon to reopen the hidden window.
 
             // Run all pre-identity data migrations before state loads from disk.
             if reset_outcome.completed {
@@ -461,7 +467,7 @@ pub fn run() {
             }
 
             // Start the localhost media streaming proxy. Uses the shared HTTP
-            // client so WARP tunnelling applies. The port is stored in AppState
+            // client so VPN tunnelling applies. The port is stored in AppState
             // and exposed to the frontend via the `get_media_proxy_port` command.
             let proxy_client = state.http_client.clone();
             let proxy_handle = app_handle.clone();
@@ -667,6 +673,7 @@ pub fn run() {
             persist_current_identity,
             get_profile,
             update_profile,
+            update_profile_at_relay,
             get_user_profile,
             get_users_batch,
             get_user_notes,
@@ -682,6 +689,7 @@ pub fn run() {
             delete_project_remote_branch,
             push_project_local_repository,
             pull_project_local_repository,
+            sign_project_pull_request_status,
             sign_project_pull_request_review_request,
             publish_project_pull_request_merged_status,
             merge_project_pull_request,
@@ -691,6 +699,7 @@ pub fn run() {
             get_presence,
             get_os_idle_seconds,
             get_default_relay_url,
+            auto_connect_default_relay_enabled,
             get_legacy_workspace_storage,
             is_shared_identity,
             get_relay_ws_url,
@@ -797,6 +806,7 @@ pub fn run() {
             mesh_start_node,
             mesh_stop_node,
             mesh_node_status,
+            mesh_serving_usage,
             mesh_installed_models,
             mesh_model_catalog,
             update_managed_agent,
@@ -875,6 +885,7 @@ pub fn run() {
             get_active_workspace,
             fetch_workspace_icon,
             set_prevent_sleep_active,
+            set_close_to_tray,
             get_agent_memory,
             relay_reconnect_hook,
             relay_reconnect_hook_configured,
@@ -905,6 +916,12 @@ pub fn run() {
     let restart_requested = Arc::new(AtomicBool::new(false));
     app.run(move |app_handle, event| match event {
         RunEvent::ExitRequested { code, .. } => {
+            // Mark a genuine quit so the close-to-tray window handler lets the
+            // window close instead of hiding it during teardown.
+            app_handle
+                .state::<AppState>()
+                .quitting
+                .store(true, Ordering::SeqCst);
             if is_restart_request(code) {
                 restart_requested.store(true, Ordering::SeqCst);
             }
@@ -926,6 +943,12 @@ pub fn run() {
             // deliberately skipping those native global destructors.
             #[cfg(all(feature = "mesh-llm", target_os = "macos"))]
             hard_exit_after_mesh_shutdown();
+        }
+        // macOS: clicking the dock icon while the window is hidden to the tray
+        // re-shows it (the standard re-open affordance).
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen { .. } => {
+            tray::show_main_window(app_handle);
         }
         _ => {}
     });

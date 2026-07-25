@@ -58,9 +58,19 @@ jobs:
               - 'pnpm-lock.yaml'
             mobile:
               - 'mobile/**'
+              - 'scripts/mobile-release.sh'
+              - 'scripts/publish-mobile-release-candidate.sh'
+              - 'scripts/release-rulesets.sh'
+              - 'scripts/test-mobile-release-contract.sh'
+              - 'scripts/test-mobile-release-candidate-publisher.sh'
+              - '.github/workflows/mobile-release-candidate.yml'
               - '.github/workflows/ci.yml'
       - name: Release workflow source contract
         run: scripts/test-release-ref-contract.sh
+      - name: Mobile release contract
+        run: |
+          scripts/test-mobile-release-contract.sh
+          scripts/test-mobile-release-candidate-publisher.sh
 
   rust-lint:
     name: Rust Lint
@@ -1018,17 +1028,18 @@ jobs:
           key: mesh-llama-${{ runner.os }}-metal-${{ steps.mesh_rev.outputs.rev }}
       - name: Build mesh llama native libraries
         if: steps.llama_cache.outputs.cache-hit != 'true'
-        env:
-          MESH_REV_SHORT: ${{ steps.mesh_rev.outputs.short }}
         run: |
           set -euo pipefail
           cargo fetch --manifest-path desktop/src-tauri/Cargo.toml
-          SHORT="$MESH_REV_SHORT"
-          MESH_ROOT=$(find "${CARGO_HOME:-$HOME/.cargo}/git/checkouts" -path "*/$SHORT" -type d -name "$SHORT" | head -1)
-          if [[ -z "$MESH_ROOT" ]]; then
-            echo "::error::mesh-llm checkout for $SHORT not found after cargo fetch"
+          MESH_PREPARE="$(
+            find "${CARGO_HOME:-$HOME/.cargo}/git/checkouts" \
+              -type f -path '*/scripts/prepare-llama.sh' -print -quit
+          )"
+          if [[ -z "$MESH_PREPARE" ]]; then
+            echo "::error::mesh-llm prepare script not found after cargo fetch"
             exit 1
           fi
+          MESH_ROOT="$(dirname "$(dirname "$MESH_PREPARE")")"
           export LLAMA_STAGE_BACKEND=metal
           export LLAMA_STAGE_BUILD_DIR="$GITHUB_WORKSPACE/.cache/mesh-llama/build-stage-abi-metal"
           export CMAKE_OSX_DEPLOYMENT_TARGET=10.15

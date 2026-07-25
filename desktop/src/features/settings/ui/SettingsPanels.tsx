@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
+  AppWindow,
   Archive,
   BellRing,
   Bot,
@@ -11,7 +12,6 @@ import {
   FlaskConical,
   Keyboard,
   LayoutTemplate,
-  LockKeyhole,
   MessagesSquare,
   MonitorCog,
   Moon,
@@ -20,6 +20,7 @@ import {
   Smile,
   Sun,
   SunMoon,
+  Ticket,
   UserRound,
   type LucideIcon,
 } from "lucide-react";
@@ -71,6 +72,7 @@ import {
 import { ChannelTemplatesSettingsCard } from "./ChannelTemplatesSettingsCard";
 import { DoctorSettingsPanel } from "./DoctorSettingsPanel";
 import { ExperimentalFeaturesCard } from "./ExperimentalFeaturesCard";
+import { GeneralSettingsCard } from "./GeneralSettingsCard";
 import { KeyboardShortcutsCard } from "./KeyboardShortcutsCard";
 import { MeshComputeSettingsCard } from "@/features/mesh-compute/ui/MeshComputeSettingsCard";
 import { MobilePairingCard } from "./MobilePairingCard";
@@ -93,6 +95,7 @@ export type SettingsSection =
   | "channel-templates"
   | "compute"
   | "appearance"
+  | "general"
   | "shortcuts"
   | "hosted-communities"
   | "community-members"
@@ -112,6 +115,7 @@ const SETTINGS_SECTION_VALUES: readonly SettingsSection[] = [
   "channel-templates",
   "compute",
   "appearance",
+  "general",
   "shortcuts",
   "hosted-communities",
   "community-members",
@@ -191,6 +195,11 @@ export const settingsSections: SettingsSectionDescriptor[] = [
     icon: Cpu,
   },
   {
+    value: "general",
+    label: "General",
+    icon: AppWindow,
+  },
+  {
     value: "shortcuts",
     label: "Shortcuts",
     icon: Keyboard,
@@ -202,8 +211,8 @@ export const settingsSections: SettingsSectionDescriptor[] = [
   },
   {
     value: "community-members",
-    label: "Community access",
-    icon: LockKeyhole,
+    label: "Invites",
+    icon: Ticket,
   },
   {
     value: "moderation",
@@ -825,6 +834,8 @@ export function renderSettingsSection(
       return <MeshComputeSettingsCard />;
     case "appearance":
       return <ThemeSettingsCard />;
+    case "general":
+      return <GeneralSettingsCard />;
     case "shortcuts":
       return <KeyboardShortcutsCard />;
     case "hosted-communities":

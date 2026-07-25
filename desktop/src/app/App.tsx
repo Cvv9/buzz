@@ -12,6 +12,11 @@ import {
 } from "react";
 
 import { router } from "@/app/router";
+import {
+  completeCommunityViewTransition,
+  replaceCommunityDestinationRoute,
+} from "@/app/communityViewTransition";
+import { deriveShellRoute } from "@/app/AppShell.helpers";
 import { ThemeGrainientBackground } from "@/app/ThemeGrainientBackground";
 import { useReloadShortcut } from "@/app/useReloadShortcut";
 import { KnownAgentPubkeysProvider } from "@/features/agents/useKnownAgentPubkeys";
@@ -29,6 +34,11 @@ import {
   MachineOnboardingFlow,
   type MachineOnboardingPage,
 } from "@/features/onboarding/ui/MachineOnboardingFlow";
+import {
+  applyCloseToTray,
+  getCloseToTrayPref,
+  setCloseToTrayPref,
+} from "@/features/settings/lib/closeToTray";
 import { OnboardingFlow } from "@/features/onboarding/ui/OnboardingFlow";
 import { PendingInviteGate } from "@/features/onboarding/ui/PendingInviteGate";
 import { KeyringLockedScreen } from "@/features/onboarding/ui/KeyringLockedScreen";
@@ -38,12 +48,18 @@ import { useCommunityInit } from "@/features/communities/useCommunityInit";
 import { useNestNotifications } from "@/features/communities/useNestNotifications";
 import { useCommunities } from "@/features/communities/useCommunities";
 import {
+  loadCommunityDestination,
+  markPendingCommunityRestore,
+  saveCommunityDestination,
+} from "@/features/communities/communityNavigationStorage";
+import {
   onAddCommunityPrefillAvailable,
   requestAddCommunityPrefill,
 } from "@/features/communities/addCommunityPrefill";
 import { WelcomeSetup } from "@/features/communities/ui/WelcomeSetup";
 import { CommunityApplyErrorScreen } from "@/features/communities/ui/CommunityApplyErrorScreen";
 import { CommunityChangeOverlay } from "@/features/communities/ui/CommunityChangeOverlay";
+import { setAvatarProfileSyncQueryClient } from "@/features/profile/avatarProfileSync";
 import { createBuzzQueryClient } from "@/shared/api/queryClient";
 import { isSharedIdentity as isSharedIdentityCmd } from "@/shared/api/tauri";
 import { getProfile } from "@/shared/api/tauriProfiles";
@@ -197,6 +213,8 @@ function CommunitySwitchGate() {
 function CommunityQueryProvider({ children }: { children: ReactNode }) {
   const [queryClient] = useState(createBuzzQueryClient);
 
+  useEffect(() => setAvatarProfileSyncQueryClient(queryClient), [queryClient]);
+
   useEffect(() => {
     const e2eWindow = window as Window & {
       __BUZZ_E2E__?: unknown;
@@ -320,13 +338,40 @@ function CommunityApp({
     sharedIdentity,
   );
 
-  const handleCommunityOnboardingConnect = useCallback(() => {
+  const transitionCommunity = useCallback(
+    async (targetCommunityId: string) => {
+      const activeCommunityId = activeCommunity?.id;
+      if (targetCommunityId === activeCommunityId) return;
+      if (activeCommunityId) {
+        const route = deriveShellRoute(router.state.location.pathname);
+        saveCommunityDestination(
+          activeCommunityId,
+          route.selectedView === "channel" && route.selectedChannelId
+            ? { kind: "channel", channelId: route.selectedChannelId }
+            : { kind: "home" },
+        );
+        await router.navigate({ to: "/", replace: true });
+        markPendingCommunityRestore(targetCommunityId);
+        const destination = loadCommunityDestination(targetCommunityId);
+        if (destination?.kind === "channel") {
+          replaceCommunityDestinationRoute(
+            destination.channelId,
+            router.history,
+          );
+        }
+      }
+      switchCommunity(targetCommunityId);
+    },
+    [activeCommunity?.id, switchCommunity],
+  );
+
+  const handleCommunityOnboardingConnect = useCallback(async () => {
     const transaction = communityOnboarding.transaction;
     if (transaction?.stage !== "connecting") return;
     if (connectingTransactionRef.current === transaction.id) return;
     connectingTransactionRef.current = transaction.id;
     if (transaction.communityId) {
-      switchCommunity(transaction.communityId);
+      await transitionCommunity(transaction.communityId);
       return;
     }
     const previousCommunityId = activeCommunity?.id;
@@ -348,7 +393,7 @@ function CommunityApp({
       addedCommunity: !relayAlreadyExists,
       error: undefined,
     });
-    switchCommunity(id);
+    await transitionCommunity(id);
     reconnectCommunity();
   }, [
     activeCommunity?.id,
@@ -357,17 +402,17 @@ function CommunityApp({
     communityOnboarding,
     currentPubkey,
     reconnectCommunity,
-    switchCommunity,
+    transitionCommunity,
   ]);
 
-  const handleCommunityOnboardingCancel = useCallback(() => {
+  const handleCommunityOnboardingCancel = useCallback(async () => {
     const transaction = communityOnboarding.transaction;
     communityOnboarding.clear();
 
     if (!transaction?.communityId) return;
     if (!transaction.addedCommunity) {
       if (transaction.previousCommunityId) {
-        switchCommunity(transaction.previousCommunityId);
+        await transitionCommunity(transaction.previousCommunityId);
       }
       return;
     }
@@ -378,16 +423,16 @@ function CommunityApp({
       clearCommunities();
       return;
     }
-    removeCommunity(transaction.communityId);
     if (transaction.previousCommunityId) {
-      switchCommunity(transaction.previousCommunityId);
+      await transitionCommunity(transaction.previousCommunityId);
     }
+    removeCommunity(transaction.communityId);
   }, [
     clearCommunities,
     communities.length,
     communityOnboarding,
     removeCommunity,
-    switchCommunity,
+    transitionCommunity,
   ]);
 
   const bootSplashPhase = useBootSplashHold();
@@ -487,6 +532,11 @@ function CommunityApp({
   // Tauri backend is still configured for the previous one.
   const communityApplied =
     community.isReady && community.appliedKey === communityKey;
+  useLayoutEffect(() => {
+    if (communityApplied) {
+      completeCommunityViewTransition();
+    }
+  }, [communityApplied]);
   if (appContent === null && (!transaction || isEnteringCurtain)) {
     appContent = communityApplied ? (
       <CommunityQueryProvider key={communityKey}>
@@ -629,6 +679,19 @@ function MachineBootstrap({ sharedIdentity }: { sharedIdentity: boolean }) {
 export function App() {
   useReloadShortcut();
   useInitialRenderReady();
+
+  // Push the persisted close-to-tray preference to the backend on launch so the
+  // window-close handler knows whether to hide-to-tray before the user ever
+  // opens Settings.
+  useEffect(() => {
+    const enabled = getCloseToTrayPref();
+    void applyCloseToTray(enabled).then((applied) => {
+      if (enabled && !applied) {
+        setCloseToTrayPref(false);
+      }
+    });
+  }, []);
+
   const [sharedIdentity, setSharedIdentity] = useState<boolean | null>(null);
   const [queryClient] = useState(createBuzzQueryClient);
 

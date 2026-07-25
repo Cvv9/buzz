@@ -178,6 +178,10 @@ const overrides = new Map([
   // team-instructions-first-class: ManagedAgentRecord fixture gains the new
   // team_id field (+1 line).
   ["src-tauri/src/managed_agents/readiness.rs", 1765],
+  // Windows PATH-correctness fix: 3 #[cfg(windows)] test functions covering
+  // .cmd shim rejection, .bat shim rejection, and .exe acceptance for
+  // configure_runtime_cli (fix #2397). Test-only growth; queued to split.
+  ["src-tauri/src/managed_agents/runtime/tests.rs", 1041],
   // applyWorkspace reposDir parameter plus the validateReposDir binding,
   // threaded through Tauri invokes for configurable repos_dir, plus the
   // harness-persona-sync `harnessOverride` create-input bit — load-bearing
@@ -329,7 +333,9 @@ const overrides = new Map([
   // (NIP-98 signed /query with explicit agent keys + optional x-auth-tag) for
   // bounded-auth agent relay-membership discovery. Load-bearing; queued to
   // split alongside the test-helper split.
-  ["src-tauri/src/relay.rs", 1077],
+  // +1: preserve unmodeled kind:0 metadata when the managed-agent profile is
+  // updated. The merge logic and regression test remain at the relay boundary.
+  ["src-tauri/src/relay.rs", 1078],
   // degraded-network resilience: visibleChannelId field + getter/setter, NOTICE
   // handler for relay back-pressure, and rate-limit gate imports add ~74 lines
   // of load-bearing degraded-network recovery code. Queued to split.
@@ -396,7 +402,12 @@ const overrides = new Map([
   // transition lock doc broadened to cover all protected-PID transitions, and
   // clear_agent_session_caches (per-pubkey retain) added alongside the
   // per-key clear. Load-bearing identity-contract change; queued to split.
-  ["src-tauri/src/app_state.rs", 1081],
+  // +11: close-to-tray keeps two atomic lifecycle flags in the shared Tauri
+  // state and initializes them fail-closed before frontend settings load.
+  ["src-tauri/src/app_state.rs", 1092],
+  // +1: profile snapshots now start from the existing kind:0 map so fields
+  // Buzz does not model survive an avatar or display-name update.
+  ["src-tauri/src/events.rs", 1001],
   // multi-slot splitting + no-op suppression (#1309): the ReadStateManager
   // class grew from ~700 lines to ~1019 with the addition of
   // splitContextsIntoBudgetedSlots (pure fn + 5 tests), publishSplitSlots,
@@ -490,7 +501,15 @@ const overrides = new Map([
   // +53: pass 2 — three cfg(windows) install shell tests (resolve succeeds with
   // Git, error hint content, install_shell_command succeeds).
   // +8: install_shell_from pure seam extracted for deterministic testing.
-  ["src-tauri/src/commands/agent_discovery.rs", 1523],
+  // +287: is_powershell_command + install_powershell_command + build_install_command
+  // route PowerShell CLI installs natively on Windows (bypasses Git Bash PATH
+  // poisoning that resolved GNU tar instead of bsdtar → Codex install failure).
+  // Includes unit tests for detection, routing, and -Command body preservation.
+  // +16: test_powershell_command_goose_catalog_dequoted proves the \$→$ escape
+  // fix for the Goose Windows installer (PR #2680 interaction with #2750).
+  // +10: pass an explicit PATH through Codex adapter install planning so unit
+  // tests avoid the process-global login-shell PATH cache.
+  ["src-tauri/src/commands/agent_discovery.rs", 1836],
   // draft-persistence predicate: submit-time `loadDraft` check + inline comment
   // + deps-array entry in submitMessage closes the never-persisted-boundary
   // defect (Thufir Pass-3 finding). Load-bearing correctness fix; queued to

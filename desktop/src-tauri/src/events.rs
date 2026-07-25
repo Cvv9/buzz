@@ -148,6 +148,10 @@ pub fn build_create_channel(
     about: Option<&str>,
     ttl_seconds: Option<i32>,
 ) -> Result<EventBuilder, String> {
+    let name = buzz_sdk_pkg::canonical_channel_name(name);
+    if name.trim().is_empty() {
+        return Err("channel name is required".into());
+    }
     let mut tags = vec![
         tag(vec!["h", &channel_id.to_string()])?,
         tag(vec!["name", name])?,
@@ -193,6 +197,10 @@ pub fn build_update_channel(
         if v != "open" && v != "private" {
             return Err("visibility must be \"open\" or \"private\"".into());
         }
+    }
+    let name = name.map(buzz_sdk_pkg::canonical_channel_name);
+    if name.is_some_and(|name| name.trim().is_empty()) {
+        return Err("channel name is required".into());
     }
     let mut tags = vec![tag(vec!["h", &channel_id.to_string()])?];
     if let Some(n) = name {
@@ -462,15 +470,16 @@ pub fn build_set_canvas(channel_id: Uuid, content: &str) -> Result<EventBuilder,
 
 // ── Profile ──────────────────────────────────────────────────────────────────
 
-/// Kind 0 — NIP-01 profile metadata (full snapshot).
-pub fn build_profile(
+/// Build a kind:0 profile snapshot while retaining fields Buzz does not model.
+pub fn build_profile_with_existing(
+    existing: &serde_json::Map<String, serde_json::Value>,
     display_name: Option<&str>,
     name: Option<&str>,
     picture: Option<&str>,
     about: Option<&str>,
     nip05: Option<&str>,
 ) -> Result<EventBuilder, String> {
-    let mut map = serde_json::Map::new();
+    let mut map = existing.clone();
     if let Some(v) = display_name {
         map.insert("display_name".into(), serde_json::Value::String(v.into()));
     }
@@ -842,7 +851,12 @@ pub fn build_approval_deny(token: &str, note: Option<&str>) -> Result<EventBuild
 mod tests {
     use super::*;
     use nostr::Keys;
-
+    #[test]
+    fn channel_builders_reject_hash_only_names() {
+        let channel_id = Uuid::new_v4();
+        assert!(build_create_channel(channel_id, "###", "open", "stream", None, None).is_err());
+        assert!(build_update_channel(channel_id, Some("###"), None, None, None).is_err());
+    }
     /// Builder layout regression for the NIP-IA owner-of-agent archive flow.
     /// Compares against `docs/nips/NIP-IA.md` §Vector 1.
     #[test]
