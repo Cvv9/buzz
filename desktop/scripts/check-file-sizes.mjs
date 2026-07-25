@@ -333,7 +333,9 @@ const overrides = new Map([
   // (NIP-98 signed /query with explicit agent keys + optional x-auth-tag) for
   // bounded-auth agent relay-membership discovery. Load-bearing; queued to
   // split alongside the test-helper split.
-  ["src-tauri/src/relay.rs", 1077],
+  // +1: preserve unmodeled kind:0 metadata when the managed-agent profile is
+  // updated. The merge logic and regression test remain at the relay boundary.
+  ["src-tauri/src/relay.rs", 1078],
   // degraded-network resilience: visibleChannelId field + getter/setter, NOTICE
   // handler for relay back-pressure, and rate-limit gate imports add ~74 lines
   // of load-bearing degraded-network recovery code. Queued to split.
@@ -400,7 +402,12 @@ const overrides = new Map([
   // transition lock doc broadened to cover all protected-PID transitions, and
   // clear_agent_session_caches (per-pubkey retain) added alongside the
   // per-key clear. Load-bearing identity-contract change; queued to split.
-  ["src-tauri/src/app_state.rs", 1081],
+  // +11: close-to-tray keeps two atomic lifecycle flags in the shared Tauri
+  // state and initializes them fail-closed before frontend settings load.
+  ["src-tauri/src/app_state.rs", 1092],
+  // +1: profile snapshots now start from the existing kind:0 map so fields
+  // Buzz does not model survive an avatar or display-name update.
+  ["src-tauri/src/events.rs", 1001],
   // multi-slot splitting + no-op suppression (#1309): the ReadStateManager
   // class grew from ~700 lines to ~1019 with the addition of
   // splitContextsIntoBudgetedSlots (pure fn + 5 tests), publishSplitSlots,
