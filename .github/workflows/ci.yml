@@ -1030,14 +1030,16 @@ jobs:
         if: steps.llama_cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          MESH_ROOT="$(
-            cargo metadata --manifest-path desktop/src-tauri/Cargo.toml --format-version 1 |
-              python3 -c 'import json, os, sys; packages=json.load(sys.stdin)["packages"]; package=next(p for p in packages if p["name"] == "mesh-llm-sdk"); print(os.path.dirname(package["manifest_path"]))'
+          cargo fetch --manifest-path desktop/src-tauri/Cargo.toml
+          MESH_PREPARE="$(
+            find "${CARGO_HOME:-$HOME/.cargo}/git/checkouts" \
+              -type f -path '*/scripts/prepare-llama.sh' -print -quit
           )"
-          if [[ -z "$MESH_ROOT" ]]; then
-            echo "::error::mesh-llm package root not found after cargo metadata"
+          if [[ -z "$MESH_PREPARE" ]]; then
+            echo "::error::mesh-llm prepare script not found after cargo fetch"
             exit 1
           fi
+          MESH_ROOT="$(dirname "$(dirname "$MESH_PREPARE")")"
           export LLAMA_STAGE_BACKEND=metal
           export LLAMA_STAGE_BUILD_DIR="$GITHUB_WORKSPACE/.cache/mesh-llama/build-stage-abi-metal"
           export CMAKE_OSX_DEPLOYMENT_TARGET=10.15
