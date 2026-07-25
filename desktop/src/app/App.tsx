@@ -34,6 +34,11 @@ import {
   MachineOnboardingFlow,
   type MachineOnboardingPage,
 } from "@/features/onboarding/ui/MachineOnboardingFlow";
+import {
+  applyCloseToTray,
+  getCloseToTrayPref,
+  setCloseToTrayPref,
+} from "@/features/settings/lib/closeToTray";
 import { OnboardingFlow } from "@/features/onboarding/ui/OnboardingFlow";
 import { PendingInviteGate } from "@/features/onboarding/ui/PendingInviteGate";
 import { KeyringLockedScreen } from "@/features/onboarding/ui/KeyringLockedScreen";
@@ -674,6 +679,19 @@ function MachineBootstrap({ sharedIdentity }: { sharedIdentity: boolean }) {
 export function App() {
   useReloadShortcut();
   useInitialRenderReady();
+
+  // Push the persisted close-to-tray preference to the backend on launch so the
+  // window-close handler knows whether to hide-to-tray before the user ever
+  // opens Settings.
+  useEffect(() => {
+    const enabled = getCloseToTrayPref();
+    void applyCloseToTray(enabled).then((applied) => {
+      if (enabled && !applied) {
+        setCloseToTrayPref(false);
+      }
+    });
+  }, []);
+
   const [sharedIdentity, setSharedIdentity] = useState<boolean | null>(null);
   const [queryClient] = useState(createBuzzQueryClient);
 

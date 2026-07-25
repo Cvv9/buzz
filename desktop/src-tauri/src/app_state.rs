@@ -105,6 +105,12 @@ pub struct AppState {
     pub session_config_cache: Mutex<HashMap<ManagedAgentRuntimeKey, SessionConfigCache>>,
     /// IOKit power assertion state — prevents idle sleep while agents run.
     pub prevent_sleep: Arc<Mutex<crate::prevent_sleep::PreventSleepState>>,
+    /// When true, closing the main window keeps Buzz running in the background
+    /// instead of quitting. Mirrors the persisted desktop setting.
+    pub close_to_tray: Arc<AtomicBool>,
+    /// Set just before a real quit (tray "Quit", app menu) so the
+    /// `CloseRequested` handler lets the window close instead of hiding it.
+    pub quitting: Arc<AtomicBool>,
     /// In-process mesh-llm node started by Buzz Desktop.
     #[cfg(feature = "mesh-llm")]
     pub mesh_llm_runtime: AsyncMutex<Option<crate::mesh_llm::DesktopMeshRuntime>>,
@@ -220,6 +226,11 @@ pub fn build_app_state() -> AppState {
         keyring_locked: AtomicBool::new(false),
         identity_lost: AtomicBool::new(false),
         reset_failed: AtomicBool::new(false),
+        // Start fail-closed until the frontend applies the persisted setting.
+        // On Windows/Linux this ensures the tray escape hatch exists before a
+        // close can be intercepted.
+        close_to_tray: Arc::new(AtomicBool::new(false)),
+        quitting: Arc::new(AtomicBool::new(false)),
         #[cfg(feature = "mesh-llm")]
         mesh_llm_runtime: AsyncMutex::new(None),
         #[cfg(feature = "mesh-llm")]
