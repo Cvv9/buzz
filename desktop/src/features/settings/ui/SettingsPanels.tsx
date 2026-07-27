@@ -71,6 +71,7 @@ import {
 } from "@/shared/theme/useThemePreviewVars";
 import { ChannelTemplatesSettingsCard } from "./ChannelTemplatesSettingsCard";
 import { DoctorSettingsPanel } from "./DoctorSettingsPanel";
+import { HarnessManagementCard } from "./HarnessManagementCard";
 import { ExperimentalFeaturesCard } from "./ExperimentalFeaturesCard";
 import { GeneralSettingsCard } from "./GeneralSettingsCard";
 import { KeyboardShortcutsCard } from "./KeyboardShortcutsCard";
@@ -824,6 +825,7 @@ export function renderSettingsSection(
         <div className="space-y-12">
           <PreventSleepSettingsCard />
           <DoctorSettingsPanel />
+          <HarnessManagementCard />
           <ActiveAgentCommunitiesSettingsCard />
           <AgentDefaultsSettingsCard />
         </div>
