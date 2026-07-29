@@ -144,7 +144,7 @@ tmux new-session -d -s "${TMUX_SESSION}" "cd '${REPO_ROOT}' && env \
   DATABASE_URL=postgres://buzz:buzz_dev@localhost:${PG_PORT}/buzz \
   REDIS_URL=redis://localhost:${REDIS_PORT} \
   RELAY_URL=ws://localhost:${RELAY_MAIN} \
-  BUZZ_BIND_ADDR=0.0.0.0:${RELAY_MAIN} \
+  BUZZ_BIND_ADDR=127.0.0.1:${RELAY_MAIN} \
   BUZZ_HEALTH_PORT=${RELAY_HEALTH} \
   BUZZ_METRICS_PORT=${RELAY_METRICS} \
   BUZZ_S3_ENDPOINT=http://localhost:${MINIO_PORT} \
@@ -152,6 +152,7 @@ tmux new-session -d -s "${TMUX_SESSION}" "cd '${REPO_ROOT}' && env \
   BUZZ_S3_SECRET_KEY=buzz_dev_secret \
   BUZZ_S3_BUCKET=buzz-media \
   BUZZ_REQUIRE_AUTH_TOKEN=false \
+  BUZZ_ALLOW_INSECURE_DEV_PUBKEY=true \
   BUZZ_RECONCILE_CHANNELS=true \
   './target/${CARGO_TARGET_PROFILE}/buzz-relay' > '${RELAY_LOG}' 2>&1"
 

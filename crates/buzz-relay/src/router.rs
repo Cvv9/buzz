@@ -9,7 +9,7 @@ use axum::{
     http::{HeaderMap, Request, StatusCode},
     middleware,
     response::{IntoResponse, Json},
-    routing::{get, post, put},
+    routing::{any, get, post, put},
     Router,
 };
 use serde_json::json;
@@ -49,15 +49,6 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     let git_router = api::git::git_router(state.clone());
 
     let git_policy_router = api::git::git_policy_router(state.clone());
-
-    let admin_enabled = state.config.admin.is_some();
-    let admin_web_dir = state
-        .config
-        .admin
-        .as_ref()
-        .and_then(|config| config.web_dir.clone());
-    let admin_router = admin_enabled
-        .then(|| Router::new().nest("/api/admin/v1", api::admin::router(state.clone())));
 
     let api_router = Router::new()
         // WebSocket + NIP-11
@@ -122,6 +113,10 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         // Mesh demo echo probe — testbed-only; 404 unless BUZZ_MESH=on and
         // BUZZ_MESH_DEMO_ECHO=on (see api::mesh_demo).
         .route("/_mesh/demo/echo", post(api::mesh_demo::demo_echo))
+        // Reserve the deployment-admin prefix on the public listener. This
+        // explicit sink prevents broad API fallbacks from revealing whether
+        // the separate private listener is configured.
+        .route("/api/admin/{*path}", any(public_admin_not_found))
         // Huddle audio WebSocket route
         .route(
             "/huddle/{channel_id}/audio",
@@ -137,41 +132,19 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .merge(media_router)
         .merge(git_router)
         .merge(git_policy_router);
-    if let Some(admin_router) = admin_router {
-        merged = merged.merge(admin_router);
-    }
 
-    // Serve both bundles from one fallback. The admin host is checked first so
-    // it can never fall through to the public web bundle.
+    // Serve the public bundle only. The deployment-admin API and SPA live on
+    // the dedicated admin listener built by `build_admin_router`.
     let web_dir = state.config.web_dir.clone();
-    if admin_web_dir.is_some() || web_dir.is_some() {
-        let admin_index = admin_web_dir.as_ref().map(|dir| dir.join("index.html"));
-        let admin_files = admin_web_dir.map(ServeDir::new);
+    if web_dir.is_some() {
         let web_index = web_dir.as_ref().map(|dir| dir.join("index.html"));
         let web_files = web_dir.map(ServeDir::new);
         let serve_git_web_gui = state.config.serve_git_web_gui;
-        let fallback_state = state.clone();
         let spa_fallback = tower::service_fn(move |req: axum::extract::Request| {
-            let admin_index = admin_index.clone();
-            let admin_files = admin_files.clone();
             let web_index = web_index.clone();
             let web_files = web_files.clone();
-            let state = fallback_state.clone();
             async move {
                 let path = req.uri().path();
-                let admin_host = api::admin::is_admin_host(&state, req.headers());
-                if admin_host {
-                    if let (Some(index), Some(files)) = (admin_index, admin_files) {
-                        if path.starts_with("/assets/") {
-                            return files.oneshot(req).await.map(IntoResponse::into_response);
-                        }
-                        if is_admin_spa_path(path) {
-                            return Ok(read_spa_index(&index).await);
-                        }
-                    }
-                    return Ok(StatusCode::NOT_FOUND.into_response());
-                }
-
                 if let (Some(index), Some(files)) = (web_index, web_files) {
                     if path.starts_with("/assets/") {
                         return files.oneshot(req).await.map(IntoResponse::into_response);
@@ -202,6 +175,47 @@ fn make_http_span(request: &Request<Body>) -> tracing::Span {
         "http.request",
         otel.kind = "server",
         http.request.method = %request.method(),
+    )
+}
+
+async fn public_admin_not_found() -> StatusCode {
+    StatusCode::NOT_FOUND
+}
+
+/// Build the deployment-admin router for its dedicated private listener.
+///
+/// This surface is intentionally absent from [`build_router`], so public
+/// ingress configuration cannot expose moderation data merely by forwarding
+/// an attacker-controlled `Host` header.
+pub fn build_admin_router(state: Arc<AppState>) -> Option<Router> {
+    let admin = state.config.admin.as_ref()?;
+    let admin_web_dir = admin.web_dir.clone();
+
+    let mut router = Router::new().nest("/api/admin/v1", api::admin::router(state.clone()));
+    if let Some(web_dir) = admin_web_dir {
+        let index = web_dir.join("index.html");
+        let files = ServeDir::new(web_dir);
+        router = router.fallback_service(tower::service_fn(move |req: axum::extract::Request| {
+            let index = index.clone();
+            let files = files.clone();
+            async move {
+                let path = req.uri().path();
+                if path.starts_with("/assets/") {
+                    return files.oneshot(req).await.map(IntoResponse::into_response);
+                }
+                if is_admin_spa_path(path) {
+                    return Ok(read_spa_index(&index).await);
+                }
+                Ok(StatusCode::NOT_FOUND.into_response())
+            }
+        }));
+    }
+
+    Some(
+        router
+            .layer(middleware::from_fn(track_metrics))
+            .layer(http_trace_layer())
+            .layer(build_cors_layer(&state.config.cors_origins)),
     )
 }
 
@@ -266,25 +280,6 @@ async fn nip11_or_ws_handler(
         .get(axum::http::header::HOST)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-
-    // `/` is an explicit relay route, so it never reaches the SPA fallback.
-    // Short-circuit the exact admin authority here and never let it serve the
-    // public web bundle, NIP-11 document, or WebSocket endpoint.
-    if api::admin::is_admin_host(&state, &headers) {
-        if !accept.contains("text/html") {
-            return StatusCode::NOT_FOUND.into_response();
-        }
-        let Some(index) = state
-            .config
-            .admin
-            .as_ref()
-            .and_then(|config| config.web_dir.as_ref())
-            .map(|dir| dir.join("index.html"))
-        else {
-            return StatusCode::NOT_FOUND.into_response();
-        };
-        return read_spa_index(&index).await;
-    }
 
     if accept.contains("application/nostr+json") {
         return Json(nip11_document(&state, raw_host).await).into_response();
@@ -422,7 +417,7 @@ async fn mesh_status_handler(State(state): State<Arc<AppState>>) -> impl IntoRes
 /// Build a CORS layer from the configured origins list.
 fn build_cors_layer(cors_origins: &[String]) -> CorsLayer {
     if cors_origins.is_empty() {
-        return CorsLayer::permissive();
+        return CorsLayer::new();
     }
 
     let origins: Vec<axum::http::HeaderValue> = cors_origins
@@ -447,7 +442,7 @@ fn build_cors_layer(cors_origins: &[String]) -> CorsLayer {
 
 #[cfg(test)]
 mod tests {
-    use axum::{routing::get, Router};
+    use axum::{body::Body, http::Request, routing::get, Router};
     use futures_util::SinkExt;
     use opentelemetry::trace::TracerProvider as _;
     use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
@@ -459,6 +454,33 @@ mod tests {
     use tracing_subscriber::prelude::*;
 
     use super::*;
+
+    #[tokio::test]
+    async fn empty_cors_configuration_does_not_allow_cross_origin_requests() {
+        let app = Router::new()
+            .route("/", get(|| async { StatusCode::OK }))
+            .layer(build_cors_layer(&[]));
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("OPTIONS")
+                    .uri("/")
+                    .header("origin", "https://attacker.example")
+                    .header("access-control-request-method", "GET")
+                    .body(Body::empty())
+                    .expect("preflight request"),
+            )
+            .await
+            .expect("preflight response");
+
+        assert!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .is_none(),
+            "empty configuration must fail closed rather than emit a wildcard"
+        );
+    }
 
     #[test]
     fn invite_landing_path_requires_exactly_one_nonempty_code_segment() {

@@ -19,7 +19,7 @@ use buzz_search::SearchService;
 
 use buzz_relay::config::Config;
 use buzz_relay::metrics as relay_metrics;
-use buzz_relay::router::{build_health_router, build_router};
+use buzz_relay::router::{build_admin_router, build_health_router, build_router};
 use buzz_relay::state::AppState;
 use buzz_relay::storage_sweep;
 use buzz_relay::telemetry;
@@ -950,6 +950,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let router = build_router(Arc::clone(&state));
+    let admin_router = build_admin_router(Arc::clone(&state));
     let health_router = build_health_router(Arc::clone(&state));
 
     // Pool metrics: periodic background task polling DB + Redis pool stats.
@@ -1053,7 +1054,7 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    serve(router, health_router, Arc::clone(&state)).await?;
+    serve(router, admin_router, health_router, Arc::clone(&state)).await?;
     state.community_revalidator_cancel.cancel();
 
     // Signal the audit worker to stop accepting, flush buffered entries, and
@@ -1171,6 +1172,7 @@ async fn run_periodic_until_cancelled<Tick, TickFuture>(
 /// ```
 async fn serve(
     router: axum::Router,
+    admin_router: Option<axum::Router>,
     health_router: axum::Router,
     state: Arc<AppState>,
 ) -> anyhow::Result<()> {
@@ -1185,6 +1187,34 @@ async fn serve(
     });
 
     let (shutdown_tx, _) = tokio::sync::watch::channel(false);
+    let admin_handle =
+        if let (Some(admin), Some(admin_config)) = (admin_router, config.admin.as_ref()) {
+            let listener = tokio::net::TcpListener::bind(admin_config.bind_addr)
+                .await
+                .map_err(|error| {
+                    anyhow::anyhow!(
+                        "Failed to bind admin listener {}: {error}",
+                        admin_config.bind_addr
+                    )
+                })?;
+            info!(
+                addr = %admin_config.bind_addr,
+                "Private deployment-admin listener started"
+            );
+            let mut admin_rx = shutdown_tx.subscribe();
+            Some(tokio::spawn(async move {
+                axum::serve(
+                    listener,
+                    admin.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                )
+                .with_graceful_shutdown(async move {
+                    admin_rx.changed().await.ok();
+                })
+                .await
+            }))
+        } else {
+            None
+        };
     let shutdown_flag = Arc::clone(&state.shutting_down);
     let drain_conn_manager = Arc::clone(&state.conn_manager);
     let tx = shutdown_tx.clone();
@@ -1258,6 +1288,9 @@ async fn serve(
         .map_err(|e| anyhow::anyhow!("TCP server error: {e}"))?;
 
         uds_handle.abort();
+        if let Some(handle) = admin_handle {
+            handle.abort();
+        }
         return Ok(());
     }
 
@@ -1278,6 +1311,9 @@ async fn serve(
     .await
     .map_err(|e| anyhow::anyhow!("Server error: {e}"))?;
 
+    if let Some(handle) = admin_handle {
+        handle.abort();
+    }
     Ok(())
 }
 

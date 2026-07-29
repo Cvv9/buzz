@@ -378,6 +378,246 @@ fn hydrate_error_to_response(owner: &str, repo: &str, err: HydrateError) -> Resp
 /// removed from the bound channel loses read access, which is the exact
 /// exploit shape this gate closes. Every denial is the same generic 404 as a
 /// nonexistent repo so membership cannot be probed through the git endpoints.
+
+#[cfg(test)]
+mod git_read_authorization_tests {
+    use super::{authorize_git_read, read_role_allows, repo_bound_channel_id};
+    use buzz_core::channel::{ChannelType, ChannelVisibility, MemberRole};
+    use nostr::{EventBuilder, Keys, Kind, Tag};
+
+    fn announcement(tags: Vec<Tag>) -> nostr::Event {
+        EventBuilder::new(Kind::Custom(30617), "")
+            .tags(tags)
+            .sign_with_keys(&Keys::generate())
+            .expect("sign test announcement")
+    }
+
+    #[test]
+    fn read_authorization_denies_missing_and_unknown_roles() {
+        assert!(!read_role_allows(None));
+        assert!(!read_role_allows(Some("")));
+        assert!(!read_role_allows(Some("superuser")));
+        for role in ["owner", "admin", "member", "guest", "bot"] {
+            assert!(read_role_allows(Some(role)), "{role}");
+        }
+    }
+
+    #[test]
+    fn channel_binding_fails_closed_on_missing_or_malformed_first_tag() {
+        let channel = uuid::Uuid::new_v4();
+        let missing = announcement(vec![Tag::parse(["d", "repo"]).expect("tag")]);
+        assert_eq!(repo_bound_channel_id(&missing), None);
+
+        let malformed_first = announcement(vec![
+            Tag::parse(["buzz-channel", "not-a-uuid"]).expect("tag"),
+            Tag::parse(["buzz-channel", &channel.to_string()]).expect("tag"),
+        ]);
+        assert_eq!(repo_bound_channel_id(&malformed_first), None);
+
+        let valid = announcement(vec![
+            Tag::parse(["d", "repo"]).expect("tag"),
+            Tag::parse(["buzz-channel", &channel.to_string()]).expect("tag"),
+        ]);
+        assert_eq!(repo_bound_channel_id(&valid), Some(channel));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires migrated Postgres"]
+    async fn postgres_read_authorization_matrix_is_tenant_and_role_scoped() {
+        let database_url = std::env::var("TEST_DATABASE_URL")
+            .or_else(|_| std::env::var("DATABASE_URL"))
+            .expect("TEST_DATABASE_URL or DATABASE_URL");
+        let pool = sqlx::PgPool::connect(&database_url)
+            .await
+            .expect("connect Postgres");
+        let db = buzz_db::Db::from_pool(pool.clone());
+        db.migrate().await.expect("migrate Postgres");
+
+        let community_id = uuid::Uuid::new_v4();
+        let community = buzz_core::CommunityId::from_uuid(community_id);
+        sqlx::query("INSERT INTO communities (id, host) VALUES ($1, $2)")
+            .bind(community_id)
+            .bind(format!("git-auth-{}.example", community_id.simple()))
+            .execute(&pool)
+            .await
+            .expect("insert community");
+
+        let owner = Keys::generate();
+        let channel_owner = Keys::generate();
+        let channel = db
+            .create_channel(
+                community,
+                "git-auth-matrix",
+                ChannelType::Stream,
+                ChannelVisibility::Open,
+                None,
+                &channel_owner.public_key().to_bytes(),
+                None,
+            )
+            .await
+            .expect("create channel");
+        let repo_name = format!("repo-{}", uuid::Uuid::new_v4().simple());
+        let announcement = EventBuilder::new(Kind::Custom(30617), "")
+            .tags([
+                Tag::parse(["d", repo_name.as_str()]).expect("d tag"),
+                Tag::parse(["buzz-channel", channel.id.to_string().as_str()]).expect("channel tag"),
+            ])
+            .sign_with_keys(&owner)
+            .expect("sign announcement");
+        db.insert_event(community, &announcement, None)
+            .await
+            .expect("insert announcement");
+
+        let owner_hex = owner.public_key().to_hex();
+        assert!(
+            authorize_git_read(
+                &db,
+                community,
+                &channel_owner.public_key(),
+                &owner_hex,
+                &repo_name
+            )
+            .await
+            .is_ok(),
+            "channel owner must be able to clone/fetch"
+        );
+        assert!(
+            authorize_git_read(&db, community, &owner.public_key(), &owner_hex, &repo_name)
+                .await
+                .is_err(),
+            "repository announcement author outside the channel gets no owner bypass"
+        );
+
+        for role in [
+            MemberRole::Admin,
+            MemberRole::Member,
+            MemberRole::Guest,
+            MemberRole::Bot,
+        ] {
+            let caller = Keys::generate();
+            db.add_member(
+                community,
+                channel.id,
+                &caller.public_key().to_bytes(),
+                role,
+                Some(&channel_owner.public_key().to_bytes()),
+            )
+            .await
+            .expect("add authorized role");
+            assert!(
+                authorize_git_read(&db, community, &caller.public_key(), &owner_hex, &repo_name)
+                    .await
+                    .is_ok(),
+                "{role} must be able to clone/fetch"
+            );
+        }
+
+        let removed_member = Keys::generate();
+        db.add_member(
+            community,
+            channel.id,
+            &removed_member.public_key().to_bytes(),
+            MemberRole::Member,
+            Some(&channel_owner.public_key().to_bytes()),
+        )
+        .await
+        .expect("add member before removal");
+        db.remove_member(
+            community,
+            channel.id,
+            &removed_member.public_key().to_bytes(),
+            &channel_owner.public_key().to_bytes(),
+        )
+        .await
+        .expect("remove member");
+        assert!(
+            authorize_git_read(
+                &db,
+                community,
+                &removed_member.public_key(),
+                &owner_hex,
+                &repo_name
+            )
+            .await
+            .is_err(),
+            "removed member must lose clone/fetch access immediately"
+        );
+
+        let outsider = Keys::generate();
+        for (label, result) in [
+            (
+                "non-member",
+                authorize_git_read(
+                    &db,
+                    community,
+                    &outsider.public_key(),
+                    &owner_hex,
+                    &repo_name,
+                )
+                .await,
+            ),
+            (
+                "unknown repository",
+                authorize_git_read(
+                    &db,
+                    community,
+                    &channel_owner.public_key(),
+                    &owner_hex,
+                    "does-not-exist",
+                )
+                .await,
+            ),
+            (
+                "wrong tenant",
+                authorize_git_read(
+                    &db,
+                    buzz_core::CommunityId::from_uuid(uuid::Uuid::new_v4()),
+                    &channel_owner.public_key(),
+                    &owner_hex,
+                    &repo_name,
+                )
+                .await,
+            ),
+        ] {
+            let response = result.expect_err(label);
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::NOT_FOUND,
+                "{label} must fail closed without disclosing repository existence"
+            );
+        }
+
+        assert!(
+            db.soft_delete_by_coordinate(
+                community,
+                30617,
+                &owner.public_key().to_bytes(),
+                &repo_name,
+            )
+            .await
+            .expect("soft-delete announcement"),
+            "live announcement must be deleted"
+        );
+        assert!(
+            authorize_git_read(
+                &db,
+                community,
+                &channel_owner.public_key(),
+                &owner_hex,
+                &repo_name
+            )
+            .await
+            .is_err(),
+            "deleted announcement must revoke reads immediately"
+        );
+
+        pool.close().await;
+    }
+}
+
+/// Authorize a smart-HTTP read against the repository's current kind:30617
+/// announcement and bound channel. Every resolution or database failure is
+/// deliberately returned as the same 404 to avoid repository/membership probes.
 async fn authorize_git_read(
     db: &buzz_db::Db,
     community: buzz_core::CommunityId,
@@ -395,7 +635,6 @@ async fn authorize_git_read(
     if owner_bytes.len() != 32 {
         return Err(denied());
     }
-
     let query = buzz_db::EventQuery {
         kinds: Some(vec![30617]),
         pubkey: Some(owner_bytes),
@@ -658,7 +897,6 @@ pub async fn info_refs(
         _ => return Err((StatusCode::BAD_REQUEST, "invalid service").into_response()),
     };
     let repo_name = validate_repo_id(&params.owner, &params.repo)?;
-
     // SEC-005: channel-membership gate before any manifest load, hydration,
     // or subprocess work. Both services — the receive-pack advertisement
     // leaks the ref list just like the upload-pack one.
@@ -913,7 +1151,6 @@ pub async fn upload_pack(
     body: Body,
 ) -> Result<Response, Response> {
     let repo_name = validate_repo_id(&params.owner, &params.repo)?;
-
     // SEC-005: the reused NIP-98 token means the GET advertisement's
     // authorization cannot stand in for POST-time membership — gate this
     // door independently, before body decode work is driven or hydration
@@ -926,7 +1163,6 @@ pub async fn upload_pack(
         repo_name,
     )
     .await?;
-
     let body = decode_git_request_body(&headers, body, UPLOAD_PACK_MAX_DECODED_BYTES);
     let permit = acquire_git_permit(&state, "upload_pack")?;
 
