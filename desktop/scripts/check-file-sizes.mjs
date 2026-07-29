@@ -193,7 +193,7 @@ const overrides = new Map([
   // typed harness-descriptor resolution in spawn_agent_child landed on top at
   // 1020. This PR's session-title env write in spawn_agent_child adds 12.
   // Queued to shrink with the next runtime split pass (#2974 follow-up).
-  ["src-tauri/src/managed_agents/runtime.rs", 1032],
+  ["src-tauri/src/managed_agents/runtime.rs", 1033],
   // applyWorkspace reposDir parameter plus the validateReposDir binding,
   // threaded through Tauri invokes for configurable repos_dir, plus the
   // harness-persona-sync `harnessOverride` create-input bit — load-bearing
@@ -251,7 +251,7 @@ const overrides = new Map([
   // (#2680) to indicate runtimes that need a separate CLI install.
   // +6: ManagedAgent.runtime record-level pin + JSDoc so the harness delete
   // confirmation can count referencing agents (review fix for #2773).
-  ["src/shared/api/types.ts", 1058],
+  ["src/shared/api/types.ts", 1062],
   // harness-persona-sync feature growth, queued to split in the resolver-unify
   // refactor followup. discovery.rs is dominated by the new test module
   // (the effective_agent_command / divergent / create-time override matrix);
@@ -341,7 +341,7 @@ const overrides = new Map([
   // +12 (1835 -> 1847): merge with fork main — probe_auth_status consults the
   // native_credentials_probe seam first so WSL windows stop flashing during
   // agent discovery on Windows.
-  ["src-tauri/src/managed_agents/discovery.rs", 1847],
+  ["src-tauri/src/managed_agents/discovery.rs", 1872],
   // BYOH — save_custom_harness_to_dir (backup-swap atomic write) + save_and_warm /
   // delete_and_warm (persist-mutex serialization for concurrent-safe registry
   // refresh, B-6). Also: id/collision/load/registry tests (from the file base) +
@@ -386,7 +386,7 @@ const overrides = new Map([
   // Available both-present AND adapter-present/CLI-absent — the selectability
   // regression guard), bound to an injectable resolver so the tests stay
   // PATH-independent.
-  ["src-tauri/src/managed_agents/discovery/tests.rs", 1871],
+  ["src-tauri/src/managed_agents/discovery/tests.rs", 1924],
   // identity-import-keyring: the identity resolution state machine's behavioral
   // matrix (46 tests over FakeIdentityStore — probe × marker × file cells,
   // adoption / read-back-corruption / marker-failure arms, recovery-mode
@@ -589,7 +589,7 @@ const overrides = new Map([
   // computing had_* so stale materialized snapshot bytes can never be tagged
   // BuzzExplicit and shadow the definition/global fallthrough; the dead
   // persona-model re-tag branch replaced; two new regression tests added.
-  ["src-tauri/src/commands/agent_config.rs", 1110],
+  ["src-tauri/src/commands/agent_config.rs", 1112],
   // codex-install-auto-restart review-fixes: should_restart_after_install
   // takes pid_alive:bool (pure predicate, no OS-dependent call); 3 racy
   // cache tests replaced with 6 pure availability_drift predicate tests;
@@ -680,12 +680,12 @@ const overrides = new Map([
   // hidden-key projection keeps the top-level secret out of Advanced rows.
   // +6 (1195 -> 1201): rebase onto main — this PR's model-source label wiring
   // lands on top of main's dialog growth. Queued to split.
-  ["src/features/agents/ui/AgentInstanceEditDialog.tsx", 1201],
+  ["src/features/agents/ui/AgentInstanceEditDialog.tsx", 1229],
   // AgentDefinitionDialog grew past 1000 with the following load-bearing fixes:
   // isRuntimeAutoSeededRef tracking for edit-mode seeding (Fizz shows models);
   // runtimeSupportsLlmProviderSelection guard on discovery provider (codex fix);
   // hideProviderIds computation for Databricks v1 gate. Queued to split.
-  ["src/features/agents/ui/AgentDefinitionDialog.tsx", 1035],
+  ["src/features/agents/ui/AgentDefinitionDialog.tsx", 1048],
   // Inherited from upstream block/buzz main: emoji-picker search (#2630) and
   // the BYOH settings gallery (#2773) each landed under 1000 individually but
   // their union left the file at 1026. Upstream override race; queued to split

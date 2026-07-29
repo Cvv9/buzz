@@ -107,7 +107,12 @@ function readBaseFile(repoRoot, baseRef, filePath) {
   }).toString("utf8");
 }
 
-export async function runFileSizeCheck({ projectRoot, rules, label }) {
+export async function runFileSizeCheck({
+  projectRoot,
+  rules,
+  overrides = new Map(),
+  label,
+}) {
   // Every governed project is a direct child of the repository root. Derive
   // these paths without Git so hook-provided repository environment variables
   // cannot collapse the project pathspec to an empty string.
@@ -141,7 +146,7 @@ export async function runFileSizeCheck({ projectRoot, rules, label }) {
     const result = evaluateFileSize({
       baseLines,
       candidateLines,
-      maxLines: rule.maxLines,
+      maxLines: overrides.get(relativePath) ?? rule.maxLines,
     });
 
     if (result.violates) {
