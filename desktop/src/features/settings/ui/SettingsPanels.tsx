@@ -70,8 +70,7 @@ import {
   withAccentPreviewVars,
 } from "@/shared/theme/useThemePreviewVars";
 import { ChannelTemplatesSettingsCard } from "./ChannelTemplatesSettingsCard";
-import { DoctorSettingsPanel } from "./DoctorSettingsPanel";
-import { HarnessManagementCard } from "./HarnessManagementCard";
+import { HarnessesSettingsPanel } from "./HarnessesSettingsPanel";
 import { ExperimentalFeaturesCard } from "./ExperimentalFeaturesCard";
 import { GeneralSettingsCard } from "./GeneralSettingsCard";
 import { KeyboardShortcutsCard } from "./KeyboardShortcutsCard";
@@ -80,7 +79,6 @@ import { MobilePairingCard } from "./MobilePairingCard";
 import { ModerationQueueCard } from "./ModerationQueueCard";
 import { NotificationSettingsCard } from "./NotificationSettingsCard";
 import { PreventSleepSettingsCard } from "./PreventSleepSettingsCard";
-import { ActiveAgentCommunitiesSettingsCard } from "./ActiveAgentCommunitiesSettingsCard";
 import { AgentDefaultsSettingsCard } from "./AgentDefaultsSettingsCard";
 import { HostedCommunitiesSettingsCard } from "./HostedCommunitiesSettingsCard";
 import { SettingsOptionGroup, SettingsOptionRow } from "./SettingsOptionGroup";
@@ -824,9 +822,7 @@ export function renderSettingsSection(
       return (
         <div className="space-y-12">
           <PreventSleepSettingsCard />
-          <DoctorSettingsPanel />
-          <HarnessManagementCard />
-          <ActiveAgentCommunitiesSettingsCard />
+          <HarnessesSettingsPanel />
           <AgentDefaultsSettingsCard />
         </div>
       );
