@@ -77,6 +77,26 @@ pub(crate) fn verify_bridge_auth_with_options(
     require_auth_token: bool,
     require_payload: bool,
 ) -> Result<(nostr::PublicKey, [u8; 32]), (StatusCode, Json<Value>)> {
+    verify_bridge_auth_with_dev_fallback(
+        headers,
+        method,
+        url,
+        body,
+        require_auth_token,
+        false,
+        require_payload,
+    )
+}
+
+fn verify_bridge_auth_with_dev_fallback(
+    headers: &HeaderMap,
+    method: &str,
+    url: &str,
+    body: Option<&[u8]>,
+    require_auth_token: bool,
+    allow_insecure_dev_pubkey: bool,
+    require_payload: bool,
+) -> Result<(nostr::PublicKey, [u8; 32]), (StatusCode, Json<Value>)> {
     // Try NIP-98 first (Authorization: Nostr <base64>)
     if let Some(auth_str) = headers
         .get("authorization")
@@ -115,7 +135,7 @@ pub(crate) fn verify_bridge_auth_with_options(
     }
 
     // Dev-mode fallback: X-Pubkey header (only when require_auth_token is false)
-    if !require_auth_token {
+    if !require_auth_token && allow_insecure_dev_pubkey {
         if let Some(hex_val) = headers.get("x-pubkey").and_then(|v| v.to_str().ok()) {
             let pubkey = nostr::PublicKey::from_hex(hex_val)
                 .map_err(|_| api_error(StatusCode::UNAUTHORIZED, "invalid X-Pubkey hex"))?;
@@ -633,12 +653,14 @@ pub async fn submit_event(
         })?;
 
     let url = nip98_expected_url(&state.config.relay_url, &tenant, "/events");
-    let (pubkey, event_id_bytes) = verify_bridge_auth(
+    let (pubkey, event_id_bytes) = verify_bridge_auth_with_dev_fallback(
         &headers,
         "POST",
         &url,
         Some(&body),
         state.config.require_auth_token,
+        state.config.allow_insecure_dev_pubkey,
+        false,
     )?;
     let pubkey_hex = pubkey.to_hex();
 
@@ -901,12 +923,14 @@ pub async fn query_events(
         })?;
 
     let url = nip98_expected_url(&state.config.relay_url, &tenant, "/query");
-    let (pubkey, event_id_bytes) = verify_bridge_auth(
+    let (pubkey, event_id_bytes) = verify_bridge_auth_with_dev_fallback(
         &headers,
         "POST",
         &url,
         Some(&body),
         state.config.require_auth_token,
+        state.config.allow_insecure_dev_pubkey,
+        false,
     )?;
     let pubkey_hex = pubkey.to_hex();
 
@@ -1336,12 +1360,14 @@ pub async fn count_events(
         })?;
 
     let url = nip98_expected_url(&state.config.relay_url, &tenant, "/count");
-    let (pubkey, event_id_bytes) = verify_bridge_auth(
+    let (pubkey, event_id_bytes) = verify_bridge_auth_with_dev_fallback(
         &headers,
         "POST",
         &url,
         Some(&body),
         state.config.require_auth_token,
+        state.config.allow_insecure_dev_pubkey,
+        false,
     )?;
     let pubkey_hex = pubkey.to_hex();
 
@@ -2047,8 +2073,15 @@ async fn authorize_moderation_read(
         _ => path.to_string(),
     };
     let url = nip98_expected_url(&state.config.relay_url, &tenant, &path_with_query);
-    let (pubkey, event_id_bytes) =
-        verify_bridge_auth(headers, "GET", &url, None, state.config.require_auth_token)?;
+    let (pubkey, event_id_bytes) = verify_bridge_auth_with_dev_fallback(
+        headers,
+        "GET",
+        &url,
+        None,
+        state.config.require_auth_token,
+        state.config.allow_insecure_dev_pubkey,
+        false,
+    )?;
     check_nip98_replay(state, &tenant, event_id_bytes).await?;
     let pubkey_bytes = pubkey.to_bytes().to_vec();
 
@@ -2518,6 +2551,34 @@ mod tests {
             keys.public_key(),
             "returned pubkey must be the signer's"
         );
+    }
+
+    #[test]
+    fn x_pubkey_never_authenticates_without_explicit_dev_fallback() {
+        let keys = Keys::generate();
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "x-pubkey",
+            keys.public_key().to_hex().parse().expect("header"),
+        );
+        assert!(verify_bridge_auth(
+            &headers,
+            "POST",
+            "http://localhost/events",
+            Some(b"{}"),
+            false,
+        )
+        .is_err());
+        assert!(verify_bridge_auth_with_dev_fallback(
+            &headers,
+            "POST",
+            "http://localhost/events",
+            Some(b"{}"),
+            false,
+            true,
+            false,
+        )
+        .is_ok());
     }
 
     /// Mirror of the query-reconstruction `authorize_moderation_read` performs
@@ -3316,6 +3377,7 @@ mod tests {
             std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
         config.relay_url = "wss://bridge-test.local".to_string();
         config.require_auth_token = false;
+        config.allow_insecure_dev_pubkey = true;
         config.require_relay_membership = false;
 
         let pool = sqlx::PgPool::connect(TEST_DB_URL).await.ok()?;

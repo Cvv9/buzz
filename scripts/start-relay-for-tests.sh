@@ -155,8 +155,9 @@ nohup env \
   DATABASE_URL=postgres://buzz:buzz_dev@localhost:5432/buzz \
   REDIS_URL=redis://localhost:6379 \
   RELAY_URL=ws://localhost:3000 \
-  BUZZ_BIND_ADDR=0.0.0.0:3000 \
+  BUZZ_BIND_ADDR=127.0.0.1:3000 \
   BUZZ_REQUIRE_AUTH_TOKEN=false \
+  BUZZ_ALLOW_INSECURE_DEV_PUBKEY=true \
   BUZZ_RECONCILE_CHANNELS=true \
   BUZZ_GIT_PROBE_WRITERS=8 \
   "./target/${CARGO_PROFILE}/buzz-relay" > /tmp/buzz-relay.log 2>&1 &

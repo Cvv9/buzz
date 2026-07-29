@@ -27,8 +27,14 @@ pub enum ConfigError {
 /// Deny-by-default read-only deployment-admin configuration.
 #[derive(Debug, Clone)]
 pub struct AdminConfig {
+    /// Address for the dedicated deployment-admin listener.
+    pub bind_addr: SocketAddr,
     /// Exact admin HTTP authority.
     pub host: String,
+    /// Canonical origin used for NIP-98 URL verification.
+    pub api_origin: String,
+    /// Nostr pubkeys allowed to access deployment-wide moderation data.
+    pub operator_pubkeys: Vec<String>,
     /// Optional admin SPA bundle directory.
     pub web_dir: Option<std::path::PathBuf>,
 }
@@ -83,8 +89,11 @@ pub struct Config {
     /// Whether REST API requests must present a valid token. Independent of
     /// WebSocket protocol auth, which is *always* required by REQ/EVENT/COUNT.
     pub require_auth_token: bool,
+    /// Permit the unauthenticated `X-Pubkey` bridge fallback for loopback-only
+    /// development. This can never be enabled on a non-loopback bind.
+    pub allow_insecure_dev_pubkey: bool,
     /// Comma-separated list of allowed CORS origins.
-    /// If empty, permissive CORS is used (dev mode).
+    /// If empty, cross-origin browser access is disabled.
     /// Example: "tauri://localhost,http://localhost:3000"
     pub cors_origins: Vec<String>,
     /// Optional hex-encoded private key for the relay's signing keypair.
@@ -265,6 +274,15 @@ pub struct Config {
 fn parse_bind_addr(raw: &str) -> Result<SocketAddr, ConfigError> {
     raw.parse::<SocketAddr>()
         .map_err(|e| ConfigError::InvalidBindAddr(e.to_string()))
+}
+
+fn validate_dev_pubkey_mode(bind_addr: SocketAddr, enabled: bool) -> Result<(), ConfigError> {
+    if enabled && !bind_addr.ip().is_loopback() {
+        return Err(ConfigError::InvalidValue(
+            "BUZZ_ALLOW_INSECURE_DEV_PUBKEY requires a loopback BUZZ_BIND_ADDR".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn positive_u64_from_env(name: &str, default: u64) -> Result<u64, ConfigError> {
@@ -474,7 +492,9 @@ impl Config {
 
         let require_auth_token = std::env::var("BUZZ_REQUIRE_AUTH_TOKEN")
             .map(|v| v == "true" || v == "1")
-            .unwrap_or(false);
+            .unwrap_or(true);
+        let allow_insecure_dev_pubkey = parse_optional_bool("BUZZ_ALLOW_INSECURE_DEV_PUBKEY")?;
+        validate_dev_pubkey_mode(bind_addr, allow_insecure_dev_pubkey)?;
 
         let pubkey_allowlist_enabled = std::env::var("BUZZ_PUBKEY_ALLOWLIST")
             .map(|v| v == "true" || v == "1")
@@ -585,10 +605,9 @@ impl Config {
             rate_limits: rate_limit_config_from_env()?,
         };
 
-        if !require_auth_token {
+        if !require_auth_token && !allow_insecure_dev_pubkey {
             warn!(
-                "BUZZ_REQUIRE_AUTH_TOKEN is false — REST API requests bypass token auth. \
-                 WebSocket protocol auth is unaffected. Set to true for production."
+                "BUZZ_REQUIRE_AUTH_TOKEN is false, but unsigned bridge fallback remains disabled"
             );
         }
 
@@ -686,7 +705,7 @@ impl Config {
                     || v.eq_ignore_ascii_case("yes")
                     || v.eq_ignore_ascii_case("on")
             })
-            .unwrap_or(false);
+            .unwrap_or(true);
 
         let ephemeral_ttl_override = std::env::var("BUZZ_EPHEMERAL_TTL_OVERRIDE")
             .ok()
@@ -835,7 +854,55 @@ impl Config {
                         )));
                     }
                 }
-                Some(AdminConfig { host, web_dir })
+                let admin_bind_addr = std::env::var("BUZZ_ADMIN_BIND_ADDR")
+                    .unwrap_or_else(|_| "127.0.0.1:3001".to_string())
+                    .parse::<SocketAddr>()
+                    .map_err(|error| {
+                        ConfigError::InvalidValue(format!(
+                            "BUZZ_ADMIN_BIND_ADDR must be a socket address: {error}"
+                        ))
+                    })?;
+                if admin_bind_addr == bind_addr {
+                    return Err(ConfigError::InvalidValue(
+                        "BUZZ_ADMIN_BIND_ADDR must differ from BUZZ_BIND_ADDR".to_string(),
+                    ));
+                }
+                let api_origin = std::env::var("BUZZ_ADMIN_API_ORIGIN")
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+                    .map(|value| parse_operator_api_origin(&value))
+                    .transpose()?
+                    .ok_or_else(|| {
+                        ConfigError::InvalidValue(
+                            "BUZZ_ADMIN_API_ORIGIN is required when BUZZ_ADMIN_HOST is set"
+                                .to_string(),
+                        )
+                    })?;
+                let operator_pubkeys = std::env::var("BUZZ_ADMIN_OPERATOR_PUBKEYS")
+                    .unwrap_or_default()
+                    .split(',')
+                    .filter_map(|value| {
+                        let value = value.trim().to_lowercase();
+                        (!value.is_empty()).then_some(value)
+                    })
+                    .collect::<Vec<_>>();
+                if operator_pubkeys.is_empty()
+                    || operator_pubkeys
+                        .iter()
+                        .any(|key| key.len() != 64 || !key.chars().all(|c| c.is_ascii_hexdigit()))
+                {
+                    return Err(ConfigError::InvalidValue(
+                        "BUZZ_ADMIN_OPERATOR_PUBKEYS must contain valid 64-char hex pubkeys"
+                            .to_string(),
+                    ));
+                }
+                Some(AdminConfig {
+                    bind_addr: admin_bind_addr,
+                    host,
+                    api_origin,
+                    operator_pubkeys,
+                    web_dir,
+                })
             }
         };
 
@@ -884,6 +951,7 @@ impl Config {
             slow_client_grace_limit,
             auth,
             require_auth_token,
+            allow_insecure_dev_pubkey,
             cors_origins,
             relay_private_key,
             uds_path,
@@ -946,6 +1014,8 @@ mod tests {
         assert!(config.send_buffer_size > 0);
         assert_eq!(config.max_frame_bytes, DEFAULT_MAX_FRAME_BYTES);
         assert!(config.slow_client_grace_limit > 0);
+        assert!(config.require_auth_token);
+        assert!(!config.allow_insecure_dev_pubkey);
         assert!(
             !config.pubkey_allowlist_enabled,
             "pubkey_allowlist_enabled should default to false"
@@ -971,8 +1041,8 @@ mod tests {
             "serve_git_web_gui should default to false"
         );
         assert!(
-            !config.require_media_get_auth,
-            "require_media_get_auth should default to false for staged client rollout"
+            config.require_media_get_auth,
+            "require_media_get_auth should default to true"
         );
         assert!(
             config.join_policy.is_none(),
@@ -982,6 +1052,14 @@ mod tests {
             config.huddle_audio_available,
             "huddle_audio_available should default to true so single-pod (N=1) keeps today's huddle behavior"
         );
+    }
+
+    #[test]
+    fn insecure_pubkey_fallback_is_loopback_only() {
+        assert!(validate_dev_pubkey_mode("127.0.0.1:3000".parse().unwrap(), true).is_ok());
+        assert!(validate_dev_pubkey_mode("[::1]:3000".parse().unwrap(), true).is_ok());
+        assert!(validate_dev_pubkey_mode("0.0.0.0:3000".parse().unwrap(), true).is_err());
+        assert!(validate_dev_pubkey_mode("10.0.0.4:3000".parse().unwrap(), true).is_err());
     }
 
     #[test]

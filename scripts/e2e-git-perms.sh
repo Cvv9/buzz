@@ -337,6 +337,7 @@ export BUZZ_BIND_ADDR="${RELAY_HOST}:${RELAY_PORT}"
 export RELAY_URL="${RELAY_WS}"
 export RUST_LOG="buzz_relay=warn"
 export BUZZ_REQUIRE_AUTH_TOKEN=false
+export BUZZ_ALLOW_INSECURE_DEV_PUBKEY=true
 
 # Clean repos dir (isolated test state)
 rm -rf "${REPO_ROOT}/repos"

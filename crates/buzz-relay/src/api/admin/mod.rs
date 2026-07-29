@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use auth::authorize;
 use axum::{
-    extract::{Path, Query, State},
+    extract::{OriginalUri, Path, Query, State},
     http::{header, HeaderMap, HeaderValue},
     middleware::{self, Next},
     response::Response,
@@ -19,10 +19,6 @@ use error::ApiError;
 use serde::{Deserialize, Serialize};
 use tower_http::limit::RequestBodyLimitLayer;
 use uuid::Uuid;
-
-pub(crate) fn is_admin_host(state: &crate::state::AppState, headers: &HeaderMap) -> bool {
-    auth::is_admin_host(state, headers)
-}
 
 /// Build the read-only deployment-admin routes.
 pub fn router(state: Arc<crate::state::AppState>) -> Router {
@@ -93,9 +89,16 @@ fn validate(value: Option<&str>, allowed: &[&str], code: &'static str) -> Result
 async fn reports(
     State(state): State<Arc<crate::state::AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Query(query): Query<ReportQuery>,
 ) -> Result<Json<Vec<buzz_db::admin_moderation::AdminReport>>, ApiError> {
-    authorize(&state, &headers)?;
+    authorize(
+        &state,
+        &headers,
+        "GET",
+        uri.path_and_query().map_or(uri.path(), |v| v.as_str()),
+    )
+    .await?;
     validate(
         query.status.as_deref(),
         &["open", "resolved", "dismissed", "escalated"],
@@ -125,9 +128,10 @@ async fn reports(
 async fn report_detail(
     State(state): State<Arc<crate::state::AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(id): Path<Uuid>,
 ) -> Result<Json<buzz_db::admin_moderation::AdminReport>, ApiError> {
-    authorize(&state, &headers)?;
+    authorize(&state, &headers, "GET", uri.path()).await?;
     state
         .db
         .admin_get_report(id)
@@ -151,8 +155,9 @@ struct FeedbackSummary {
 async fn feedback(
     State(state): State<Arc<crate::state::AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
 ) -> Result<Json<Vec<FeedbackSummary>>, ApiError> {
-    authorize(&state, &headers)?;
+    authorize(&state, &headers, "GET", uri.path()).await?;
     let items = state
         .db
         .admin_list_feedback(100)
@@ -177,9 +182,10 @@ async fn feedback(
 async fn feedback_detail(
     State(state): State<Arc<crate::state::AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path(id): Path<Uuid>,
 ) -> Result<Json<buzz_db::admin_moderation::AdminFeedback>, ApiError> {
-    authorize(&state, &headers)?;
+    authorize(&state, &headers, "GET", uri.path()).await?;
     state
         .db
         .admin_get_feedback(id)
@@ -191,9 +197,10 @@ async fn feedback_detail(
 async fn feedback_attachment(
     State(state): State<Arc<crate::state::AppState>>,
     headers: HeaderMap,
+    OriginalUri(uri): OriginalUri,
     Path((id, sha256)): Path<(Uuid, String)>,
 ) -> Result<Response, ApiError> {
-    authorize(&state, &headers)?;
+    authorize(&state, &headers, "GET", uri.path()).await?;
     if !is_sha256(&sha256) {
         return Err(ApiError::not_found());
     }
@@ -336,7 +343,10 @@ mod tests {
         config.require_relay_membership = false;
         config.redis_url = "redis://127.0.0.1:1".to_string();
         config.admin = Some(crate::config::AdminConfig {
+            bind_addr: "127.0.0.1:3001".parse().unwrap(),
             host: "admin.example".to_string(),
+            api_origin: "https://admin.example".to_string(),
+            operator_pubkeys: vec![nostr::Keys::generate().public_key().to_hex()],
             web_dir: None,
         });
         let pool = sqlx::PgPool::connect_lazy(&config.database_url).expect("lazy pg pool");
@@ -375,6 +385,39 @@ mod tests {
     const HASH: &str = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
 
     #[tokio::test]
+    async fn admin_routes_exist_only_on_dedicated_router() {
+        let state = test_state().await;
+        let request = || {
+            Request::builder()
+                .uri("/api/admin/v1/feedback")
+                .header(header::HOST, "admin.example")
+                .body(Body::empty())
+                .expect("request")
+        };
+
+        let public_response = crate::router::build_router(state.clone())
+            .oneshot(request())
+            .await
+            .expect("public response");
+        assert_eq!(
+            public_response.status(),
+            axum::http::StatusCode::NOT_FOUND,
+            "public listener must not expose deployment-admin routes"
+        );
+
+        let admin_response = crate::router::build_admin_router(state)
+            .expect("admin router")
+            .oneshot(request())
+            .await
+            .expect("admin response");
+        assert_eq!(
+            admin_response.status(),
+            axum::http::StatusCode::FORBIDDEN,
+            "dedicated listener must route the request into signed admin auth"
+        );
+    }
+
+    #[tokio::test]
     async fn feedback_attachment_requires_admin_host_before_database_access() {
         let response = router(test_state().await)
             .oneshot(
@@ -401,7 +444,7 @@ mod tests {
             )
             .await
             .expect("response");
-        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+        assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
