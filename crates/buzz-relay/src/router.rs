@@ -150,11 +150,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
                     if path.starts_with("/assets/") {
                         return files.oneshot(req).await.map(IntoResponse::into_response);
                     }
-                    if should_serve_spa(
-                        path,
-                        serve_web_workspace,
-                        serve_git_web_gui,
-                    ) {
+                    if should_serve_spa(path, serve_web_workspace, serve_git_web_gui) {
                         return Ok(read_spa_index(&index).await);
                     }
                 }
@@ -237,11 +233,7 @@ fn is_invite_landing_path(path: &str) -> bool {
         .is_some_and(|code| !code.is_empty() && !code.contains('/'))
 }
 
-fn should_serve_spa(
-    path: &str,
-    serve_web_workspace: bool,
-    serve_git_web_gui: bool,
-) -> bool {
+fn should_serve_spa(path: &str, serve_web_workspace: bool, serve_git_web_gui: bool) -> bool {
     is_invite_landing_path(path)
         || (serve_web_workspace && path == "/")
         || (serve_git_web_gui && is_git_web_gui_path(path))

@@ -9,7 +9,9 @@ test("home page loads the VarVik browser workspace", async ({ page }) => {
   ).toBeVisible();
 });
 
-test("repository browser remains available at its own route", async ({ page }) => {
+test("repository browser remains available at its own route", async ({
+  page,
+}) => {
   await page.goto("/repos");
   await expect(page.getByText("Repositories")).toBeVisible();
 });
