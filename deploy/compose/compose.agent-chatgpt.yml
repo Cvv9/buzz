@@ -1,0 +1,7 @@
+services:
+  agent:
+    volumes:
+      - type: bind
+        source: ${VARVIK_CODEX_AUTH_FILE:?set VARVIK_CODEX_AUTH_FILE}
+        target: /run/secrets/varvik-codex-auth.json
+        read_only: true

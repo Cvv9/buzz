@@ -35,6 +35,10 @@ MSG
   fi
 }
 
+env_has_value() {
+  grep -Eq "^${1}=.+" .env
+}
+
 backup_hint() {
   cat <<'MSG'
 Back up these before upgrades and on a regular schedule:
@@ -57,11 +61,25 @@ case "${1:-help}" in
     ;;
   start-agents)
     require_env
-    if grep -Eq '^(VARVIK_AGENT_PRIVATE_KEY|VARVIK_AGENT_PUBKEY|OPENAI_API_KEY)=$' .env; then
-      echo "Set VARVIK_AGENT_PRIVATE_KEY, VARVIK_AGENT_PUBKEY, and OPENAI_API_KEY in .env first." >&2
+    if ! env_has_value VARVIK_AGENT_PRIVATE_KEY || ! env_has_value VARVIK_AGENT_PUBKEY; then
+      echo "Set VARVIK_AGENT_PRIVATE_KEY and VARVIK_AGENT_PUBKEY in .env first." >&2
+      exit 1
+    fi
+    if ! env_has_value CODEX_API_KEY && ! env_has_value OPENAI_API_KEY; then
+      echo "Set CODEX_API_KEY or OPENAI_API_KEY in .env, or use start-agents-chatgpt." >&2
       exit 1
     fi
     compose --profile agents up -d --wait
+    ;;
+  start-agents-chatgpt)
+    require_env
+    if ! env_has_value VARVIK_AGENT_PRIVATE_KEY \
+      || ! env_has_value VARVIK_AGENT_PUBKEY \
+      || ! env_has_value VARVIK_CODEX_AUTH_FILE; then
+      echo "Set the agent keypair and VARVIK_CODEX_AUTH_FILE in .env first." >&2
+      exit 1
+    fi
+    compose -f compose.agent-chatgpt.yml --profile agents up -d --wait
     ;;
   stop|down)
     compose down
@@ -108,8 +126,9 @@ case "${1:-help}" in
 Usage: ./run.sh <command>
 
 Commands:
-  start         Start Buzz with docker compose up -d --wait
-  start-agents  Start Buzz plus the hosted Codex agent
+  start                  Start Buzz with docker compose up -d --wait
+  start-agents           Start Buzz plus Codex using an API key
+  start-agents-chatgpt   Start Buzz plus Codex using an existing auth.json
   stop          Stop containers without deleting volumes
   restart       Recreate the relay after env/image changes
   pull          Pull configured images

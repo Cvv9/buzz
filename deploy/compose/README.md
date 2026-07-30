@@ -31,11 +31,24 @@ multiple communities.
 
 The optional `agents` profile runs the existing Buzz ACP harness and Codex
 adapter on the server. Generate a separate Nostr keypair for it, fill
-`VARVIK_AGENT_PRIVATE_KEY`, `VARVIK_AGENT_PUBKEY`, and `OPENAI_API_KEY`, then:
+`VARVIK_AGENT_PRIVATE_KEY`, `VARVIK_AGENT_PUBKEY`, and either `CODEX_API_KEY`
+or `OPENAI_API_KEY`, then:
 
 ```bash
 ./run.sh start-agents
 ```
+
+To reuse an existing ChatGPT/Codex login instead, set
+`VARVIK_CODEX_AUTH_FILE` to the absolute path of its `auth.json` and run:
+
+```bash
+./run.sh start-agents-chatgpt
+```
+
+That file is mounted read-only at container startup and copied with mode `0600`
+into the unprivileged agent user's home. Use this only on a server you control:
+the hosted agent necessarily receives the credential needed to call Codex.
+The credential is never served to browser clients.
 
 The container registers the agent as a relay member and publishes its agent
 profile. An owner/admin then opens a channel in the browser and adds the hosted
