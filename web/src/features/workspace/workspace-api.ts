@@ -4,6 +4,7 @@ import {
   queryEvents,
   subscribeEvents,
 } from "@/shared/lib/nostr-client";
+import { truncatePubkey } from "@/shared/lib/pubkey";
 import { relayWsUrl } from "@/shared/lib/relay-url";
 
 export const KIND_PROFILE = 0;
@@ -202,8 +203,8 @@ export async function listProfiles(
           content.name ||
           content.displayName ||
           existing?.name ||
-          `${event.pubkey.slice(0, 8)}…`,
-      ).trim() || `${event.pubkey.slice(0, 8)}…`;
+          truncatePubkey(event.pubkey),
+      ).trim() || truncatePubkey(event.pubkey);
     profiles.set(event.pubkey, {
       pubkey: event.pubkey,
       name,
@@ -253,8 +254,8 @@ export async function listAgents(): Promise<WorkspaceProfile[]> {
           content.display_name ||
             content.name ||
             existing?.name ||
-            `${pubkey.slice(0, 8)}…`,
-        ).trim() || `${pubkey.slice(0, 8)}…`,
+            truncatePubkey(pubkey),
+        ).trim() || truncatePubkey(pubkey),
       picture:
         typeof content.picture === "string"
           ? content.picture

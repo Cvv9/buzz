@@ -9,6 +9,7 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/shared/lib/cn";
+import { truncatePubkey } from "@/shared/lib/pubkey";
 import type {
   WorkspaceChannel,
   WorkspaceProfile,
@@ -230,7 +231,7 @@ export function WorkspaceSidebar({
                 {identity.displayName}
               </p>
               <p className="truncate text-[0.6875rem] text-black/40 dark:text-white/35">
-                {identity.pubkey.slice(0, 12)}…
+                {truncatePubkey(identity.pubkey)}
               </p>
             </div>
             <Settings className="size-4 text-black/35 dark:text-white/30" />

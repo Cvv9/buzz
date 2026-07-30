@@ -20,6 +20,7 @@ import {
   removeBrowserIdentity,
 } from "@/shared/lib/browser-identity";
 import { cn } from "@/shared/lib/cn";
+import { truncatePubkey } from "@/shared/lib/pubkey";
 import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
 import { IdentityGate } from "./IdentityGate";
@@ -578,7 +579,7 @@ export function WorkspacePage() {
       name:
         pubkey === identity.pubkey
           ? identity.displayName
-          : `${pubkey.slice(0, 8)}…`,
+          : truncatePubkey(pubkey),
     };
   const topLevel = materialized.filter((message) => !message.rootEventId);
   const threadRoot =
