@@ -6,7 +6,7 @@ import {
   detectBuzzDownloadPlatform,
   resolveBuzzDownloadUrlForPlatform,
 } from "@/shared/lib/buzz-download";
-import { hasNip07Provider } from "@/shared/lib/nostr-signer";
+import { hasDurableBrowserSigner } from "@/shared/lib/nostr-signer";
 import { relayWsUrl } from "@/shared/lib/relay-url";
 import { Button } from "@/shared/ui/button";
 import * as React from "react";
@@ -132,7 +132,14 @@ export function InvitePage({ code }: { code: string }) {
     }
   };
 
-  const browserSigningAvailable = hasNip07Provider();
+  const browserSigningAvailable = hasDurableBrowserSigner();
+  const setUpBrowserAccess = () => {
+    sessionStorage.setItem(
+      "buzz.web.pending-invite-path",
+      window.location.pathname,
+    );
+    window.location.assign("/");
+  };
   const disabled =
     policy === undefined ||
     opening ||
@@ -234,7 +241,15 @@ export function InvitePage({ code }: { code: string }) {
               >
                 {joiningBrowser ? "Joining…" : "Join in browser"}
               </Button>
-            ) : null}
+            ) : (
+              <Button
+                className="h-10 w-full bg-black text-white hover:bg-black/90 focus-visible:ring-black"
+                disabled={disabled}
+                onClick={setUpBrowserAccess}
+              >
+                Set up browser access
+              </Button>
+            )}
             {policy === null ? (
               <Button
                 asChild

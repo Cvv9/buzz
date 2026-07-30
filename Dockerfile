@@ -69,14 +69,18 @@ RUN cargo chef cook --release --recipe-path recipe.json
 COPY . .
 RUN cargo build --release --locked -p buzz-relay --bin buzz-relay \
                                    -p buzz-admin --bin buzz-admin \
-                                   -p buzz-pair-relay --bin buzz-pair-relay
+                                   -p buzz-pair-relay --bin buzz-pair-relay \
+                                   -p buzz-acp --bin buzz-acp \
+                                   -p buzz-cli --bin buzz
 
 # Derive the normal release binaries from the same optimized ELF files as the
 # debug image so the two variants cannot drift at code-generation time.
 FROM builder AS stripped-binaries
 RUN strip target/release/buzz-relay \
     && strip target/release/buzz-admin \
-    && strip target/release/buzz-pair-relay
+    && strip target/release/buzz-pair-relay \
+    && strip target/release/buzz-acp \
+    && strip target/release/buzz
 
 # ─── Stage 4: web bundle (pnpm + vite) ──────────────────────────────────────
 # Independent of the Rust layers so a CSS change doesn't bust Rust cache and
@@ -145,9 +149,9 @@ RUN apt-get update \
 COPY --from=web-builder /build/web/dist                 /srv/buzz/web
 COPY --from=web-builder /build/admin-web/dist           /srv/buzz/admin-web
 
-# The invite landing page is always served from the bundled web UI. Repository
-# browser routes require the separate BUZZ_SERVE_GIT_WEB_GUI=true opt-in. The
-# admin bundle is inert until BUZZ_ADMIN_HOST is configured.
+# The invite landing page is always served from the bundled web UI. The browser
+# workspace and repository browser have separate opt-ins. The admin bundle is
+# inert until BUZZ_ADMIN_HOST is configured.
 ENV BUZZ_WEB_DIR=/srv/buzz/web \
     BUZZ_ADMIN_WEB_DIR=/srv/buzz/admin-web
 
@@ -169,6 +173,22 @@ FROM runtime-base AS runtime-debug
 COPY --from=builder /build/target/release/buzz-relay /usr/local/bin/buzz-relay
 COPY --from=builder /build/target/release/buzz-admin /usr/local/bin/buzz-admin
 COPY --from=builder /build/target/release/buzz-pair-relay /usr/local/bin/buzz-pair-relay
+
+# Hosted agent runtime. This is an opt-in Compose profile and is not included in
+# the normal relay image. It connects to Buzz over the same public protocol as
+# any other agent and runs Codex through the Agent Client Protocol adapter.
+FROM node:${NODE_VERSION}-${DEBIAN_VERSION}-slim AS agent-runtime
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates git \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install --global @agentclientprotocol/codex-acp@1.1.7
+COPY --from=stripped-binaries /build/target/release/buzz-acp /usr/local/bin/buzz-acp
+COPY --from=stripped-binaries /build/target/release/buzz /usr/local/bin/buzz
+COPY --from=stripped-binaries /build/target/release/buzz-admin /usr/local/bin/buzz-admin
+COPY --chmod=0755 deploy/compose/agent-entrypoint.sh /usr/local/bin/agent-entrypoint
+USER node
+WORKDIR /home/node
+ENTRYPOINT ["/usr/local/bin/agent-entrypoint"]
 
 # Keep the stripped runtime as the final/default Dockerfile target so existing
 # `docker build .` callers and release tags retain their current behavior.

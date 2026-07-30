@@ -23,6 +23,26 @@ The bootstrap script should eventually replace manual `.env` editing for normal
 users. It is responsible for generating stable secrets and, optionally, an owner
 keypair.
 
+The default stack serves one browser workspace at the deployment root and keeps
+the repository browser at `/repos`. It does not provision or switch between
+multiple communities.
+
+## Hosted AI agent
+
+The optional `agents` profile runs the existing Buzz ACP harness and Codex
+adapter on the server. Generate a separate Nostr keypair for it, fill
+`VARVIK_AGENT_PRIVATE_KEY`, `VARVIK_AGENT_PUBKEY`, and `OPENAI_API_KEY`, then:
+
+```bash
+./run.sh start-agents
+```
+
+The container registers the agent as a relay member and publishes its agent
+profile. An owner/admin then opens a channel in the browser and adds the hosted
+agent to that channel. Mentioning `@VarVik AI` sends work to the server runtime.
+The browser itself never receives the OpenAI key and never runs shell or file
+tools.
+
 ## Production notes
 
 - Requires Docker Compose v2.24.4 or newer; the TLS override uses Compose's

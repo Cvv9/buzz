@@ -258,6 +258,16 @@ impl RespondToArg {
 
 #[derive(Subcommand)]
 pub enum AgentsCmd {
+    /// Publish this identity's relay-discoverable agent profile
+    #[command(name = "publish-profile")]
+    PublishProfile {
+        /// Human-readable name shown in Buzz clients
+        #[arg(long)]
+        display_name: String,
+        /// Short description of the hosted agent
+        #[arg(long)]
+        about: Option<String>,
+    },
     /// Open a prefilled create-agent form in the owner's Buzz Desktop
     DraftCreate {
         /// Current channel UUID; the new agent is added here after save

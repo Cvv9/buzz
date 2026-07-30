@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { ReposPage } from "@/features/repos/ui/ReposPage";
+import { WorkspacePage } from "@/features/workspace/ui/WorkspacePage";
 
 export const Route = createFileRoute("/")({
-  component: ReposPage,
+  component: WorkspacePage,
 });

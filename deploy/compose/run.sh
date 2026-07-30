@@ -55,6 +55,14 @@ case "${1:-help}" in
     require_env
     compose up -d --wait
     ;;
+  start-agents)
+    require_env
+    if grep -Eq '^(VARVIK_AGENT_PRIVATE_KEY|VARVIK_AGENT_PUBKEY|OPENAI_API_KEY)=$' .env; then
+      echo "Set VARVIK_AGENT_PRIVATE_KEY, VARVIK_AGENT_PUBKEY, and OPENAI_API_KEY in .env first." >&2
+      exit 1
+    fi
+    compose --profile agents up -d --wait
+    ;;
   stop|down)
     compose down
     ;;
@@ -101,6 +109,7 @@ Usage: ./run.sh <command>
 
 Commands:
   start         Start Buzz with docker compose up -d --wait
+  start-agents  Start Buzz plus the hosted Codex agent
   stop          Stop containers without deleting volumes
   restart       Recreate the relay after env/image changes
   pull          Pull configured images

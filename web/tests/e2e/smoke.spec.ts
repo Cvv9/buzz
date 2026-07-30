@@ -1,15 +1,16 @@
 import { createHash } from "node:crypto";
 import { expect, test } from "@playwright/test";
 
-test("home page loads with Buzz branding", async ({ page }) => {
+test("home page loads the VarVik browser workspace", async ({ page }) => {
   await page.goto("/");
+  await expect(page.getByText("VarVik Studios").first()).toBeVisible();
   await expect(
-    page.getByRole("main").getByRole("img", { name: "Buzz" }),
+    page.getByRole("heading", { name: "Create your identity" }),
   ).toBeVisible();
 });
 
-test("home page shows repositories section", async ({ page }) => {
-  await page.goto("/");
+test("repository browser remains available at its own route", async ({ page }) => {
+  await page.goto("/repos");
   await expect(page.getByText("Repositories")).toBeVisible();
 });
 

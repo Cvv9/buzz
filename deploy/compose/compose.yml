@@ -20,6 +20,8 @@ services:
       BUZZ_GIT_REPO_PATH: /data/git
       BUZZ_AUTO_MIGRATE: ${BUZZ_AUTO_MIGRATE:-false}
       BUZZ_GIT_CONFORMANCE_PROBE: ${BUZZ_GIT_CONFORMANCE_PROBE:-true}
+      BUZZ_SERVE_WEB_WORKSPACE: ${BUZZ_SERVE_WEB_WORKSPACE:-true}
+      BUZZ_SERVE_GIT_WEB_GUI: ${BUZZ_SERVE_GIT_WEB_GUI:-true}
     ports:
       - "${BUZZ_HTTP_PORT:-3000}:3000"
     volumes:
@@ -44,6 +46,34 @@ services:
       timeout: 3s
       retries: 12
       start_period: 30s
+    restart: unless-stopped
+    networks:
+      - buzz-net
+
+  agent:
+    profiles: ["agents"]
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: agent-runtime
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-buzz}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-buzz}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379
+      BUZZ_RELAY_URL: ws://relay:3000
+      BUZZ_PRIVATE_KEY: ${VARVIK_AGENT_PRIVATE_KEY:-}
+      VARVIK_AGENT_PUBKEY: ${VARVIK_AGENT_PUBKEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      BUZZ_ACP_AGENT_COMMAND: codex-acp
+      BUZZ_ACP_AGENT_ARGS: ""
+      BUZZ_ACP_DISPLAY_NAME: ${VARVIK_AGENT_NAME:-VarVik AI}
+      BUZZ_ACP_RESPOND_TO: anyone
+      BUZZ_ACP_SUBSCRIBE: mentions
+      BUZZ_ACP_LAZY_POOL: "true"
+    depends_on:
+      relay:
+        condition: service_healthy
     restart: unless-stopped
     networks:
       - buzz-net

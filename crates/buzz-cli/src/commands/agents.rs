@@ -4,13 +4,40 @@ use nostr::PublicKey;
 use serde_json::json;
 
 use crate::agent_management::{build_create, build_update, CreateAgentDraft, UpdateAgentDraft};
-use crate::client::BuzzClient;
+use crate::client::{normalize_write_response, BuzzClient};
 use crate::error::CliError;
 use crate::validate::{read_or_stdin, validate_hex64};
 use crate::{AgentsCmd, RespondToArg};
 
 pub async fn dispatch(command: AgentsCmd, client: &BuzzClient) -> Result<(), CliError> {
     match command {
+        AgentsCmd::PublishProfile {
+            display_name,
+            about,
+        } => {
+            let display_name = display_name.trim();
+            if display_name.is_empty() {
+                return Err(CliError::Usage(
+                    "--display-name must not be empty".to_string(),
+                ));
+            }
+            let content = serde_json::json!({
+                "name": display_name,
+                "display_name": display_name,
+                "about": about,
+                "agent_type": "agent",
+                "status": "online",
+            })
+            .to_string();
+            let builder = nostr::EventBuilder::new(
+                nostr::Kind::Custom(buzz_core::kind::KIND_AGENT_PROFILE as u16),
+                content,
+            );
+            let event = client.sign_event(builder)?;
+            let response = client.submit_event(event).await?;
+            println!("{}", normalize_write_response(&response));
+            Ok(())
+        }
         AgentsCmd::DraftCreate {
             channel,
             display_name,
