@@ -276,7 +276,8 @@ test-unit:
     #!/usr/bin/env bash
     if command -v cargo-nextest &>/dev/null; then
         # Run every root-workspace crate/target. Infrastructure-backed cases
-        # remain explicitly ignored and are exercised by dedicated jobs.
+        # remain explicitly ignored and are exercised by dedicated jobs. This
+        # includes the conformance and push-gateway unit suites added upstream.
         cargo nextest run --workspace
     else
         ./scripts/run-tests.sh unit
@@ -606,6 +607,11 @@ mobile-check:
 # Run mobile tests
 mobile-test:
     unset GIT_DIR GIT_WORK_TREE; cd {{mobile_dir}} && flutter test
+
+# Regenerate the emoji dataset asset from desktop's emoji-mart install.
+# Output is committed — rerun after bumping @emoji-mart/data.
+mobile-emoji-data:
+    node {{mobile_dir}}/scripts/generate-emoji-data.mjs
 
 # Compile an unsigned Android debug APK (worktree-aware debug identity)
 mobile-build-android:
