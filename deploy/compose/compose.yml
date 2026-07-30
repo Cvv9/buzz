@@ -75,6 +75,8 @@ services:
     depends_on:
       relay:
         condition: service_healthy
+    volumes:
+      - buzz-agent-codex-data:/home/node/.codex
     restart: unless-stopped
     networks:
       - buzz-net
@@ -153,6 +155,9 @@ services:
       - buzz-net
 
 volumes:
+  buzz-agent-codex-data:
+    labels:
+      com.buzz.volume: agent-codex
   buzz-postgres-data:
     labels:
       com.buzz.volume: postgres

@@ -4,7 +4,7 @@ set -eu
 : "${VARVIK_AGENT_PUBKEY:?set VARVIK_AGENT_PUBKEY}"
 : "${BUZZ_ACP_DISPLAY_NAME:=VarVik AI}"
 
-if [ -f /run/secrets/varvik-codex-auth.json ]; then
+if [ -f /run/secrets/varvik-codex-auth.json ] && [ ! -s "${HOME}/.codex/auth.json" ]; then
   mkdir -p "${HOME}/.codex"
   install -m 600 /run/secrets/varvik-codex-auth.json "${HOME}/.codex/auth.json"
 fi

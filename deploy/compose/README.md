@@ -45,10 +45,12 @@ To reuse an existing ChatGPT/Codex login instead, set
 ./run.sh start-agents-chatgpt
 ```
 
-That file is mounted read-only at container startup and copied with mode `0600`
-into the unprivileged agent user's home. Use this only on a server you control:
-the hosted agent necessarily receives the credential needed to call Codex.
-The credential is never served to browser clients.
+That file is mounted read-only and seeds `buzz-agent-codex-data` with mode
+`0600` on first startup. The dedicated volume preserves token refreshes across
+container upgrades. To deliberately replace the login, remove that volume and
+start the agent again. Use this only on a server you control: the hosted agent
+necessarily receives the credential needed to call Codex. The credential is
+never served to browser clients.
 
 The container registers the agent as a relay member and publishes its agent
 profile. An owner/admin then opens a channel in the browser and adds the hosted

@@ -49,6 +49,7 @@ Back up these before upgrades and on a regular schedule:
 - MinIO/S3 bucket contents for media and git objects
 - buzz-git-data volume (BUZZ_GIT_REPO_PATH=/data/git)
 - Caddy data/config volumes if using compose.caddy.yml
+- buzz-agent-codex-data if using ChatGPT subscription authentication
 
 Keep Postgres + object/git state snapshots from the same maintenance window.
 MSG
