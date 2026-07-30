@@ -813,11 +813,17 @@ mod import_avatar_tests {
         .unwrap()
         .unwrap();
 
-        let event =
-            crate::events::build_profile(Some("Imported agent"), None, Some(&avatar), None, None)
-                .unwrap()
-                .sign_with_keys(&nostr::Keys::generate())
-                .unwrap();
+        let event = crate::events::build_profile_with_existing(
+            &serde_json::Map::new(),
+            Some("Imported agent"),
+            None,
+            Some(&avatar),
+            None,
+            None,
+        )
+        .unwrap()
+        .sign_with_keys(&nostr::Keys::generate())
+        .unwrap();
         assert!(event.content.len() < 64 * 1024);
         assert!(!event.content.contains("data:image/"));
         assert!(event
