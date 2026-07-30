@@ -36,7 +36,7 @@ MSG
 }
 
 env_has_value() {
-  grep -Eq "^${1}=.+" .env
+  [ -n "$(printenv "${1}" 2>/dev/null || true)" ] || grep -Eq "^${1}=.+" .env
 }
 
 backup_hint() {
