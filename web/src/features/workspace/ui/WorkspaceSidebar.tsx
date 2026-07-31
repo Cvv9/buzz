@@ -1,5 +1,6 @@
 import {
   Bot,
+  BookOpen,
   ChevronRight,
   Hash,
   Lock,
@@ -120,6 +121,7 @@ export function WorkspaceSidebar({
   onSelectChannel,
   onCreateChannel,
   onOpenSettings,
+  onOpenGuide,
   onAddAgent,
 }: {
   identity: BrowserIdentity;
@@ -131,6 +133,7 @@ export function WorkspaceSidebar({
   onSelectChannel: (channelId: string) => void;
   onCreateChannel: () => void;
   onOpenSettings: () => void;
+  onOpenGuide: () => void;
   onAddAgent: (agent: WorkspaceProfile) => void;
 }) {
   const streams = channels.filter((channel) => channel.type !== "dm");
@@ -320,6 +323,21 @@ export function WorkspaceSidebar({
         </nav>
 
         <footer className="border-t border-black/8 p-3 dark:border-white/8">
+          <button
+            className="mb-1 flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left text-sm text-black/60 hover:bg-black/5 dark:text-white/55 dark:hover:bg-white/5"
+            type="button"
+            onClick={onOpenGuide}
+          >
+            <div className="flex size-8 items-center justify-center rounded-lg bg-[#d7d72e]/20 text-[#7d7e00]">
+              <BookOpen className="size-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="font-medium">Buzz Guide</p>
+              <p className="text-xs text-black/40 dark:text-white/35">
+                Agents, briefs, and safety rules
+              </p>
+            </div>
+          </button>
           <button
             className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left hover:bg-black/5 dark:hover:bg-white/5"
             type="button"

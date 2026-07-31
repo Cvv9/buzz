@@ -26,6 +26,7 @@ import { Input } from "@/shared/ui/input";
 import { IdentityGate } from "./IdentityGate";
 import { EmptyMembership } from "./EmptyMembership";
 import { ProfileAvatar, WorkspaceSidebar } from "./WorkspaceSidebar";
+import { WorkspaceGuide } from "./WorkspaceGuide";
 import { WorkspaceSettings } from "./WorkspaceSettings";
 import {
   KIND_DELETION,
@@ -334,6 +335,7 @@ export function WorkspacePage() {
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
   const [threadRootId, setThreadRootId] = React.useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const [guideOpen, setGuideOpen] = React.useState(false);
   const [createChannelOpen, setCreateChannelOpen] = React.useState(false);
   const [channelName, setChannelName] = React.useState("");
   const [channelAbout, setChannelAbout] = React.useState("");
@@ -609,6 +611,7 @@ export function WorkspacePage() {
         onCreateChannel={() => setCreateChannelOpen(true)}
         onAddAgent={(agent) => addAgentMutation.mutate(agent)}
         onOpenSettings={() => setSettingsOpen(true)}
+        onOpenGuide={() => setGuideOpen(true)}
         onSelectChannel={(channelId) => {
           setActiveChannelId(channelId);
           setThreadRootId(null);
@@ -905,6 +908,13 @@ export function WorkspacePage() {
               queryClient.clear();
             });
           }}
+        />
+      ) : null}
+
+      {guideOpen ? (
+        <WorkspaceGuide
+          agents={agentsQuery.data ?? []}
+          onClose={() => setGuideOpen(false)}
         />
       ) : null}
     </div>
