@@ -62,10 +62,6 @@ case "${1:-help}" in
     ;;
   start-agents)
     require_env
-    if ! env_has_value VARVIK_AGENT_PRIVATE_KEY || ! env_has_value VARVIK_AGENT_PUBKEY; then
-      echo "Set VARVIK_AGENT_PRIVATE_KEY and VARVIK_AGENT_PUBKEY in .env first." >&2
-      exit 1
-    fi
     if ! env_has_value CODEX_API_KEY && ! env_has_value OPENAI_API_KEY; then
       echo "Set CODEX_API_KEY or OPENAI_API_KEY in .env, or use start-agents-chatgpt." >&2
       exit 1
@@ -74,10 +70,8 @@ case "${1:-help}" in
     ;;
   start-agents-chatgpt)
     require_env
-    if ! env_has_value VARVIK_AGENT_PRIVATE_KEY \
-      || ! env_has_value VARVIK_AGENT_PUBKEY \
-      || ! env_has_value VARVIK_CODEX_AUTH_FILE; then
-      echo "Set the agent keypair and VARVIK_CODEX_AUTH_FILE in .env first." >&2
+    if ! env_has_value VARVIK_CODEX_AUTH_FILE; then
+      echo "Set VARVIK_CODEX_AUTH_FILE in .env first." >&2
       exit 1
     fi
     compose -f compose.agent-chatgpt.yml --profile agents up -d --wait

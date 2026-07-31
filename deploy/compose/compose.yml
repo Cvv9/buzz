@@ -1,5 +1,32 @@
 name: buzz-prod
 
+x-varvik-agent-environment: &varvik-agent-environment
+  DATABASE_URL: postgres://${POSTGRES_USER:-buzz}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-buzz}
+  REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379
+  # Host-derived community routing requires the canonical public relay host.
+  BUZZ_RELAY_URL: ${BUZZ_AGENT_RELAY_URL:-${RELAY_URL:-ws://relay:3000}}
+  CODEX_API_KEY: ${CODEX_API_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  BUZZ_ACP_AGENT_COMMAND: codex-acp
+  BUZZ_ACP_AGENT_ARGS: ""
+  BUZZ_ACP_RESPOND_TO: anyone
+  BUZZ_ACP_SUBSCRIBE: mentions
+  BUZZ_ACP_LAZY_POOL: "true"
+
+x-varvik-agent-service: &varvik-agent-service
+  profiles: ["agents"]
+  image: ${BUZZ_AGENT_IMAGE:-buzz-varvik-agent:local}
+  # Share the relay namespace so the canonical localhost URL used by the
+  # default single-host deployment reaches the relay without changing Host.
+  network_mode: service:relay
+  env_file:
+    - .env
+  environment: *varvik-agent-environment
+  depends_on:
+    relay:
+      condition: service_healthy
+  restart: unless-stopped
+
 services:
   relay:
     image: ${BUZZ_IMAGE:-ghcr.io/block/buzz:main}
@@ -51,37 +78,62 @@ services:
       - buzz-net
 
   agent:
-    profiles: ["agents"]
-    # Share the relay namespace so the canonical localhost URL used by the
-    # default single-host deployment reaches the relay without changing Host.
-    network_mode: service:relay
+    <<: *varvik-agent-service
     build:
       context: ../..
       dockerfile: Dockerfile
       target: agent-runtime
-    env_file:
-      - .env
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-buzz}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-buzz}
-      REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379
-      # Host-derived community routing requires the canonical public relay host.
-      BUZZ_RELAY_URL: ${BUZZ_AGENT_RELAY_URL:-${RELAY_URL:-ws://relay:3000}}
+      <<: *varvik-agent-environment
       BUZZ_PRIVATE_KEY: ${VARVIK_AGENT_PRIVATE_KEY:-}
       VARVIK_AGENT_PUBKEY: ${VARVIK_AGENT_PUBKEY:-}
-      CODEX_API_KEY: ${CODEX_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      BUZZ_ACP_AGENT_COMMAND: codex-acp
-      BUZZ_ACP_AGENT_ARGS: ""
       BUZZ_ACP_DISPLAY_NAME: ${VARVIK_AGENT_NAME:-VarVik AI}
-      BUZZ_ACP_RESPOND_TO: anyone
-      BUZZ_ACP_SUBSCRIBE: mentions
-      BUZZ_ACP_LAZY_POOL: "true"
-    depends_on:
-      relay:
-        condition: service_healthy
+      BUZZ_ACP_PROFILE_ABOUT: General-purpose collaborator for the VarVik Studios community
+      BUZZ_ACP_SYSTEM_PROMPT: >-
+        You are VarVik AI, the general-purpose community coordinator for VarVik
+        Studios. Help members plan work, synthesize discussions, route requests
+        to the right specialist, and produce concise, actionable responses.
     volumes:
       - buzz-agent-codex-data:/home/node/.codex
-    restart: unless-stopped
+
+  agent-engineering:
+    <<: *varvik-agent-service
+    environment:
+      <<: *varvik-agent-environment
+      BUZZ_ACP_DISPLAY_NAME: VarVik Engineer
+      BUZZ_ACP_PROFILE_ABOUT: Engineering, architecture, code review, and release specialist
+      BUZZ_ACP_SYSTEM_PROMPT: >-
+        You are VarVik Engineer. Focus on software architecture, implementation,
+        debugging, code review, testing, security, and release readiness. Be
+        precise, explain tradeoffs, and end with concrete next actions.
+    volumes:
+      - buzz-agent-engineering-codex-data:/home/node/.codex
+
+  agent-creative:
+    <<: *varvik-agent-service
+    environment:
+      <<: *varvik-agent-environment
+      BUZZ_ACP_DISPLAY_NAME: VarVik Creative
+      BUZZ_ACP_PROFILE_ABOUT: Brand, product design, writing, and creative direction specialist
+      BUZZ_ACP_SYSTEM_PROMPT: >-
+        You are VarVik Creative. Help with product design, brand systems, UX,
+        creative direction, copywriting, storytelling, and constructive critique.
+        Keep recommendations distinctive, practical, and aligned with VarVik Studios.
+    volumes:
+      - buzz-agent-creative-codex-data:/home/node/.codex
+
+  agent-research:
+    <<: *varvik-agent-service
+    environment:
+      <<: *varvik-agent-environment
+      BUZZ_ACP_DISPLAY_NAME: VarVik Research
+      BUZZ_ACP_PROFILE_ABOUT: Research, synthesis, market intelligence, and strategy specialist
+      BUZZ_ACP_SYSTEM_PROMPT: >-
+        You are VarVik Research. Investigate questions, compare evidence,
+        summarize sources, identify uncertainty, and turn findings into strategic
+        recommendations. Separate verified facts from inference.
+    volumes:
+      - buzz-agent-research-codex-data:/home/node/.codex
 
   postgres:
     image: postgres:17-alpine
@@ -160,6 +212,15 @@ volumes:
   buzz-agent-codex-data:
     labels:
       com.buzz.volume: agent-codex
+  buzz-agent-engineering-codex-data:
+    labels:
+      com.buzz.volume: agent-engineering-codex
+  buzz-agent-creative-codex-data:
+    labels:
+      com.buzz.volume: agent-creative-codex
+  buzz-agent-research-codex-data:
+    labels:
+      com.buzz.volume: agent-research-codex
   buzz-postgres-data:
     labels:
       com.buzz.volume: postgres

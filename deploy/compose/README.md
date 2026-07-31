@@ -27,12 +27,19 @@ The default stack serves one browser workspace at the deployment root and keeps
 the repository browser at `/repos`. It does not provision or switch between
 multiple communities.
 
-## Hosted AI agent
+## Hosted AI agents
 
-The optional `agents` profile runs the existing Buzz ACP harness and Codex
-adapter on the server. Generate a separate Nostr keypair for it, fill
-`VARVIK_AGENT_PRIVATE_KEY`, `VARVIK_AGENT_PUBKEY`, and either `CODEX_API_KEY`
-or `OPENAI_API_KEY`, then:
+The optional `agents` profile runs four role-based collaborators through the
+existing Buzz ACP harness and Codex adapter:
+
+- `VarVik AI` — general coordination and synthesis
+- `VarVik Engineer` — architecture, implementation, testing, and releases
+- `VarVik Creative` — product design, brand, UX, writing, and critique
+- `VarVik Research` — research, evidence synthesis, and strategy
+
+Each agent generates a stable Nostr identity in its own private named volume on
+first startup. To use API billing, set either `CODEX_API_KEY` or
+`OPENAI_API_KEY`, then:
 
 ```bash
 ./run.sh start-agents
@@ -49,18 +56,17 @@ To reuse an existing ChatGPT/Codex login instead, set
 ./run.sh start-agents-chatgpt
 ```
 
-That file is mounted read-only and seeds `buzz-agent-codex-data` with mode
-`0600` on first startup. The dedicated volume preserves token refreshes across
-container upgrades. To deliberately replace the login, remove that volume and
-start the agent again. Use this only on a server you control: the hosted agent
-necessarily receives the credential needed to call Codex. The credential is
-never served to browser clients.
+That file is mounted read-only and seeds each agent's dedicated state volume
+with mode `0600` on first startup. Those volumes preserve agent identities and
+token refreshes across container upgrades. To deliberately replace the login,
+remove the four `agent-*-codex` volumes and start the fleet again. Use this only
+on a server you control: each hosted agent necessarily receives the credential
+needed to call Codex. The credential is never served to browser clients.
 
-The container registers the agent as a relay member and publishes its agent
-profile. An owner/admin then opens a channel in the browser and adds the hosted
-agent to that channel. Mentioning `@VarVik AI` sends work to the server runtime.
-The browser itself never receives the OpenAI key and never runs shell or file
-tools.
+Each container registers itself as a relay member and publishes its agent
+profile. An owner/admin then opens a channel in the browser and adds the relevant
+agents. Mentioning an agent sends work to its server runtime. The browser itself
+never receives the OpenAI credential and never runs shell or file tools.
 
 ## Production notes
 
