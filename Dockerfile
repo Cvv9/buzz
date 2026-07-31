@@ -67,6 +67,10 @@ COPY --from=planner /build/recipe.json recipe.json
 # scoping to -p buzz-relay misses transitive deps and re-builds them later.
 RUN cargo chef cook --release --recipe-path recipe.json
 COPY . .
+# Windows checkouts may send CRLF migration files into the Docker context.
+# SQLx hashes the embedded bytes, so normalize them before compilation to keep
+# checksums identical to release images built from Linux checkouts.
+RUN find migrations -type f -name '*.sql' -exec sed -i 's/\r$//' {} +
 RUN cargo build --release --locked -p buzz-relay --bin buzz-relay \
                                    -p buzz-admin --bin buzz-admin \
                                    -p buzz-pair-relay --bin buzz-pair-relay \
