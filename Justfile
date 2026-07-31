@@ -276,7 +276,8 @@ test-unit:
     #!/usr/bin/env bash
     if command -v cargo-nextest &>/dev/null; then
         # Run every root-workspace crate/target. Infrastructure-backed cases
-        # remain explicitly ignored and are exercised by dedicated jobs.
+        # remain explicitly ignored and are exercised by dedicated jobs. This
+        # includes the voice, conformance, and push-gateway suites.
         cargo nextest run --workspace
     else
         ./scripts/run-tests.sh unit
@@ -607,6 +608,11 @@ mobile-check:
 mobile-test:
     unset GIT_DIR GIT_WORK_TREE; cd {{mobile_dir}} && flutter test
 
+# Regenerate the emoji dataset asset from desktop's emoji-mart install.
+# Output is committed — rerun after bumping @emoji-mart/data.
+mobile-emoji-data:
+    node {{mobile_dir}}/scripts/generate-emoji-data.mjs
+
 # Compile an unsigned Android debug APK (worktree-aware debug identity)
 mobile-build-android:
     ./scripts/mobile-worktree-overrides.sh
@@ -706,7 +712,7 @@ bump-relay-version version:
     cargo update -p buzz-relay
     echo "Bumped buzz-relay to {{ version }} and regenerated Cargo.lock"
 
-# Open or update the desktop release PR (signed desktop app)
+# Open or update the desktop release PR from an immutable origin/main snapshot
 release-desktop *ARGS:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -716,7 +722,7 @@ release-desktop *ARGS:
     else
         VERSION="$ARG"
     fi
-    just _release-pr desktop "$VERSION"
+    scripts/prepare-desktop-release.sh "$VERSION"
 
 # Open or update the relay release PR (ghcr.io/block/buzz image)
 release-relay *ARGS:
