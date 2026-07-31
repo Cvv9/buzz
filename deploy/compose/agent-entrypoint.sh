@@ -4,6 +4,16 @@ set -eu
 : "${VARVIK_AGENT_PUBKEY:?set VARVIK_AGENT_PUBKEY}"
 : "${BUZZ_ACP_DISPLAY_NAME:=VarVik AI}"
 
+if [ "$(id -u)" -eq 0 ]; then
+  mkdir -p /home/node/.codex
+  chown node:node /home/node/.codex
+  if [ -f /run/secrets/varvik-codex-auth.json ] && [ ! -s /home/node/.codex/auth.json ]; then
+    install -o node -g node -m 600 /run/secrets/varvik-codex-auth.json /home/node/.codex/auth.json
+  fi
+  export HOME=/home/node
+  exec setpriv --reuid=node --regid=node --init-groups "$0" "$@"
+fi
+
 if [ -f /run/secrets/varvik-codex-auth.json ] && [ ! -s "${HOME}/.codex/auth.json" ]; then
   mkdir -p "${HOME}/.codex"
   install -m 600 /run/secrets/varvik-codex-auth.json "${HOME}/.codex/auth.json"

@@ -38,6 +38,10 @@ or `OPENAI_API_KEY`, then:
 ./run.sh start-agents
 ```
 
+`BUZZ_AGENT_RELAY_URL` must use the community's canonical public hostname so
+host-derived routing selects the same community as browser clients. It defaults
+to `RELAY_URL`; override it only when the agent needs a different reachable URL.
+
 To reuse an existing ChatGPT/Codex login instead, set
 `VARVIK_CODEX_AUTH_FILE` to the absolute path of its `auth.json` and run:
 
