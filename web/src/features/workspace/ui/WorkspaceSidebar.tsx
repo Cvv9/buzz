@@ -1,5 +1,6 @@
 import {
   Bot,
+  ChevronRight,
   Hash,
   Lock,
   MessageCircle,
@@ -8,6 +9,7 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { cn } from "@/shared/lib/cn";
 import { truncatePubkey } from "@/shared/lib/pubkey";
 import type {
@@ -15,6 +17,56 @@ import type {
   WorkspaceProfile,
 } from "@/features/workspace/workspace-api";
 import type { BrowserIdentity } from "@/shared/lib/browser-identity";
+
+const PROJECT_CHANNEL_NAMES = new Set([
+  "aaral-pms",
+  "ashrayu-media",
+  "atelier-crm",
+  "bidwave",
+  "factoryos",
+  "fzine",
+  "hrr-capital",
+  "nuve",
+  "project-dukaan",
+  "renderboard",
+  "sylars-control",
+  "ummidvar",
+  "vakeelos",
+  "varvik-suite",
+  "varvik-website",
+  "zup-coffee",
+]);
+
+const SECTION_STORAGE_PREFIX = "buzz-web:channel-sections:v1";
+
+type ChannelSectionId = "workspace" | "projects";
+type CollapsedSections = Record<ChannelSectionId, boolean>;
+
+function sectionStorageKey(pubkey: string): string {
+  return `${SECTION_STORAGE_PREFIX}:${pubkey}`;
+}
+
+function readCollapsedSections(pubkey: string): CollapsedSections {
+  const fallback = { workspace: false, projects: false };
+  try {
+    const stored = window.localStorage.getItem(sectionStorageKey(pubkey));
+    if (!stored) return fallback;
+    const parsed = JSON.parse(stored) as Partial<CollapsedSections>;
+    return {
+      workspace: parsed.workspace === true,
+      projects: parsed.projects === true,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+export function isProjectChannel(channel: WorkspaceChannel): boolean {
+  return (
+    PROJECT_CHANNEL_NAMES.has(channel.name.toLowerCase()) ||
+    channel.name.toLowerCase().startsWith("project-")
+  );
+}
 
 export function profileInitials(name: string): string {
   return name
@@ -83,6 +135,50 @@ export function WorkspaceSidebar({
 }) {
   const streams = channels.filter((channel) => channel.type !== "dm");
   const directMessages = channels.filter((channel) => channel.type === "dm");
+  const workspaceChannels = streams.filter(
+    (channel) => !isProjectChannel(channel),
+  );
+  const projectChannels = streams.filter(isProjectChannel);
+  const [collapsedSections, setCollapsedSections] = useState<CollapsedSections>(
+    () => readCollapsedSections(identity.pubkey),
+  );
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        sectionStorageKey(identity.pubkey),
+        JSON.stringify(collapsedSections),
+      );
+    } catch {
+      // The sidebar remains functional when browser storage is unavailable.
+    }
+  }, [collapsedSections, identity.pubkey]);
+
+  useEffect(() => {
+    const activeChannel = channels.find(
+      (channel) => channel.id === activeChannelId,
+    );
+    if (!activeChannel) return;
+    const section: ChannelSectionId = isProjectChannel(activeChannel)
+      ? "projects"
+      : "workspace";
+    setCollapsedSections((current) =>
+      current[section] ? { ...current, [section]: false } : current,
+    );
+  }, [activeChannelId, channels]);
+
+  const toggleSection = (section: ChannelSectionId) => {
+    setCollapsedSections((current) => ({
+      ...current,
+      [section]: !current[section],
+    }));
+  };
+
+  const selectChannel = (channelId: string) => {
+    onSelectChannel(channelId);
+    onClose();
+  };
+
   return (
     <>
       {open ? (
@@ -136,18 +232,27 @@ export function WorkspaceSidebar({
                 <Plus className="size-3.5" />
               </button>
             </div>
-            <div className="space-y-0.5">
-              {streams.map((channel) => (
-                <ChannelButton
-                  active={activeChannelId === channel.id}
-                  channel={channel}
-                  key={channel.id}
-                  onSelect={() => {
-                    onSelectChannel(channel.id);
-                    onClose();
-                  }}
+            <div className="space-y-2">
+              <ChannelSection
+                activeChannelId={activeChannelId}
+                channels={workspaceChannels}
+                collapsed={collapsedSections.workspace}
+                id="workspace"
+                label="Workspace"
+                onSelectChannel={selectChannel}
+                onToggle={() => toggleSection("workspace")}
+              />
+              {projectChannels.length ? (
+                <ChannelSection
+                  activeChannelId={activeChannelId}
+                  channels={projectChannels}
+                  collapsed={collapsedSections.projects}
+                  id="projects"
+                  label="Projects"
+                  onSelectChannel={selectChannel}
+                  onToggle={() => toggleSection("projects")}
                 />
-              ))}
+              ) : null}
             </div>
           </div>
 
@@ -239,6 +344,58 @@ export function WorkspaceSidebar({
         </footer>
       </aside>
     </>
+  );
+}
+
+function ChannelSection({
+  id,
+  label,
+  channels,
+  collapsed,
+  activeChannelId,
+  onToggle,
+  onSelectChannel,
+}: {
+  id: ChannelSectionId;
+  label: string;
+  channels: WorkspaceChannel[];
+  collapsed: boolean;
+  activeChannelId: string | null;
+  onToggle: () => void;
+  onSelectChannel: (channelId: string) => void;
+}) {
+  const contentId = `channel-section-${id}`;
+  return (
+    <section>
+      <button
+        aria-controls={contentId}
+        aria-expanded={!collapsed}
+        className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-[0.6875rem] font-semibold uppercase tracking-[0.08em] text-black/40 hover:bg-black/4 hover:text-black/60 dark:text-white/35 dark:hover:bg-white/5 dark:hover:text-white/55"
+        type="button"
+        onClick={onToggle}
+      >
+        <ChevronRight
+          className={cn(
+            "size-3 shrink-0 transition-transform",
+            collapsed ? "" : "rotate-90",
+          )}
+        />
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+        <span className="font-normal tabular-nums">{channels.length}</span>
+      </button>
+      {!collapsed ? (
+        <div className="mt-0.5 space-y-0.5" id={contentId}>
+          {channels.map((channel) => (
+            <ChannelButton
+              active={activeChannelId === channel.id}
+              channel={channel}
+              key={channel.id}
+              onSelect={() => onSelectChannel(channel.id)}
+            />
+          ))}
+        </div>
+      ) : null}
+    </section>
   );
 }
 
