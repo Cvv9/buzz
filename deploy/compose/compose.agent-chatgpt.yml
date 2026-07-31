@@ -23,3 +23,57 @@ services:
         source: ${VARVIK_CODEX_AUTH_FILE:?set VARVIK_CODEX_AUTH_FILE}
         target: /run/secrets/varvik-codex-auth.json
         read_only: true
+  agent-command:
+    volumes:
+      - type: bind
+        source: ${VARVIK_CODEX_AUTH_FILE:?set VARVIK_CODEX_AUTH_FILE}
+        target: /run/secrets/varvik-codex-auth.json
+        read_only: true
+  agent-watchdog:
+    volumes:
+      - type: bind
+        source: ${VARVIK_CODEX_AUTH_FILE:?set VARVIK_CODEX_AUTH_FILE}
+        target: /run/secrets/varvik-codex-auth.json
+        read_only: true
+  agent-sylars:
+    volumes:
+      - type: bind
+        source: ${VARVIK_CODEX_AUTH_FILE:?set VARVIK_CODEX_AUTH_FILE}
+        target: /run/secrets/varvik-codex-auth.json
+        read_only: true
+  agent-forge:
+    volumes:
+      - type: bind
+        source: ${VARVIK_CODEX_AUTH_FILE:?set VARVIK_CODEX_AUTH_FILE}
+        target: /run/secrets/varvik-codex-auth.json
+        read_only: true
+  agent-personal-varun:
+    volumes:
+      - type: bind
+        source: ${VARVIK_CODEX_AUTH_FILE:?set VARVIK_CODEX_AUTH_FILE}
+        target: /run/secrets/varvik-codex-auth.json
+        read_only: true
+  agent-personal-vikram:
+    volumes:
+      - type: bind
+        source: ${VARVIK_CODEX_AUTH_FILE:?set VARVIK_CODEX_AUTH_FILE}
+        target: /run/secrets/varvik-codex-auth.json
+        read_only: true
+  agent-personal-adhika:
+    volumes:
+      - type: bind
+        source: ${VARVIK_CODEX_AUTH_FILE:?set VARVIK_CODEX_AUTH_FILE}
+        target: /run/secrets/varvik-codex-auth.json
+        read_only: true
+  agent-personal-swathi:
+    volumes:
+      - type: bind
+        source: ${VARVIK_CODEX_AUTH_FILE:?set VARVIK_CODEX_AUTH_FILE}
+        target: /run/secrets/varvik-codex-auth.json
+        read_only: true
+  agent-personal-raja:
+    volumes:
+      - type: bind
+        source: ${VARVIK_CODEX_AUTH_FILE:?set VARVIK_CODEX_AUTH_FILE}
+        target: /run/secrets/varvik-codex-auth.json
+        read_only: true

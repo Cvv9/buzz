@@ -139,6 +139,12 @@ export function WorkspaceSidebar({
     (channel) => !isProjectChannel(channel),
   );
   const projectChannels = streams.filter(isProjectChannel);
+  const privateAgents = agents.filter(
+    (agent) => agent.accessTier === "personal" || agent.accessTier === "admin",
+  );
+  const sharedAgents = agents.filter(
+    (agent) => agent.accessTier !== "personal" && agent.accessTier !== "admin",
+  );
   const [collapsedSections, setCollapsedSections] = useState<CollapsedSections>(
     () => readCollapsedSections(identity.pubkey),
   );
@@ -287,32 +293,23 @@ export function WorkspaceSidebar({
               </span>
             </div>
             {agents.length ? (
-              <div className="space-y-1">
-                {agents.map((agent) => (
-                  <div
-                    className="flex items-center gap-2 rounded-lg px-2 py-1.5"
-                    key={agent.pubkey}
-                  >
-                    <ProfileAvatar profile={agent} size="sm" />
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm">{agent.name}</p>
-                      <p className="text-[0.6875rem] text-emerald-700 dark:text-emerald-400">
-                        Available
-                      </p>
-                    </div>
-                    {activeChannelId ? (
-                      <button
-                        aria-label={`Add ${agent.name} to the current channel`}
-                        className="rounded-md p-1.5 text-black/35 hover:bg-black/6 hover:text-black/70 dark:text-white/30 dark:hover:bg-white/7 dark:hover:text-white/70"
-                        title="Add to current channel"
-                        type="button"
-                        onClick={() => onAddAgent(agent)}
-                      >
-                        <Plus className="size-3.5" />
-                      </button>
-                    ) : null}
-                  </div>
-                ))}
+              <div className="space-y-3">
+                {privateAgents.length ? (
+                  <AgentGroup
+                    activeChannelId={activeChannelId}
+                    agents={privateAgents}
+                    label="Private to you"
+                    onAddAgent={onAddAgent}
+                  />
+                ) : null}
+                {sharedAgents.length ? (
+                  <AgentGroup
+                    activeChannelId={activeChannelId}
+                    agents={sharedAgents}
+                    label={privateAgents.length ? "For everyone" : undefined}
+                    onAddAgent={onAddAgent}
+                  />
+                ) : null}
               </div>
             ) : (
               <p className="px-2 text-xs leading-5 text-black/40 dark:text-white/35">
@@ -344,6 +341,59 @@ export function WorkspaceSidebar({
         </footer>
       </aside>
     </>
+  );
+}
+
+function AgentGroup({
+  label,
+  agents,
+  activeChannelId,
+  onAddAgent,
+}: {
+  label?: string;
+  agents: WorkspaceProfile[];
+  activeChannelId: string | null;
+  onAddAgent: (agent: WorkspaceProfile) => void;
+}) {
+  return (
+    <div>
+      {label ? (
+        <p className="mb-1 px-2 text-[0.6875rem] font-semibold uppercase tracking-[0.08em] text-black/35 dark:text-white/30">
+          {label}
+        </p>
+      ) : null}
+      <div className="space-y-1">
+        {agents.map((agent) => (
+          <div
+            className="flex items-center gap-2 rounded-lg px-2 py-1.5"
+            key={agent.pubkey}
+          >
+            <ProfileAvatar profile={agent} size="sm" />
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm">{agent.name}</p>
+              <p className="text-[0.6875rem] text-emerald-700 dark:text-emerald-400">
+                {agent.accessTier === "personal"
+                  ? "Personal assistant"
+                  : agent.accessTier === "admin"
+                    ? "Admin only"
+                    : "Available to everyone"}
+              </p>
+            </div>
+            {activeChannelId && agent.accessTier !== "personal" ? (
+              <button
+                aria-label={`Add ${agent.name} to the current channel`}
+                className="rounded-md p-1.5 text-black/35 hover:bg-black/6 hover:text-black/70 dark:text-white/30 dark:hover:bg-white/7 dark:hover:text-white/70"
+                title="Add to current channel"
+                type="button"
+                onClick={() => onAddAgent(agent)}
+              >
+                <Plus className="size-3.5" />
+              </button>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

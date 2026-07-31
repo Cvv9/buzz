@@ -361,8 +361,8 @@ export function WorkspacePage() {
     retry: false,
   });
   const agentsQuery = useQuery({
-    queryKey: ["workspace-agents"],
-    queryFn: listAgents,
+    queryKey: ["workspace-agents", identity?.pubkey],
+    queryFn: () => listAgents(identity?.pubkey ?? ""),
     enabled: Boolean(identity && channelsQuery.data?.length),
     retry: false,
   });

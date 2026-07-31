@@ -6,6 +6,7 @@ import {
   type BrowserIdentity,
   exportBrowserIdentity,
 } from "@/shared/lib/browser-identity";
+import { relayWsUrl } from "@/shared/lib/relay-url";
 import { Button } from "@/shared/ui/button";
 
 export function WorkspaceSettings({
@@ -20,6 +21,7 @@ export function WorkspaceSettings({
   const [backup, setBackup] = React.useState<string | null>(null);
   const [inviteUrl, setInviteUrl] = React.useState<string | null>(null);
   const [mintingInvite, setMintingInvite] = React.useState(false);
+  const [openingDesktop, setOpeningDesktop] = React.useState(false);
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/35">
       <button
@@ -68,6 +70,40 @@ export function WorkspaceSettings({
             onClick={() => void exportBrowserIdentity().then(setBackup)}
           >
             {backup ? "Recovery key revealed" : "Reveal recovery key"}
+          </Button>
+        </div>
+        <div className="mt-7 border-t border-black/8 pt-6 dark:border-white/8">
+          <h3 className="text-sm font-semibold">Buzz Desktop</h3>
+          <p className="mt-2 text-sm leading-6 text-black/50 dark:text-white/45">
+            Open this same community in the desktop app. A one-use invitation
+            safely adds the identity stored by Buzz Desktop.
+          </p>
+          <Button
+            className="mt-3"
+            disabled={openingDesktop}
+            variant="outline"
+            onClick={() => {
+              setOpeningDesktop(true);
+              void mintBrowserInvite()
+                .then((invite) => {
+                  const query = new URLSearchParams({
+                    relay: relayWsUrl(),
+                    code: invite.code,
+                  });
+                  window.location.href = `buzz://join?${query.toString()}`;
+                })
+                .catch((error) => {
+                  toast.error("Could not open Buzz Desktop", {
+                    description:
+                      error instanceof Error
+                        ? error.message
+                        : "Owner or admin access is required.",
+                  });
+                })
+                .finally(() => setOpeningDesktop(false));
+            }}
+          >
+            {openingDesktop ? "Opening…" : "Open in Buzz Desktop"}
           </Button>
         </div>
         <div className="mt-7 border-t border-black/8 pt-6 dark:border-white/8">

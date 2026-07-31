@@ -267,6 +267,18 @@ pub enum AgentsCmd {
         /// Short description of the hosted agent
         #[arg(long)]
         about: Option<String>,
+        /// Directory audience: community (everyone) or owner (only the named owner)
+        #[arg(long, default_value = "community")]
+        audience: String,
+        /// Owner pubkey for an owner-only directory entry
+        #[arg(long)]
+        owner_pubkey: Option<String>,
+        /// Access tier shown by clients: shared, personal, or admin
+        #[arg(long, default_value = "shared")]
+        access_tier: String,
+        /// Who may add this agent to channels: anyone, owner_only, or nobody
+        #[arg(long, default_value = "anyone")]
+        channel_add_policy: String,
     },
     /// Open a prefilled create-agent form in the owner's Buzz Desktop
     DraftCreate {
@@ -1947,6 +1959,7 @@ mod tests {
                 "archived",
                 "draft-create",
                 "draft-update",
+                "publish-profile",
                 "unarchive"
             ]
         );
@@ -2073,7 +2086,7 @@ mod tests {
     #[test]
     fn subcommand_counts_are_stable() {
         let expected: Vec<(&str, usize)> = vec![
-            ("agents", 5),
+            ("agents", 6),
             ("canvas", 2),
             ("channels", 16),
             ("dms", 4),

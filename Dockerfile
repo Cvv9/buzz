@@ -186,6 +186,7 @@ COPY --from=stripped-binaries /build/target/release/buzz-acp /usr/local/bin/buzz
 COPY --from=stripped-binaries /build/target/release/buzz /usr/local/bin/buzz
 COPY --from=stripped-binaries /build/target/release/buzz-admin /usr/local/bin/buzz-admin
 COPY --chmod=0755 deploy/compose/agent-entrypoint.sh /usr/local/bin/agent-entrypoint
+COPY --chmod=0444 deploy/compose/agent-safety-policy.md /etc/buzz/agent-safety-policy.md
 # The entrypoint initializes the named Codex state volume as root, then drops
 # permanently to the image's unprivileged `node` identity before Buzz or Codex.
 USER root

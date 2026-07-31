@@ -39,6 +39,29 @@ env_has_value() {
   [ -n "$(printenv "${1}" 2>/dev/null || true)" ] || grep -Eq "^${1}=.+" .env
 }
 
+require_agent_credentials() {
+  if ! env_has_value CODEX_API_KEY && ! env_has_value OPENAI_API_KEY; then
+    echo "Set CODEX_API_KEY or OPENAI_API_KEY in .env, or use the ChatGPT command." >&2
+    exit 1
+  fi
+}
+
+require_personal_pubkeys() {
+  local missing=()
+  for key in VIKRAM_PUBKEY ADHIKA_PUBKEY SWATHI_PUBKEY RAJA_PUBKEY; do
+    if ! env_has_value "${key}"; then
+      missing+=("${key}")
+    fi
+  done
+  if ! env_has_value VARUN_PUBKEY && ! env_has_value RELAY_OWNER_PUBKEY; then
+    missing+=("VARUN_PUBKEY (or RELAY_OWNER_PUBKEY)")
+  fi
+  if (( ${#missing[@]} > 0 )); then
+    printf 'Set these team pubkeys in deploy/compose/.env first: %s\n' "${missing[*]}" >&2
+    exit 1
+  fi
+}
+
 backup_hint() {
   cat <<'MSG'
 Back up these before upgrades and on a regular schedule:
@@ -62,10 +85,7 @@ case "${1:-help}" in
     ;;
   start-agents)
     require_env
-    if ! env_has_value CODEX_API_KEY && ! env_has_value OPENAI_API_KEY; then
-      echo "Set CODEX_API_KEY or OPENAI_API_KEY in .env, or use start-agents-chatgpt." >&2
-      exit 1
-    fi
+    require_agent_credentials
     compose --profile agents up -d --wait
     ;;
   start-agents-chatgpt)
@@ -75,6 +95,21 @@ case "${1:-help}" in
       exit 1
     fi
     compose -f compose.agent-chatgpt.yml --profile agents up -d --wait
+    ;;
+  start-personal-agents)
+    require_env
+    require_personal_pubkeys
+    require_agent_credentials
+    compose --profile personal-agents up -d --wait
+    ;;
+  start-personal-agents-chatgpt)
+    require_env
+    require_personal_pubkeys
+    if ! env_has_value VARVIK_CODEX_AUTH_FILE; then
+      echo "Set VARVIK_CODEX_AUTH_FILE in .env first." >&2
+      exit 1
+    fi
+    compose -f compose.agent-chatgpt.yml --profile personal-agents up -d --wait
     ;;
   stop|down)
     compose down
@@ -124,6 +159,9 @@ Commands:
   start                  Start Buzz with docker compose up -d --wait
   start-agents           Start Buzz plus Codex using an API key
   start-agents-chatgpt   Start Buzz plus Codex using an existing auth.json
+  start-personal-agents  Start the five private Companions using an API key
+  start-personal-agents-chatgpt
+                          Start the five private Companions using auth.json
   stop          Stop containers without deleting volumes
   restart       Recreate the relay after env/image changes
   pull          Pull configured images

@@ -46,6 +46,9 @@ export type WorkspaceProfile = {
   picture?: string;
   about?: string;
   isAgent?: boolean;
+  audience?: "community" | "owner";
+  ownerPubkey?: string;
+  accessTier?: "shared" | "personal" | "admin";
 };
 
 export type WorkspaceMessage = NostrEvent & {
@@ -223,7 +226,9 @@ export async function listProfiles(
   return profiles;
 }
 
-export async function listAgents(): Promise<WorkspaceProfile[]> {
+export async function listAgents(
+  viewerPubkey: string,
+): Promise<WorkspaceProfile[]> {
   const events = dedupeReplaceable(
     await queryEvents(relayWsUrl(), {
       kinds: [KIND_AGENT_PROFILE, KIND_MANAGED_AGENT],
@@ -263,9 +268,23 @@ export async function listAgents(): Promise<WorkspaceProfile[]> {
       about:
         typeof content.about === "string" ? content.about : existing?.about,
       isAgent: true,
+      audience: content.audience === "owner" ? "owner" : "community",
+      ownerPubkey:
+        typeof content.owner_pubkey === "string"
+          ? content.owner_pubkey
+          : undefined,
+      accessTier:
+        content.access_tier === "personal" || content.access_tier === "admin"
+          ? content.access_tier
+          : "shared",
     });
   }
-  return [...profiles.values()].sort((a, b) => a.name.localeCompare(b.name));
+  return [...profiles.values()]
+    .filter(
+      (profile) =>
+        profile.audience !== "owner" || profile.ownerPubkey === viewerPubkey,
+    )
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 export async function listReactions(

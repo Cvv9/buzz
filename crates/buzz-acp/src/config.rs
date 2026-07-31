@@ -297,6 +297,11 @@ pub struct CliArgs {
     #[arg(long, env = "BUZZ_ACP_HEARTBEAT_INTERVAL", default_value_t = 0)]
     pub heartbeat_interval: u64,
 
+    /// Seconds to wait before the first heartbeat. Defaults to the heartbeat
+    /// interval. Deployments can use this to align a daily brief to local time.
+    #[arg(long, env = "BUZZ_ACP_HEARTBEAT_INITIAL_DELAY")]
+    pub heartbeat_initial_delay: Option<u64>,
+
     /// Seconds between per-turn liveness pings (the crash backstop signal —
     /// distinct from heartbeat self-prompting). 0 = disabled.
     #[arg(long, env = "BUZZ_ACP_TURN_LIVENESS_SECS", default_value_t = 10)]
@@ -499,6 +504,8 @@ pub struct Config {
     pub max_turn_duration_secs: u64,
     pub agents: u32,
     pub heartbeat_interval_secs: u64,
+    /// Optional delay before the first heartbeat tick.
+    pub heartbeat_initial_delay_secs: Option<u64>,
     /// Seconds between per-turn liveness pings. 0 = disabled. Distinct from
     /// `heartbeat_interval_secs` (agent self-prompting) — this is the desktop
     /// crash-backstop signal.
@@ -1063,6 +1070,7 @@ impl Config {
             max_turn_duration_secs,
             agents: args.agents,
             heartbeat_interval_secs: heartbeat_interval,
+            heartbeat_initial_delay_secs: args.heartbeat_initial_delay,
             turn_liveness_secs,
             heartbeat_prompt,
             system_prompt,
@@ -1441,6 +1449,7 @@ mod tests {
             max_turn_duration_secs: DEFAULT_MAX_TURN_DURATION_SECS,
             agents: 1,
             heartbeat_interval_secs: 0,
+            heartbeat_initial_delay_secs: None,
             turn_liveness_secs: 10,
             heartbeat_prompt: None,
             system_prompt: None,
