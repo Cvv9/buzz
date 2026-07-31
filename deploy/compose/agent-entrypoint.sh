@@ -80,9 +80,13 @@ if [ ! -s "${BUZZ_AGENT_KEY_FILE}" ]; then
 fi
 export VARVIK_AGENT_PUBKEY BUZZ_PRIVATE_KEY
 
-# Idempotent relay membership bootstrap. The command exits successfully when
-# the member already exists.
-buzz-admin add-member --pubkey "${VARVIK_AGENT_PUBKEY}" --role member
+# Local single-host bundles may let the agent perform its own idempotent member
+# bootstrap. Managed deployments pre-register public keys with the relay and
+# disable this step so agent containers never receive relay-administrator
+# credentials.
+if [ "${BUZZ_ACP_SKIP_MEMBER_BOOTSTRAP:-false}" != "true" ]; then
+  buzz-admin add-member --pubkey "${VARVIK_AGENT_PUBKEY}" --role member
+fi
 
 if [ -n "${BUZZ_ACP_PRIVATE_CHANNEL_NAME:-}" ]; then
   if ! printf '%s' "${BUZZ_ACP_PROFILE_OWNER_PUBKEY:-}" | grep -Eq '^[0-9a-f]{64}$'; then
