@@ -52,6 +52,9 @@ services:
 
   agent:
     profiles: ["agents"]
+    # Share the relay namespace so the canonical localhost URL used by the
+    # default single-host deployment reaches the relay without changing Host.
+    network_mode: service:relay
     build:
       context: ../..
       dockerfile: Dockerfile
@@ -79,8 +82,6 @@ services:
     volumes:
       - buzz-agent-codex-data:/home/node/.codex
     restart: unless-stopped
-    networks:
-      - buzz-net
 
   postgres:
     image: postgres:17-alpine
