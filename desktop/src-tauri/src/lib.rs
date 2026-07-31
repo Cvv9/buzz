@@ -986,12 +986,6 @@ pub fn run() {
             #[cfg(all(feature = "mesh-llm", target_os = "macos"))]
             hard_exit_after_mesh_shutdown();
         }
-        // macOS: clicking the dock icon while the window is hidden to the tray
-        // re-shows it (the standard re-open affordance).
-        #[cfg(target_os = "macos")]
-        RunEvent::Reopen { .. } => {
-            tray::show_main_window(app_handle);
-        }
         _ => {}
     });
 }
