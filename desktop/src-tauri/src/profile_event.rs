@@ -28,21 +28,3 @@ pub fn build_profile_with_existing(
     let content = serde_json::Value::Object(map).to_string();
     Ok(EventBuilder::new(Kind::Custom(0), content))
 }
-
-#[cfg(test)]
-pub fn build_profile(
-    display_name: Option<&str>,
-    name: Option<&str>,
-    picture: Option<&str>,
-    about: Option<&str>,
-    nip05: Option<&str>,
-) -> Result<EventBuilder, String> {
-    build_profile_with_existing(
-        &serde_json::Map::new(),
-        display_name,
-        name,
-        picture,
-        about,
-        nip05,
-    )
-}

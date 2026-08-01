@@ -472,8 +472,6 @@ pub fn build_set_canvas(channel_id: Uuid, content: &str) -> Result<EventBuilder,
 
 #[path = "profile_event.rs"]
 mod profile_event;
-#[cfg(test)]
-pub use profile_event::build_profile;
 pub use profile_event::build_profile_with_existing;
 
 // ── Huddles ──────────────────────────────────────────────────────────────────
