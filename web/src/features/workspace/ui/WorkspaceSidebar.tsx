@@ -199,8 +199,9 @@ export function WorkspaceSidebar({
         />
       ) : null}
       <aside
+        data-testid="workspace-sidebar"
         className={cn(
-          "fixed inset-y-0 left-0 z-40 flex w-[17rem] flex-col border-r border-black/10 bg-[#eef0e8] text-[#272a23] transition-transform md:static md:translate-x-0 dark:border-white/8 dark:bg-[#171916] dark:text-[#e8eadd]",
+          "fixed inset-y-0 left-0 z-40 flex h-dvh min-h-0 w-[17rem] flex-col border-r border-black/10 bg-[#eef0e8] text-[#272a23] transition-transform md:static md:h-full md:translate-x-0 dark:border-white/8 dark:bg-[#171916] dark:text-[#e8eadd]",
           open ? "translate-x-0" : "-translate-x-full",
         )}
       >
@@ -226,7 +227,10 @@ export function WorkspaceSidebar({
           </button>
         </header>
 
-        <nav className="min-h-0 flex-1 overflow-y-auto px-3 py-4">
+        <nav
+          className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-4"
+          data-testid="workspace-sidebar-scroll"
+        >
           <div className="mb-6">
             <div className="mb-2 flex items-center justify-between px-2">
               <p className="text-xs font-semibold text-black/45 dark:text-white/40">

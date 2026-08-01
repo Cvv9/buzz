@@ -1,7 +1,142 @@
 import { createHash } from "node:crypto";
-import { expect, test } from "@playwright/test";
-import { generateSecretKey } from "nostr-tools/pure";
+import { type Page, expect, test } from "@playwright/test";
+import { generateSecretKey, getPublicKey } from "nostr-tools/pure";
 import { nsecEncode } from "nostr-tools/nip19";
+
+async function installWorkspaceRelayMock(page: Page, viewerPubkey: string) {
+  await page.addInitScript(
+    ({ pubkey }) => {
+      const event = (
+        kind: number,
+        eventPubkey: string,
+        tags: string[][],
+        content = "",
+        suffix = "0",
+      ) => ({
+        id: suffix.padStart(64, "0"),
+        pubkey: eventPubkey,
+        created_at: 1,
+        kind,
+        tags,
+        content,
+        sig: "0".repeat(128),
+      });
+      const agentEvents = Array.from({ length: 18 }, (_, index) => {
+        const agentPubkey = (index + 1).toString(16).padStart(64, "0");
+        return event(
+          10100,
+          agentPubkey,
+          [],
+          JSON.stringify({
+            name: `Workspace Agent ${index + 1}`,
+            access_tier: index < 6 ? "personal" : "shared",
+          }),
+          (index + 10).toString(16),
+        );
+      });
+
+      class MockWebSocket {
+        static readonly CONNECTING = 0;
+        static readonly OPEN = 1;
+        static readonly CLOSING = 2;
+        static readonly CLOSED = 3;
+        readonly url: string;
+        readyState = MockWebSocket.CONNECTING;
+        private readonly listeners = new Map<
+          string,
+          Set<(event: Event) => void>
+        >();
+
+        constructor(url: string | URL) {
+          this.url = String(url);
+          window.setTimeout(() => {
+            this.readyState = MockWebSocket.OPEN;
+            this.emit("open", new Event("open"));
+          }, 0);
+        }
+
+        addEventListener(type: string, listener: EventListener) {
+          const listeners = this.listeners.get(type) ?? new Set();
+          listeners.add(listener);
+          this.listeners.set(type, listeners);
+        }
+
+        removeEventListener(type: string, listener: EventListener) {
+          this.listeners.get(type)?.delete(listener);
+        }
+
+        send(payload: string) {
+          const envelope = JSON.parse(payload) as unknown[];
+          if (envelope[0] !== "REQ") return;
+          const subscriptionId = String(envelope[1]);
+          const filter = (envelope[2] ?? {}) as { kinds?: number[] };
+          const kinds = filter.kinds ?? [];
+          let events: ReturnType<typeof event>[] = [];
+          if (kinds.includes(39002)) {
+            events = [
+              event(
+                39002,
+                "f".repeat(64),
+                [
+                  ["d", "general"],
+                  ["p", pubkey, "", "owner"],
+                ],
+                "",
+                "1",
+              ),
+            ];
+          } else if (kinds.length === 1 && kinds.includes(39000)) {
+            events = [
+              event(
+                39000,
+                "f".repeat(64),
+                [
+                  ["d", "general"],
+                  ["name", "general"],
+                ],
+                "",
+                "2",
+              ),
+            ];
+          } else if (kinds.includes(10100) || kinds.includes(30177)) {
+            events = agentEvents;
+          }
+          window.setTimeout(() => {
+            for (const relayEvent of events) {
+              this.emit(
+                "message",
+                new MessageEvent("message", {
+                  data: JSON.stringify(["EVENT", subscriptionId, relayEvent]),
+                }),
+              );
+            }
+            this.emit(
+              "message",
+              new MessageEvent("message", {
+                data: JSON.stringify(["EOSE", subscriptionId]),
+              }),
+            );
+          }, 0);
+        }
+
+        close() {
+          if (this.readyState === MockWebSocket.CLOSED) return;
+          this.readyState = MockWebSocket.CLOSED;
+          this.emit("close", new CloseEvent("close"));
+        }
+
+        private emit(type: string, event: Event) {
+          for (const listener of this.listeners.get(type) ?? []) {
+            listener.call(this, event);
+          }
+        }
+      }
+
+      window.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+    },
+    { pubkey: viewerPubkey },
+  );
+}
 
 test("home page opens at the employee sign-in boundary", async ({ page }) => {
   await page.goto("/");
@@ -15,7 +150,9 @@ test("home page opens at the employee sign-in boundary", async ({ page }) => {
 test("a recovery key is stored behind a password and locks on reload", async ({
   page,
 }) => {
-  const recoveryKey = nsecEncode(generateSecretKey());
+  const secretKey = generateSecretKey();
+  const recoveryKey = nsecEncode(secretKey);
+  await installWorkspaceRelayMock(page, getPublicKey(secretKey));
   await page.goto("/");
   await page.getByLabel("Display name").fill("Vikram");
   await page.getByLabel("Recovery key").fill(recoveryKey);
@@ -44,6 +181,46 @@ test("a recovery key is stored behind a password and locks on reload", async ({
   await expect(
     page.getByRole("heading", { name: "Welcome back, Vikram" }),
   ).toBeHidden();
+
+  await page.setViewportSize({ width: 1280, height: 480 });
+  await expect(page.getByTestId("workspace-shell")).toBeVisible();
+  const layout = await page.evaluate(() => {
+    const shell = document.querySelector<HTMLElement>(
+      '[data-testid="workspace-shell"]',
+    );
+    const sidebarScroll = document.querySelector<HTMLElement>(
+      '[data-testid="workspace-sidebar-scroll"]',
+    );
+    const chatPane = document.querySelector<HTMLElement>(
+      '[data-testid="workspace-chat-pane"]',
+    );
+    if (!shell || !sidebarScroll || !chatPane) {
+      throw new Error("Workspace layout regions were not rendered.");
+    }
+    const overflowProbe = document.createElement("div");
+    overflowProbe.style.height = "1200px";
+    overflowProbe.setAttribute("data-testid", "sidebar-overflow-probe");
+    sidebarScroll.append(overflowProbe);
+    sidebarScroll.scrollTop = 160;
+    window.scrollTo(0, 160);
+    return {
+      chatBottom: chatPane.getBoundingClientRect().bottom,
+      documentScrollHeight: document.documentElement.scrollHeight,
+      shellHeight: shell.getBoundingClientRect().height,
+      sidebarCanScroll: sidebarScroll.scrollHeight > sidebarScroll.clientHeight,
+      sidebarScrollTop: sidebarScroll.scrollTop,
+      viewportHeight: window.innerHeight,
+      windowScrollY: window.scrollY,
+    };
+  });
+  expect(layout.shellHeight).toBe(layout.viewportHeight);
+  expect(layout.documentScrollHeight).toBeLessThanOrEqual(
+    layout.viewportHeight + 1,
+  );
+  expect(layout.windowScrollY).toBe(0);
+  expect(layout.sidebarCanScroll).toBe(true);
+  expect(layout.sidebarScrollTop).toBeGreaterThan(0);
+  expect(layout.chatBottom).toBeLessThanOrEqual(layout.viewportHeight);
 });
 
 test("repository browser remains available at its own route", async ({

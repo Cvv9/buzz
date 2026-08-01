@@ -273,7 +273,7 @@ function Composer({
   };
 
   return (
-    <div className="px-4 pb-4 pt-2 sm:px-6 sm:pb-5">
+    <div className="shrink-0 px-4 pb-4 pt-2 sm:px-6 sm:pb-5">
       <div className="overflow-hidden rounded-2xl border border-black/12 bg-white shadow-[0_8px_28px_rgba(30,33,25,0.06)] focus-within:border-[#b6b71e] dark:border-white/12 dark:bg-[#20231e] dark:shadow-none">
         {replyTo ? (
           <div className="flex items-center justify-between border-b border-black/8 bg-black/[0.025] px-4 py-2 text-xs dark:border-white/8 dark:bg-white/[0.025]">
@@ -617,7 +617,10 @@ export function WorkspacePage() {
   }
 
   return (
-    <div className="flex min-h-[100dvh] bg-[#f8f9f4] text-[#292c25] dark:bg-[#141612] dark:text-[#e6e8dc]">
+    <div
+      className="flex h-dvh min-h-0 overflow-hidden bg-[#f8f9f4] text-[#292c25] dark:bg-[#141612] dark:text-[#e6e8dc]"
+      data-testid="workspace-shell"
+    >
       <WorkspaceSidebar
         activeChannelId={activeChannelId}
         agents={agentsQuery.data ?? []}
@@ -635,8 +638,11 @@ export function WorkspacePage() {
         }}
       />
 
-      <main className="flex min-w-0 flex-1">
-        <section className="flex min-w-0 flex-1 flex-col">
+      <main className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+        <section
+          className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+          data-testid="workspace-chat-pane"
+        >
           <header className="flex h-16 shrink-0 items-center gap-3 border-b border-black/8 px-4 dark:border-white/8 sm:px-6">
             <button
               aria-label="Open navigation"
