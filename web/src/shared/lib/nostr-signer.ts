@@ -5,7 +5,7 @@ import {
 } from "nostr-tools/pure";
 import {
   getBrowserSecretKey,
-  hasStoredBrowserIdentity,
+  hasUnlockedBrowserIdentity,
 } from "@/shared/lib/browser-identity";
 
 export type UnsignedNostrEvent = {
@@ -53,7 +53,7 @@ export function hasNip07Provider(): boolean {
 }
 
 export function hasDurableBrowserSigner(): boolean {
-  return hasNip07Provider() || hasStoredBrowserIdentity();
+  return hasNip07Provider() || hasUnlockedBrowserIdentity();
 }
 
 function sameUnsignedEvent(

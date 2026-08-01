@@ -10,14 +10,17 @@ import {
   X,
 } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import * as React from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { toast } from "sonner";
 import {
   type BrowserIdentity,
-  loadBrowserIdentity,
-  removeBrowserIdentity,
+  type StoredBrowserIdentitySummary,
+  getStoredBrowserIdentity,
+  getUnlockedBrowserIdentity,
+  lockBrowserIdentity,
 } from "@/shared/lib/browser-identity";
 import { cn } from "@/shared/lib/cn";
 import { truncatePubkey } from "@/shared/lib/pubkey";
@@ -327,7 +330,10 @@ function Composer({
 
 export function WorkspacePage() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [identity, setIdentity] = React.useState<BrowserIdentity | null>(null);
+  const [storedIdentity, setStoredIdentity] =
+    React.useState<StoredBrowserIdentitySummary | null>(null);
   const [identityLoading, setIdentityLoading] = React.useState(true);
   const [activeChannelId, setActiveChannelId] = React.useState<string | null>(
     () => localStorage.getItem("buzz.web.active-channel"),
@@ -344,9 +350,11 @@ export function WorkspacePage() {
 
   React.useEffect(() => {
     let active = true;
-    loadBrowserIdentity()
-      .then((loaded) => {
-        if (active) setIdentity(loaded);
+    const unlocked = getUnlockedBrowserIdentity();
+    if (unlocked) setIdentity(unlocked);
+    getStoredBrowserIdentity()
+      .then((stored) => {
+        if (active) setStoredIdentity(stored);
       })
       .finally(() => {
         if (active) setIdentityLoading(false);
@@ -538,18 +546,27 @@ export function WorkspacePage() {
     );
   }
   if (!identity) {
+    const pendingInvitePath = sessionStorage.getItem(
+      "buzz.web.pending-invite-path",
+    );
     return (
       <IdentityGate
+        pendingInvite={Boolean(pendingInvitePath)}
+        storedIdentity={storedIdentity}
         onReady={(readyIdentity) => {
-          const pendingInvitePath = sessionStorage.getItem(
-            "buzz.web.pending-invite-path",
-          );
+          queryClient.clear();
+          setIdentity(readyIdentity);
+          setStoredIdentity({ ...readyIdentity, protection: "password" });
           if (pendingInvitePath) {
             sessionStorage.removeItem("buzz.web.pending-invite-path");
-            window.location.assign(pendingInvitePath);
-            return;
+            const inviteMatch = pendingInvitePath.match(/^\/invite\/([^/]+)$/);
+            if (inviteMatch?.[1]) {
+              void navigate({
+                to: "/invite/$code",
+                params: { code: decodeURIComponent(inviteMatch[1]) },
+              });
+            }
           }
-          setIdentity(readyIdentity);
         }}
       />
     );
@@ -902,11 +919,10 @@ export function WorkspacePage() {
           identity={identity}
           onClose={() => setSettingsOpen(false)}
           onSignOut={() => {
-            void removeBrowserIdentity().then(() => {
-              setIdentity(null);
-              setSettingsOpen(false);
-              queryClient.clear();
-            });
+            lockBrowserIdentity();
+            setIdentity(null);
+            setSettingsOpen(false);
+            queryClient.clear();
           }}
         />
       ) : null}

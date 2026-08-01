@@ -1,12 +1,49 @@
 import { createHash } from "node:crypto";
 import { expect, test } from "@playwright/test";
+import { generateSecretKey } from "nostr-tools/pure";
+import { nsecEncode } from "nostr-tools/nip19";
 
-test("home page loads the VarVik browser workspace", async ({ page }) => {
+test("home page opens at the employee sign-in boundary", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByText("VarVik Studios").first()).toBeVisible();
   await expect(
-    page.getByRole("heading", { name: "Create your identity" }),
+    page.getByRole("heading", { name: "Sign in to VarVik Studios" }),
   ).toBeVisible();
+  await expect(page.getByLabel("Recovery key")).toBeVisible();
+});
+
+test("a recovery key is stored behind a password and locks on reload", async ({
+  page,
+}) => {
+  const recoveryKey = nsecEncode(generateSecretKey());
+  await page.goto("/");
+  await page.getByLabel("Display name").fill("Vikram");
+  await page.getByLabel("Recovery key").fill(recoveryKey);
+  await page
+    .getByLabel("Password", { exact: true })
+    .fill("varvik-test-password");
+  await page.getByLabel("Confirm password").fill("varvik-test-password");
+  await page.getByRole("button", { name: "Sign in with recovery key" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Sign in to VarVik Studios" }),
+  ).toBeHidden();
+
+  await page.reload();
+  await expect(
+    page.getByRole("heading", { name: "Welcome back, Vikram" }),
+  ).toBeVisible();
+
+  await page.getByLabel("Password").fill("incorrect-password");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(page.getByRole("alert")).toHaveText(
+    "Incorrect password. This Buzz account remains locked.",
+  );
+
+  await page.getByLabel("Password").fill("varvik-test-password");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Welcome back, Vikram" }),
+  ).toBeHidden();
 });
 
 test("repository browser remains available at its own route", async ({

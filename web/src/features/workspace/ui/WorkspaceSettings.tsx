@@ -154,7 +154,7 @@ export function WorkspaceSettings({
             onClick={onSignOut}
           >
             <LogOut className="mr-2 size-4" />
-            Remove identity from this browser
+            Lock and sign out
           </Button>
         </div>
       </section>
