@@ -1,10 +1,5 @@
-//! Import-side helpers for `buzz-agent-snapshot v1`.
-//!
-//! Extracted from `snapshot.rs` to keep that file under the 1000-line gate.
-//! The Tauri commands here (`preview_agent_snapshot_import`,
-//! `confirm_agent_snapshot_import`) are re-exported from `snapshot.rs` and
-//! registered in `lib.rs` through the same `personas::` path as the export
-//! commands.
+//! Import-side helpers and Tauri commands for `buzz-agent-snapshot v1`,
+//! re-exported through the existing `personas::` command path.
 
 use nostr::ToBech32;
 use serde::{Deserialize, Serialize};
