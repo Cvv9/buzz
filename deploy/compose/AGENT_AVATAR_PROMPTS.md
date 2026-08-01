@@ -70,6 +70,7 @@ The generated files currently selected for Buzz are:
 | Varun (human profile) | `asset_2pap5m92p_1785593042994_3a66623d.png` |
 | Project Brain | `asset_kb5z0su4u_1785604773325_f83251a3.png` |
 | Market Intelligence | `asset_w5hasaowz_1785604773325.png` |
+| People & Culture | `asset_r2nw03be7_1785604773325.png` |
 | Founder Chief of Staff | `asset_d5nppedgh_1785604773325.png` |
 | Operations Desk | `asset_zc6kclirz_1785604773325_7e546ea0.png` |
 | Trend Radar | `asset_gydewt4z6_1785604773325.png` |
