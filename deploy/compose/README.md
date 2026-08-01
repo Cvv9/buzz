@@ -37,6 +37,8 @@ that execution roster.
 - `Project Brain` — shared, read-only answers backed by Project Intelligence
 - `Market Intelligence` — shared research intake backed by Sylar's dedicated
   MarketIntelligence specialist for durable multi-source work
+- `People & Culture` — shared, opt-in welcomes, introductions, team rituals,
+  and celebrations for explicitly verified milestones
 - `Founder Chief of Staff` — Varun's private portfolio and Sylars coordinator
 - `Operations Desk` — private Watchdog/CI incident intake and Sylars status
 - one owner-scoped `Personal Assistant` per configured team member — private
@@ -93,6 +95,11 @@ profile. An owner/admin then opens a channel in the browser and adds the relevan
 shared or admin agent. Mentioning an agent sends work to its server runtime. The
 browser itself never receives the OpenAI credential and never runs shell or file
 tools.
+
+`People & Culture` is mention-driven by default. A membership or goal system may
+also invoke it through a trusted Buzz workflow that supplies an explicit
+`welcome` or `milestone` event. This keeps ordinary channel traffic quiet and
+prevents an unverified metric from producing an automatic celebration.
 
 ### Personal Companions and private morning briefs
 

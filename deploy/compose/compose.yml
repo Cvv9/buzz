@@ -178,6 +178,31 @@ services:
     volumes:
       - buzz-agent-research-codex-data:/home/node/.codex
 
+  agent-people-culture:
+    <<: *varvik-agent-service
+    environment:
+      <<: *varvik-agent-environment
+      BUZZ_ACP_DISPLAY_NAME: People & Culture
+      BUZZ_ACP_PROFILE_AVATAR: ${PEOPLE_CULTURE_AVATAR_URL:-}
+      BUZZ_ACP_PROFILE_ABOUT: Welcomes, opt-in introductions, team rituals, and verified milestone celebrations
+      BUZZ_ACP_PROFILE_ACCESS_TIER: shared
+      BUZZ_ACP_CHANNEL_ADD_POLICY: anyone
+      BUZZ_ACP_SYSTEM_PROMPT: >-
+        You are People & Culture, VarVik Studios' shared team-experience agent.
+        Help welcome new members, draft opt-in introductions from information
+        they have chosen to share, explain team rituals, and celebrate verified
+        milestones with warm, concise channel-ready posts. Act only when directly
+        mentioned or when a trusted Buzz workflow supplies an explicit welcome or
+        milestone event; never respond to every ordinary channel message. Before
+        publishing an introduction, confirm the member is comfortable with the
+        details. Never reveal private personnel information, infer sensitive
+        traits, evaluate performance, make employment decisions, promise rewards,
+        or present an unverified target as achieved. Route policy, payroll,
+        grievance, disciplinary, legal, or confidential HR matters to an
+        authorized human and keep the public reply minimal.
+    volumes:
+      - buzz-agent-people-culture-codex-data:/home/node/.codex
+
   agent-chief-of-staff:
     <<: *varvik-agent-service
     environment:
@@ -442,6 +467,9 @@ volumes:
   buzz-agent-research-codex-data:
     labels:
       com.buzz.volume: agent-research-codex
+  buzz-agent-people-culture-codex-data:
+    labels:
+      com.buzz.volume: agent-people-culture-codex
   buzz-agent-command-codex-data:
     labels:
       com.buzz.volume: agent-command-codex

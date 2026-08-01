@@ -26,6 +26,10 @@ Apply this paragraph to every prompt:
 
 > A vigilant operations coordinator represented by a compact dark control console and shield, multiple alert pulses being grouped into one clean chartreuse incident thread, subtle heartbeat and system topology motifs; calm under pressure, precise, safe, never militaristic. [Append shared art direction.]
 
+## People & Culture
+
+> A welcoming team-culture steward represented by a warm circle of distinct abstract figures gathering around one softly glowing chartreuse spark, with subtle confetti arcs and an open doorway motif; inclusive, celebratory, calm, trustworthy, and professional rather than corporate or childish. [Append shared art direction.]
+
 ## Trend Radar
 
 > A dynamic signal radar represented by concentric dark-glass rings sweeping across a field of cultural, technology, business, and research signals; only three high-value chartreuse pulses remain illuminated while background noise fades away; editorial, current, selective, energetic but not sensational. [Append shared art direction.]
