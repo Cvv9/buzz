@@ -3,6 +3,10 @@ import {
   generateSecretKey,
   getPublicKey,
 } from "nostr-tools/pure";
+import {
+  getBrowserSecretKey,
+  hasUnlockedBrowserIdentity,
+} from "@/shared/lib/browser-identity";
 
 export type UnsignedNostrEvent = {
   kind: number;
@@ -30,7 +34,7 @@ declare global {
 
 export class Nip07UnavailableError extends Error {
   constructor() {
-    super("A NIP-07 browser extension is required to join in the browser.");
+    super("Create or import a browser identity before joining this workspace.");
     this.name = "Nip07UnavailableError";
   }
 }
@@ -48,6 +52,10 @@ export function hasNip07Provider(): boolean {
   return typeof window !== "undefined" && window.nostr != null;
 }
 
+export function hasDurableBrowserSigner(): boolean {
+  return hasNip07Provider() || hasUnlockedBrowserIdentity();
+}
+
 function sameUnsignedEvent(
   expected: UnsignedNostrEvent,
   actual: SignedNostrEvent,
@@ -61,11 +69,12 @@ function sameUnsignedEvent(
 }
 
 /**
- * Sign with NIP-07 when available, otherwise use a page-lifetime key.
+ * Sign with NIP-07 when available, then the device-bound browser identity,
+ * otherwise use a page-lifetime key.
  *
  * The ephemeral fallback preserves anonymous browsing on open relays. Flows
- * that create durable membership must set `requireNip07` so a reload cannot
- * orphan a relay-membership row.
+ * that create durable membership set `requireNip07`; the legacy option name is
+ * retained for API compatibility but now accepts either durable signer.
  */
 export async function signNostrEvent(
   template: Omit<UnsignedNostrEvent, "created_at"> & {
@@ -91,6 +100,11 @@ export async function signNostrEvent(
       throw new Error("The NIP-07 extension returned an invalid signed event.");
     }
     return signed;
+  }
+
+  const browserSecret = await getBrowserSecretKey();
+  if (browserSecret) {
+    return finalizeEvent(unsigned, browserSecret);
   }
 
   if (options?.requireNip07) {

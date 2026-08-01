@@ -1,5 +1,51 @@
 name: buzz-prod
 
+x-varvik-agent-environment: &varvik-agent-environment
+  DATABASE_URL: postgres://${POSTGRES_USER:-buzz}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-buzz}
+  REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379
+  # Host-derived community routing requires the canonical public relay host.
+  BUZZ_RELAY_URL: ${BUZZ_AGENT_RELAY_URL:-${RELAY_URL:-ws://relay:3000}}
+  CODEX_API_KEY: ${CODEX_API_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  BUZZ_ACP_AGENT_COMMAND: codex-acp
+  BUZZ_ACP_AGENT_ARGS: ""
+  BUZZ_ACP_RESPOND_TO: anyone
+  BUZZ_ACP_ALLOWED_RESPOND_TO: owner-only,anyone
+  BUZZ_ACP_SUBSCRIBE: mentions
+  BUZZ_ACP_LAZY_POOL: "true"
+  # Reject any tool action that asks to escape the runtime's normal sandbox.
+  # Safe read/edit operations can still run inside the isolated container.
+  BUZZ_ACP_PERMISSION_MODE: dont-ask
+
+x-varvik-agent-service: &varvik-agent-service
+  profiles: ["agents"]
+  image: ${BUZZ_AGENT_IMAGE:-buzz-varvik-agent:local}
+  # Share the relay namespace so the canonical localhost URL used by the
+  # default single-host deployment reaches the relay without changing Host.
+  network_mode: service:relay
+  env_file:
+    - .env
+  environment: *varvik-agent-environment
+  depends_on:
+    relay:
+      condition: service_healthy
+    agent-relay-alias:
+      condition: service_started
+  restart: unless-stopped
+  read_only: true
+  tmpfs:
+    - /tmp:rw,nosuid,nodev,size=256m
+  cap_drop:
+    - ALL
+  cap_add:
+    - CHOWN
+    - DAC_OVERRIDE
+    - FOWNER
+    - SETGID
+    - SETUID
+  security_opt:
+    - no-new-privileges:true
+
 services:
   relay:
     image: ${BUZZ_IMAGE:-ghcr.io/block/buzz:main}
@@ -20,6 +66,8 @@ services:
       BUZZ_GIT_REPO_PATH: /data/git
       BUZZ_AUTO_MIGRATE: ${BUZZ_AUTO_MIGRATE:-false}
       BUZZ_GIT_CONFORMANCE_PROBE: ${BUZZ_GIT_CONFORMANCE_PROBE:-true}
+      BUZZ_SERVE_WEB_WORKSPACE: ${BUZZ_SERVE_WEB_WORKSPACE:-true}
+      BUZZ_SERVE_GIT_WEB_GUI: ${BUZZ_SERVE_GIT_WEB_GUI:-true}
     ports:
       - "${BUZZ_HTTP_PORT:-3000}:3000"
     volumes:
@@ -47,6 +95,285 @@ services:
     restart: unless-stopped
     networks:
       - buzz-net
+
+  # Agents share the relay's network namespace so the URL host remains the
+  # canonical community boundary. Local deployments publish 3300 on the host
+  # while the relay listens on 3000 internally, so provide that canonical port
+  # inside the namespace as a narrow TCP forwarder.
+  agent-relay-alias:
+    profiles: ["agents", "personal-agents"]
+    image: alpine/socat:1.8.0.3
+    network_mode: service:relay
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - >-
+        if [ "${BUZZ_HTTP_PORT:-3000}" = "3000" ]; then
+          exec tail -f /dev/null;
+        fi;
+        exec socat
+        TCP-LISTEN:${BUZZ_HTTP_PORT:-3000},fork,reuseaddr
+        TCP-CONNECT:127.0.0.1:3000
+    depends_on:
+      relay:
+        condition: service_healthy
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  agent:
+    <<: *varvik-agent-service
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: agent-runtime
+    environment:
+      <<: *varvik-agent-environment
+      BUZZ_PRIVATE_KEY: ${VARVIK_AGENT_PRIVATE_KEY:-}
+      VARVIK_AGENT_PUBKEY: ${VARVIK_AGENT_PUBKEY:-}
+      BUZZ_ACP_DISPLAY_NAME: ${VARVIK_AGENT_NAME:-VarVik Guide}
+      BUZZ_ACP_PROFILE_ABOUT: General-purpose collaborator for the VarVik Studios community
+      BUZZ_ACP_PROFILE_ACCESS_TIER: shared
+      BUZZ_ACP_SYSTEM_PROMPT: >-
+        You are VarVik Guide, the general-purpose community coordinator for VarVik
+        Studios. Help members plan work, synthesize discussions, route requests
+        to the right specialist, and produce concise, actionable responses. Use
+        simple language that every team member can understand.
+    volumes:
+      - buzz-agent-codex-data:/home/node/.codex
+
+  agent-engineering:
+    <<: *varvik-agent-service
+    environment:
+      <<: *varvik-agent-environment
+      BUZZ_ACP_DISPLAY_NAME: VarVik Engineer
+      BUZZ_ACP_PROFILE_ABOUT: Engineering, architecture, code review, and release specialist
+      BUZZ_ACP_PROFILE_ACCESS_TIER: shared
+      BUZZ_ACP_SYSTEM_PROMPT: >-
+        You are VarVik Engineer. Focus on software architecture, implementation,
+        debugging, code review, testing, security, and release readiness. Be
+        precise, explain tradeoffs in simple language, and end with concrete next
+        actions. Put code changes on a separate branch and never merge or deploy.
+    volumes:
+      - buzz-agent-engineering-codex-data:/home/node/.codex
+
+  agent-creative:
+    <<: *varvik-agent-service
+    environment:
+      <<: *varvik-agent-environment
+      BUZZ_ACP_DISPLAY_NAME: VarVik Creative
+      BUZZ_ACP_PROFILE_ABOUT: Brand, product design, writing, and creative direction specialist
+      BUZZ_ACP_PROFILE_ACCESS_TIER: shared
+      BUZZ_ACP_SYSTEM_PROMPT: >-
+        You are VarVik Creative. Help with product design, brand systems, UX,
+        creative direction, copywriting, storytelling, and constructive critique.
+        Keep recommendations distinctive, practical, and aligned with VarVik Studios.
+    volumes:
+      - buzz-agent-creative-codex-data:/home/node/.codex
+
+  agent-research:
+    <<: *varvik-agent-service
+    environment:
+      <<: *varvik-agent-environment
+      BUZZ_ACP_DISPLAY_NAME: VarVik Research
+      BUZZ_ACP_PROFILE_ABOUT: Research, synthesis, market intelligence, and strategy specialist
+      BUZZ_ACP_PROFILE_ACCESS_TIER: shared
+      BUZZ_ACP_SYSTEM_PROMPT: >-
+        You are VarVik Research. Investigate questions, compare evidence,
+        summarize sources, identify uncertainty, and turn findings into strategic
+        recommendations. Separate verified facts from inference.
+    volumes:
+      - buzz-agent-research-codex-data:/home/node/.codex
+
+  agent-command:
+    <<: *varvik-agent-service
+    environment:
+      <<: *varvik-agent-environment
+      BUZZ_ACP_DISPLAY_NAME: VarVik Command
+      BUZZ_ACP_PROFILE_ABOUT: Private CTO coordinator for Buzz, Watchdog, Sylars, and GitHub work
+      BUZZ_ACP_PROFILE_AUDIENCE: owner
+      BUZZ_ACP_PROFILE_ACCESS_TIER: admin
+      BUZZ_ACP_PROFILE_OWNER_PUBKEY: ${VARUN_PUBKEY:-${RELAY_OWNER_PUBKEY:-}}
+      BUZZ_ACP_AGENT_OWNER: ${VARUN_PUBKEY:-${RELAY_OWNER_PUBKEY:-}}
+      BUZZ_ACP_RESPOND_TO: owner-only
+      BUZZ_ACP_CHANNEL_ADD_POLICY: anyone
+      BUZZ_ACP_SYSTEM_PROMPT: >-
+        You are VarVik Command, Varun's private coordinator. Turn his requests
+        into a clear plan, delegate investigation to the right specialist, and
+        report one combined result. Explain proposed actions and outcomes before
+        tools are used. Never claim Watchdog, Sylars, or GitHub access unless the
+        relevant connector is actually available.
+    volumes:
+      - buzz-agent-command-codex-data:/home/node/.codex
+
+  agent-watchdog:
+    <<: *varvik-agent-service
+    environment:
+      <<: *varvik-agent-environment
+      BUZZ_ACP_DISPLAY_NAME: Watchdog Sentinel
+      BUZZ_ACP_PROFILE_ABOUT: Private incident, reliability, and regression investigator
+      BUZZ_ACP_PROFILE_AUDIENCE: owner
+      BUZZ_ACP_PROFILE_ACCESS_TIER: admin
+      BUZZ_ACP_PROFILE_OWNER_PUBKEY: ${VARUN_PUBKEY:-${RELAY_OWNER_PUBKEY:-}}
+      BUZZ_ACP_AGENT_OWNER: ${VARUN_PUBKEY:-${RELAY_OWNER_PUBKEY:-}}
+      BUZZ_ACP_RESPOND_TO: owner-only
+      BUZZ_ACP_CHANNEL_ADD_POLICY: anyone
+      BUZZ_ACP_SYSTEM_PROMPT: >-
+        You are Watchdog Sentinel. Investigate alerts, failures, uptime, and
+        regressions for Varun. Start read-only, explain the likely cause in plain
+        language, and recommend the safest next step. Never stop or restart a
+        service, change production, or remove data without explicit approval.
+    volumes:
+      - buzz-agent-watchdog-codex-data:/home/node/.codex
+
+  agent-sylars:
+    <<: *varvik-agent-service
+    environment:
+      <<: *varvik-agent-environment
+      BUZZ_ACP_DISPLAY_NAME: Sylars Coordinator
+      BUZZ_ACP_PROFILE_ABOUT: Private work-manager coordinator for assignments, priorities, and blockers
+      BUZZ_ACP_PROFILE_AUDIENCE: owner
+      BUZZ_ACP_PROFILE_ACCESS_TIER: admin
+      BUZZ_ACP_PROFILE_OWNER_PUBKEY: ${VARUN_PUBKEY:-${RELAY_OWNER_PUBKEY:-}}
+      BUZZ_ACP_AGENT_OWNER: ${VARUN_PUBKEY:-${RELAY_OWNER_PUBKEY:-}}
+      BUZZ_ACP_RESPOND_TO: owner-only
+      BUZZ_ACP_CHANNEL_ADD_POLICY: anyone
+      BUZZ_ACP_SYSTEM_PROMPT: >-
+        You are Sylars Coordinator. Help Varun review assignments, priorities,
+        blockers, and progress across Sylars Work Manager and Buzz. Explain every
+        proposed ticket change first. Do not delete, close, or bulk-reassign work
+        without explicit approval.
+    volumes:
+      - buzz-agent-sylars-codex-data:/home/node/.codex
+
+  agent-forge:
+    <<: *varvik-agent-service
+    environment:
+      <<: *varvik-agent-environment
+      BUZZ_ACP_DISPLAY_NAME: VarVik Forge
+      BUZZ_ACP_PROFILE_ABOUT: Private GitHub issue, code-fix, testing, and pull-request specialist
+      BUZZ_ACP_PROFILE_AUDIENCE: owner
+      BUZZ_ACP_PROFILE_ACCESS_TIER: admin
+      BUZZ_ACP_PROFILE_OWNER_PUBKEY: ${VARUN_PUBKEY:-${RELAY_OWNER_PUBKEY:-}}
+      BUZZ_ACP_AGENT_OWNER: ${VARUN_PUBKEY:-${RELAY_OWNER_PUBKEY:-}}
+      BUZZ_ACP_RESPOND_TO: owner-only
+      BUZZ_ACP_CHANNEL_ADD_POLICY: anyone
+      BUZZ_ACP_SYSTEM_PROMPT: >-
+        You are VarVik Forge, Varun's private development agent. Diagnose GitHub
+        issues, make changes only on isolated branches, run tests, and prepare
+        draft pull requests. Explain the intended change and outcome first.
+        Never delete a repository or branch, force-push, merge, deploy, or remove
+        substantial code without explicit approval.
+    volumes:
+      - buzz-agent-forge-codex-data:/home/node/.codex
+
+  agent-personal-varun:
+    <<: *varvik-agent-service
+    profiles: ["personal-agents"]
+    environment:
+      <<: *varvik-agent-environment
+      BUZZ_ACP_DISPLAY_NAME: Varun Companion
+      BUZZ_ACP_PROFILE_ABOUT: Varun's private assistant and daily brief
+      BUZZ_ACP_PROFILE_AUDIENCE: owner
+      BUZZ_ACP_PROFILE_ACCESS_TIER: personal
+      BUZZ_ACP_PROFILE_MEMBER_NAME: Varun
+      BUZZ_ACP_PROFILE_OWNER_PUBKEY: ${VARUN_PUBKEY:-${RELAY_OWNER_PUBKEY:-}}
+      BUZZ_ACP_AGENT_OWNER: ${VARUN_PUBKEY:-${RELAY_OWNER_PUBKEY:-}}
+      BUZZ_ACP_RESPOND_TO: owner-only
+      BUZZ_ACP_PRIVATE_CHANNEL_NAME: brief-varun
+      BUZZ_ACP_CHANNEL_ADD_POLICY: nobody
+      BUZZ_ACP_SYSTEM_PROMPT: >-
+        You are Varun Companion, Varun's private assistant. Help with his assigned
+        work, mentions, priorities, reminders, research, and daily brief. Keep all
+        personal information and scheduled summaries in brief-varun.
+    volumes:
+      - buzz-agent-personal-varun-codex-data:/home/node/.codex
+
+  agent-personal-vikram:
+    <<: *varvik-agent-service
+    profiles: ["personal-agents"]
+    environment:
+      <<: *varvik-agent-environment
+      BUZZ_ACP_DISPLAY_NAME: Vikram Companion
+      BUZZ_ACP_PROFILE_ABOUT: Vikram's private assistant and daily brief
+      BUZZ_ACP_PROFILE_AUDIENCE: owner
+      BUZZ_ACP_PROFILE_ACCESS_TIER: personal
+      BUZZ_ACP_PROFILE_MEMBER_NAME: Vikram
+      BUZZ_ACP_PROFILE_OWNER_PUBKEY: ${VIKRAM_PUBKEY:-}
+      BUZZ_ACP_AGENT_OWNER: ${VIKRAM_PUBKEY:-}
+      BUZZ_ACP_RESPOND_TO: owner-only
+      BUZZ_ACP_PRIVATE_CHANNEL_NAME: brief-vikram
+      BUZZ_ACP_CHANNEL_ADD_POLICY: nobody
+      BUZZ_ACP_SYSTEM_PROMPT: >-
+        You are Vikram Companion, Vikram's private assistant. Help with assigned
+        work, mentions, priorities, reminders, research, and a private daily brief.
+    volumes:
+      - buzz-agent-personal-vikram-codex-data:/home/node/.codex
+
+  agent-personal-adhika:
+    <<: *varvik-agent-service
+    profiles: ["personal-agents"]
+    environment:
+      <<: *varvik-agent-environment
+      BUZZ_ACP_DISPLAY_NAME: Adhika Companion
+      BUZZ_ACP_PROFILE_ABOUT: Adhika's private assistant and daily brief
+      BUZZ_ACP_PROFILE_AUDIENCE: owner
+      BUZZ_ACP_PROFILE_ACCESS_TIER: personal
+      BUZZ_ACP_PROFILE_MEMBER_NAME: Adhika
+      BUZZ_ACP_PROFILE_OWNER_PUBKEY: ${ADHIKA_PUBKEY:-}
+      BUZZ_ACP_AGENT_OWNER: ${ADHIKA_PUBKEY:-}
+      BUZZ_ACP_RESPOND_TO: owner-only
+      BUZZ_ACP_PRIVATE_CHANNEL_NAME: brief-adhika
+      BUZZ_ACP_CHANNEL_ADD_POLICY: nobody
+      BUZZ_ACP_SYSTEM_PROMPT: >-
+        You are Adhika Companion, Adhika's private assistant. Help with assigned
+        work, mentions, priorities, reminders, research, and a private daily brief.
+    volumes:
+      - buzz-agent-personal-adhika-codex-data:/home/node/.codex
+
+  agent-personal-swathi:
+    <<: *varvik-agent-service
+    profiles: ["personal-agents"]
+    environment:
+      <<: *varvik-agent-environment
+      BUZZ_ACP_DISPLAY_NAME: Swathi Companion
+      BUZZ_ACP_PROFILE_ABOUT: Swathi's private assistant and daily brief
+      BUZZ_ACP_PROFILE_AUDIENCE: owner
+      BUZZ_ACP_PROFILE_ACCESS_TIER: personal
+      BUZZ_ACP_PROFILE_MEMBER_NAME: Swathi
+      BUZZ_ACP_PROFILE_OWNER_PUBKEY: ${SWATHI_PUBKEY:-}
+      BUZZ_ACP_AGENT_OWNER: ${SWATHI_PUBKEY:-}
+      BUZZ_ACP_RESPOND_TO: owner-only
+      BUZZ_ACP_PRIVATE_CHANNEL_NAME: brief-swathi
+      BUZZ_ACP_CHANNEL_ADD_POLICY: nobody
+      BUZZ_ACP_SYSTEM_PROMPT: >-
+        You are Swathi Companion, Swathi's private assistant. Help with assigned
+        work, mentions, priorities, reminders, research, and a private daily brief.
+    volumes:
+      - buzz-agent-personal-swathi-codex-data:/home/node/.codex
+
+  agent-personal-raja:
+    <<: *varvik-agent-service
+    profiles: ["personal-agents"]
+    environment:
+      <<: *varvik-agent-environment
+      BUZZ_ACP_DISPLAY_NAME: Raja Companion
+      BUZZ_ACP_PROFILE_ABOUT: Raja's private assistant and daily brief
+      BUZZ_ACP_PROFILE_AUDIENCE: owner
+      BUZZ_ACP_PROFILE_ACCESS_TIER: personal
+      BUZZ_ACP_PROFILE_MEMBER_NAME: Raja
+      BUZZ_ACP_PROFILE_OWNER_PUBKEY: ${RAJA_PUBKEY:-}
+      BUZZ_ACP_AGENT_OWNER: ${RAJA_PUBKEY:-}
+      BUZZ_ACP_RESPOND_TO: owner-only
+      BUZZ_ACP_PRIVATE_CHANNEL_NAME: brief-raja
+      BUZZ_ACP_CHANNEL_ADD_POLICY: nobody
+      BUZZ_ACP_SYSTEM_PROMPT: >-
+        You are Raja Companion, Raja's private assistant. Help with assigned work,
+        mentions, priorities, reminders, research, and a private daily brief.
+    volumes:
+      - buzz-agent-personal-raja-codex-data:/home/node/.codex
 
   postgres:
     image: postgres:17-alpine
@@ -122,6 +449,45 @@ services:
       - buzz-net
 
 volumes:
+  buzz-agent-codex-data:
+    labels:
+      com.buzz.volume: agent-codex
+  buzz-agent-engineering-codex-data:
+    labels:
+      com.buzz.volume: agent-engineering-codex
+  buzz-agent-creative-codex-data:
+    labels:
+      com.buzz.volume: agent-creative-codex
+  buzz-agent-research-codex-data:
+    labels:
+      com.buzz.volume: agent-research-codex
+  buzz-agent-command-codex-data:
+    labels:
+      com.buzz.volume: agent-command-codex
+  buzz-agent-watchdog-codex-data:
+    labels:
+      com.buzz.volume: agent-watchdog-codex
+  buzz-agent-sylars-codex-data:
+    labels:
+      com.buzz.volume: agent-sylars-codex
+  buzz-agent-forge-codex-data:
+    labels:
+      com.buzz.volume: agent-forge-codex
+  buzz-agent-personal-varun-codex-data:
+    labels:
+      com.buzz.volume: agent-personal-varun-codex
+  buzz-agent-personal-vikram-codex-data:
+    labels:
+      com.buzz.volume: agent-personal-vikram-codex
+  buzz-agent-personal-adhika-codex-data:
+    labels:
+      com.buzz.volume: agent-personal-adhika-codex
+  buzz-agent-personal-swathi-codex-data:
+    labels:
+      com.buzz.volume: agent-personal-swathi-codex
+  buzz-agent-personal-raja-codex-data:
+    labels:
+      com.buzz.volume: agent-personal-raja-codex
   buzz-postgres-data:
     labels:
       com.buzz.volume: postgres

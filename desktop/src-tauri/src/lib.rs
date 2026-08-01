@@ -962,22 +962,6 @@ pub fn run() {
     let run_shutdown_done = Arc::clone(&shutdown_done);
     let restart_requested = Arc::new(AtomicBool::new(false));
     app.run(move |app_handle, event| match event {
-        #[cfg(target_os = "macos")]
-        RunEvent::Reopen { .. } => show_main_window(app_handle),
-        #[cfg(target_os = "macos")]
-        RunEvent::WindowEvent {
-            label,
-            event: WindowEvent::CloseRequested { api, .. },
-            ..
-        } if label == "main" => {
-            // Keep the webview alive so Buzz can be reopened from its tray menu.
-            api.prevent_close();
-            if let Some(window) = app_handle.get_webview_window("main") {
-                if let Err(error) = window.hide() {
-                    eprintln!("buzz-desktop: failed to hide main window: {error}");
-                }
-            }
-        }
         RunEvent::ExitRequested { code, .. } => {
             // Mark a genuine quit so the close-to-tray window handler lets the
             // window close instead of hiding it during teardown.

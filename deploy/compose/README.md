@@ -23,6 +23,111 @@ The bootstrap script should eventually replace manual `.env` editing for normal
 users. It is responsible for generating stable secrets and, optionally, an owner
 keypair.
 
+The default stack serves one browser workspace at the deployment root and keeps
+the repository browser at `/repos`. It does not provision or switch between
+multiple communities.
+
+## Hosted AI agents
+
+The optional `agents` profile runs four shared collaborators and four
+owner-visible control agents through the existing Buzz ACP harness and Codex
+adapter.
+
+- `VarVik Guide` — general coordination and synthesis
+- `VarVik Engineer` — architecture, implementation, testing, and releases
+- `VarVik Creative` — product design, brand, UX, writing, and critique
+- `VarVik Research` — research, evidence synthesis, and strategy
+- `VarVik Command` — Varun's private cross-tool coordinator
+- `Watchdog Sentinel` — private incident and regression investigator
+- `Sylars Coordinator` — private work-manager coordinator
+- `VarVik Forge` — private GitHub issue, fix, test, and pull-request specialist
+
+The private agents publish owner-scoped directory metadata. The browser shows
+them only when the signed-in pubkey matches `VARUN_PUBKEY` (falling back to
+`RELAY_OWNER_PUBKEY`), and the ACP author gate accepts prompts only from that
+owner. This is in addition to channel membership enforcement.
+
+Each agent generates a stable Nostr identity in its own private named volume on
+first startup. To use API billing, set either `CODEX_API_KEY` or
+`OPENAI_API_KEY`, then:
+
+```bash
+./run.sh start-agents
+```
+
+`BUZZ_AGENT_RELAY_URL` must use the community's canonical public hostname so
+host-derived routing selects the same community as browser clients. It defaults
+to `RELAY_URL`; override it only when the agent needs a different reachable URL.
+
+To reuse an existing ChatGPT/Codex login instead, set
+`VARVIK_CODEX_AUTH_FILE` to the absolute path of its `auth.json` and run:
+
+```bash
+./run.sh start-agents-chatgpt
+```
+
+That file is mounted read-only and seeds each agent's dedicated state volume
+with mode `0600` on first startup. Those volumes preserve agent identities and
+token refreshes across container upgrades. To deliberately replace the login,
+remove the affected `agent-*-codex` volume and start that agent again. Use this only
+on a server you control: each hosted agent necessarily receives the credential
+needed to call Codex. The credential is never served to browser clients.
+
+Each container registers itself as a relay member and publishes its agent
+profile. An owner/admin then opens a channel in the browser and adds the relevant
+shared or admin agent. Mentioning an agent sends work to its server runtime. The
+browser itself never receives the OpenAI credential and never runs shell or file
+tools.
+
+### Personal Companions and private morning briefs
+
+The `personal-agents` profile provides one isolated identity and state volume
+for each of the five team members:
+
+- `Varun Companion` → `brief-varun`
+- `Vikram Companion` → `brief-vikram`
+- `Adhika Companion` → `brief-adhika`
+- `Swathi Companion` → `brief-swathi`
+- `Raja Companion` → `brief-raja`
+
+Set `VARUN_PUBKEY`, `VIKRAM_PUBKEY`, `ADHIKA_PUBKEY`, `SWATHI_PUBKEY`, and
+`RAJA_PUBKEY` in `.env`. Varun may omit `VARUN_PUBKEY` when
+`RELAY_OWNER_PUBKEY` is his identity. Then start the personal fleet with one of:
+
+```bash
+./run.sh start-personal-agents
+./run.sh start-personal-agents-chatgpt
+```
+
+On first start each Companion creates its private channel, makes its human owner
+a channel owner, restricts its subscription to that channel, and disables
+third-party channel additions. A heartbeat is aligned to 03:30 UTC (09:00 IST)
+and posts only to that private channel. A brief reports only data available from
+connected sources and must name missing sources rather than inventing tasks.
+
+### Safety boundary
+
+All hosted agents receive `agent-safety-policy.md` as team-owned instructions.
+The Compose runtime is read-only, unprivileged, has no Docker socket, and mounts
+no host repository. Its permission mode rejects requests to escape the normal
+sandbox. Agents can investigate and prepare work in their isolated runtime, but
+the deployment does not give them credentials to merge, deploy, stop services,
+delete repositories, or administer infrastructure.
+
+GitHub, Watchdog, and Sylars credentials are deliberately not part of this
+bundle. Add those later through separate least-privilege connectors: read access
+first, branch/draft-PR or ticket-update access second, and an owner approval gate
+for any destructive or production-changing action. A model subscription is not
+an authorization credential for those tools.
+
+### Open the community in Buzz Desktop
+
+In the browser workspace, open Settings and choose **Open in Buzz Desktop**.
+The browser mints a one-use invite and opens a `buzz://join` link. Buzz Desktop
+claims the invite using its own securely stored identity, adds the same relay as
+a community, and switches to it. For a local install the relay is
+`ws://localhost:3300`; on a server use its public `wss://` address.
+
 ## Production notes
 
 - Requires Docker Compose v2.24.4 or newer; the TLS override uses Compose's

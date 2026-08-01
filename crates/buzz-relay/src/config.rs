@@ -283,6 +283,9 @@ pub struct Config {
     /// When set, the relay serves the invite landing page and its static assets.
     /// When unset, no static file serving happens (relay behaves as before).
     pub web_dir: Option<std::path::PathBuf>,
+    /// Whether the configured web bundle serves the browser workspace at `/`.
+    /// Defaults to false so relay-only deployments retain NIP-11 at the root.
+    pub serve_web_workspace: bool,
     /// Whether the configured web bundle serves Git browser routes in addition
     /// to the public invite landing page. Defaults to false.
     pub serve_git_web_gui: bool,
@@ -975,6 +978,9 @@ impl Config {
         let serve_git_web_gui = std::env::var("BUZZ_SERVE_GIT_WEB_GUI")
             .map(|value| value == "true" || value == "1")
             .unwrap_or(false);
+        let serve_web_workspace = std::env::var("BUZZ_SERVE_WEB_WORKSPACE")
+            .map(|value| value == "true" || value == "1")
+            .unwrap_or(false);
 
         if let Some(ref dir) = web_dir {
             if !dir.join("index.html").is_file() {
@@ -1051,6 +1057,7 @@ impl Config {
             join_policy,
             admin,
             web_dir,
+            serve_web_workspace,
             serve_git_web_gui,
         })
     }
@@ -1099,6 +1106,10 @@ mod tests {
         assert!(
             !config.allow_nip_oa_auth,
             "allow_nip_oa_auth should default to false"
+        );
+        assert!(
+            !config.serve_web_workspace,
+            "serve_web_workspace should default to false"
         );
         assert!(
             !config.serve_git_web_gui,

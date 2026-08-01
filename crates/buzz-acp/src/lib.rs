@@ -1570,8 +1570,13 @@ async fn tokio_main() -> Result<()> {
 
     let mut heartbeat = if config.heartbeat_interval_secs > 0 {
         let interval = Duration::from_secs(config.heartbeat_interval_secs);
+        let initial_delay = Duration::from_secs(
+            config
+                .heartbeat_initial_delay_secs
+                .unwrap_or(config.heartbeat_interval_secs),
+        );
         Some(tokio::time::interval_at(
-            tokio::time::Instant::now() + interval,
+            tokio::time::Instant::now() + initial_delay,
             interval,
         ))
     } else {
@@ -5004,6 +5009,7 @@ mod build_mcp_servers_tests {
             max_turn_duration_secs: config::DEFAULT_MAX_TURN_DURATION_SECS,
             agents: 1,
             heartbeat_interval_secs: 0,
+            heartbeat_initial_delay_secs: None,
             turn_liveness_secs: 10,
             heartbeat_prompt: None,
             system_prompt: None,
@@ -5225,6 +5231,7 @@ mod error_outcome_emission_tests {
             max_turn_duration_secs: config::DEFAULT_MAX_TURN_DURATION_SECS,
             agents: 1,
             heartbeat_interval_secs: 0,
+            heartbeat_initial_delay_secs: None,
             turn_liveness_secs: 10,
             heartbeat_prompt: None,
             system_prompt: None,

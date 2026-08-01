@@ -4,13 +4,90 @@ use nostr::PublicKey;
 use serde_json::json;
 
 use crate::agent_management::{build_create, build_update, CreateAgentDraft, UpdateAgentDraft};
-use crate::client::BuzzClient;
+use crate::client::{normalize_write_response, BuzzClient};
 use crate::error::CliError;
 use crate::validate::{read_or_stdin, validate_hex64};
 use crate::{AgentsCmd, RespondToArg};
 
 pub async fn dispatch(command: AgentsCmd, client: &BuzzClient) -> Result<(), CliError> {
     match command {
+        AgentsCmd::PublishProfile {
+            display_name,
+            about,
+            audience,
+            owner_pubkey,
+            access_tier,
+            channel_add_policy,
+        } => {
+            let display_name = display_name.trim();
+            if display_name.is_empty() {
+                return Err(CliError::Usage(
+                    "--display-name must not be empty".to_string(),
+                ));
+            }
+            let audience = audience.trim();
+            if !matches!(audience, "community" | "owner") {
+                return Err(CliError::Usage(
+                    "--audience must be 'community' or 'owner'".to_string(),
+                ));
+            }
+            let access_tier = access_tier.trim();
+            if !matches!(access_tier, "shared" | "personal" | "admin") {
+                return Err(CliError::Usage(
+                    "--access-tier must be 'shared', 'personal', or 'admin'".to_string(),
+                ));
+            }
+            let channel_add_policy = channel_add_policy.trim();
+            if !matches!(channel_add_policy, "anyone" | "owner_only" | "nobody") {
+                return Err(CliError::Usage(
+                    "--channel-add-policy must be 'anyone', 'owner_only', or 'nobody'".to_string(),
+                ));
+            }
+            if let Ok(allowed_raw) = std::env::var("BUZZ_ACP_ALLOWED_CHANNEL_ADD_POLICIES") {
+                let allowed = allowed_raw
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .collect::<Vec<_>>();
+                if !allowed.is_empty() && !allowed.contains(&channel_add_policy) {
+                    return Err(CliError::Usage(format!(
+                        "channel addition policy '{channel_add_policy}' is not permitted on this deployment"
+                    )));
+                }
+            }
+            let owner_pubkey = owner_pubkey
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            if audience == "owner" && owner_pubkey.is_none() {
+                return Err(CliError::Usage(
+                    "--owner-pubkey is required when --audience=owner".to_string(),
+                ));
+            }
+            if let Some(pubkey) = owner_pubkey {
+                validate_hex64(pubkey)?;
+            }
+            let content = serde_json::json!({
+                "name": display_name,
+                "display_name": display_name,
+                "about": about,
+                "agent_type": "agent",
+                "status": "online",
+                "audience": audience,
+                "owner_pubkey": owner_pubkey,
+                "access_tier": access_tier,
+                "channel_add_policy": channel_add_policy,
+            })
+            .to_string();
+            let builder = nostr::EventBuilder::new(
+                nostr::Kind::Custom(buzz_core::kind::KIND_AGENT_PROFILE as u16),
+                content,
+            );
+            let event = client.sign_event(builder)?;
+            let response = client.submit_event(event).await?;
+            println!("{}", normalize_write_response(&response));
+            Ok(())
+        }
         AgentsCmd::DraftCreate {
             channel,
             display_name,
