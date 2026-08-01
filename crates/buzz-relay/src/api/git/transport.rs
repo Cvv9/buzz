@@ -594,6 +594,7 @@ mod git_read_authorization_tests {
                 30617,
                 &owner.public_key().to_bytes(),
                 &repo_name,
+                chrono::Utc::now().timestamp() + 60,
             )
             .await
             .expect("soft-delete announcement"),
@@ -3032,10 +3033,18 @@ mod sec005_read_gate_tests {
         );
 
         let owner_pk = f.owner_keys.public_key().to_bytes().to_vec();
+        // Tombstone timestamped after the announcement, per NIP-09's
+        // at-or-before scoping in `soft_delete_by_coordinate`.
         let deleted =
-            f.db.soft_delete_by_coordinate(f.community, 30617, &owner_pk, &f.repo)
-                .await
-                .expect("soft delete 30617");
+            f.db.soft_delete_by_coordinate(
+                f.community,
+                30617,
+                &owner_pk,
+                &f.repo,
+                chrono::Utc::now().timestamp() + 60,
+            )
+            .await
+            .expect("soft delete 30617");
         assert!(deleted, "precondition: a live announcement row was deleted");
 
         assert!(

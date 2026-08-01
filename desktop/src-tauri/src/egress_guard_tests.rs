@@ -240,7 +240,7 @@ fn src_rust_files() -> Vec<std::path::PathBuf> {
 /// guard + adding an injection test for the new site.
 const EVENTS_INVENTORY: &[(&str, usize, usize)] = &[
     // Production egress boundaries (see egress_guard.rs table):
-    ("src/relay.rs", 2, 2),                             // boundaries 2, 4
+    ("src/relay.rs", 2, 5),                             // boundaries 2, 4
     ("src/relay/submit.rs", 1, 1),                      // boundaries 1 + 3 (shared funnel)
     ("src/huddle/pipeline.rs", 1, 1),                   // boundary 5
     ("src/commands/team_snapshot.rs", 1, 1),            // boundary 6

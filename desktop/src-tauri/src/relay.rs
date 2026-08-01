@@ -453,6 +453,16 @@ pub async fn sync_managed_agent_profile(
     avatar_url: Option<&str>,
     auth_tag: Option<&str>, // NIP-OA auth tag JSON
 ) -> Result<(), String> {
+    // Reject local profile inputs before the initial profile query so secret
+    // material never triggers network I/O, even when event construction would
+    // later reject the final outbound body as well.
+    crate::egress_guard::assert_no_key_backup(display_name, "agent profile display name")?;
+    if let Some(avatar_url) = avatar_url {
+        crate::egress_guard::assert_no_key_backup(avatar_url, "agent profile avatar URL")?;
+    }
+    if let Some(auth_tag) = auth_tag {
+        crate::egress_guard::assert_no_key_backup(auth_tag, "agent profile auth tag")?;
+    }
     crate::relay_admission::wait_for_rate_limit().await;
     let agent_pubkey = agent_keys.public_key().to_hex();
     let existing_profile = query_agent_profile(state, relay_url, &agent_pubkey)
