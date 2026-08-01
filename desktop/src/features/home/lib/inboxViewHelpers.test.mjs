@@ -67,13 +67,12 @@ test("hasInboxThreadContext keeps standalone and broadcast activity unthreaded",
 
 // --- matchesInboxFilter ---
 
-test("matchesInboxFilter returns true for the 'all' filter regardless of categories", () => {
-  assert.equal(matchesInboxFilter({ categories: [] }, "all"), true);
-  assert.equal(matchesInboxFilter({ categories: ["mentions"] }, "all"), true);
+test("matchesInboxFilter keeps generic channel traffic out of the All view", () => {
+  assert.equal(matchesInboxFilter({ categories: [] }, "all"), false);
+  assert.equal(matchesInboxFilter({ categories: ["mention"] }, "all"), true);
 });
 
 test("Inbox All excludes generic top-level channel traffic", () => {
-  const owned = new Set(["owned-agent"]);
   assert.equal(
     matchesInboxAllView(
       {
@@ -84,14 +83,12 @@ test("Inbox All excludes generic top-level channel traffic", () => {
           tags: [["h", "channel"]],
         },
       },
-      owned,
     ),
     false,
   );
 });
 
 test("Inbox All includes each personally relevant message source", () => {
-  const owned = new Set(["owned-agent"]);
   const cases = [
     {
       categories: ["activity"],
@@ -115,10 +112,6 @@ test("Inbox All includes each personally relevant message source", () => {
     },
     {
       categories: ["activity"],
-      item: { channelType: "stream", pubkey: "OWNED-AGENT", tags: [] },
-    },
-    {
-      categories: ["activity"],
       item: {
         channelType: null,
         id: "project-pull-request",
@@ -130,11 +123,11 @@ test("Inbox All includes each personally relevant message source", () => {
   ];
 
   for (const item of cases) {
-    assert.equal(matchesInboxAllView(item, owned), true);
+    assert.equal(matchesInboxAllView(item), true);
   }
 });
 
-test("Inbox All excludes generic updates from agents the user does not own", () => {
+test("Inbox All excludes generic agent posts, including owned agents", () => {
   assert.equal(
     matchesInboxAllView(
       {
@@ -145,9 +138,30 @@ test("Inbox All excludes generic updates from agents the user does not own", () 
           tags: [],
         },
       },
-      new Set(["owned-agent"]),
     ),
     false,
+  );
+  assert.equal(
+    matchesInboxAllView({
+      categories: ["agent_activity"],
+      item: {
+        channelType: "stream",
+        pubkey: "owned-agent",
+        tags: [],
+      },
+    }),
+    false,
+  );
+  assert.equal(
+    matchesInboxFilter(
+      {
+        categories: ["agent_activity"],
+        item: { pubkey: "owned-agent" },
+      },
+      "agent_activity",
+      new Set(["owned-agent"]),
+    ),
+    true,
   );
 });
 

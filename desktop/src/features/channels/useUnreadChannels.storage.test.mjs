@@ -62,6 +62,7 @@ test("activityStorageKey normalizes relay URL before embedding", () => {
   const key1 = activityStorageKey("pk1", "WSS://Relay.Example.Com/");
   const key2 = activityStorageKey("pk1", "wss://relay.example.com");
   assert.equal(key1, key2);
+  assert.match(key1, /^buzz-thread-activity\.v2:/);
 });
 
 test("activityStorageKey produces different keys for different relays", () => {
