@@ -183,7 +183,7 @@ services:
     environment:
       <<: *varvik-agent-environment
       BUZZ_ACP_DISPLAY_NAME: People & Culture
-      BUZZ_ACP_PROFILE_AVATAR: ${PEOPLE_CULTURE_AVATAR_URL:-}
+      BUZZ_ACP_PROFILE_AVATAR: ${PEOPLE_CULTURE_AVATAR_URL:-https://buzz.varvikstudios.com/media/9ddbbcd376c0a1be96de3d2c217c42330e725512f9e6e52d8995019f7a1b0749.jpg}
       BUZZ_ACP_PROFILE_ABOUT: Welcomes, opt-in introductions, team rituals, and verified milestone celebrations
       BUZZ_ACP_PROFILE_ACCESS_TIER: shared
       BUZZ_ACP_CHANNEL_ADD_POLICY: anyone
