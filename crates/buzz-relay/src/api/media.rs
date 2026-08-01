@@ -493,6 +493,15 @@ async fn authenticate_media_read(
 ) -> Result<MediaReadAuth, MediaError> {
     let tenant = bind_media_read_tenant(state, headers).await?;
 
+    authenticate_media_read_for_tenant(state, headers, sha256_ext, tenant).await
+}
+
+async fn authenticate_media_read_for_tenant(
+    state: &AppState,
+    headers: &HeaderMap,
+    sha256_ext: &str,
+    tenant: TenantContext,
+) -> Result<MediaReadAuth, MediaError> {
     if !state.config.require_media_get_auth {
         return Ok(MediaReadAuth { tenant });
     }
@@ -960,9 +969,6 @@ mod tests {
 
         let pool = sqlx::PgPool::connect_lazy(&config.database_url).expect("lazy pg pool");
         let db = buzz_db::Db::from_pool(pool.clone());
-        db.ensure_configured_community("relay.example")
-            .await
-            .expect("seed relay.example community for host-bound media tests");
         let redis_pool = deadpool_redis::Config::from_url(&config.redis_url)
             .create_pool(Some(deadpool_redis::Runtime::Tokio1))
             .expect("redis pool");
@@ -999,9 +1005,25 @@ mod tests {
         axum::Router::new()
             .route(
                 "/media/{sha256_ext}",
-                axum::routing::get(get_blob).head(head_blob),
+                axum::routing::get(get_blob_for_resolved_test_tenant)
+                    .head(get_blob_for_resolved_test_tenant),
             )
             .with_state(state)
+    }
+
+    async fn get_blob_for_resolved_test_tenant(
+        State(state): State<Arc<AppState>>,
+        Path(sha256_ext): Path<String>,
+        req_headers: HeaderMap,
+    ) -> Result<Response, MediaError> {
+        validate_media_path(&sha256_ext)?;
+        let tenant = TenantContext::resolved(
+            buzz_core::CommunityId::from_uuid(Uuid::from_u128(1)),
+            "relay.example",
+        );
+        let media_auth =
+            authenticate_media_read_for_tenant(&state, &req_headers, &sha256_ext, tenant).await?;
+        serve_blob_for_tenant(&state, &media_auth.tenant, &sha256_ext, &req_headers).await
     }
 
     fn media_get_auth_header(keys: &Keys, tags: Vec<Tag>) -> String {
