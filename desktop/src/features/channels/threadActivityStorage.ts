@@ -11,7 +11,10 @@ export type ThreadActivityItem = {
   tags: string[][];
 };
 
-const ACTIVITY_STORAGE_PREFIX = "buzz-thread-activity.v1";
+// v2 intentionally drops the pre-cleanup Inbox activity cache. The v1 bucket
+// could contain generic owned-agent channel posts from the legacy Inbox rules;
+// those rows must not reappear after the filtering fix ships.
+const ACTIVITY_STORAGE_PREFIX = "buzz-thread-activity.v2";
 const MAX_ACTIVITY_ITEMS = 100;
 
 // Scoped to relay+pubkey. The legacy pubkey-only key is intentionally not read

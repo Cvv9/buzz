@@ -1,4 +1,4 @@
-import { LogOut, X } from "lucide-react";
+import { Bell, LogOut, X } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
 import { mintBrowserInvite } from "@/features/invite/invite-api";
@@ -22,6 +22,13 @@ export function WorkspaceSettings({
   const [inviteUrl, setInviteUrl] = React.useState<string | null>(null);
   const [mintingInvite, setMintingInvite] = React.useState(false);
   const [openingDesktop, setOpeningDesktop] = React.useState(false);
+  const [notificationPermission, setNotificationPermission] = React.useState<
+    NotificationPermission | "unsupported"
+  >(() =>
+    typeof Notification === "undefined"
+      ? "unsupported"
+      : Notification.permission,
+  );
   return (
     <div className="fixed inset-0 z-50 flex justify-end bg-black/35">
       <button
@@ -70,6 +77,43 @@ export function WorkspaceSettings({
             onClick={() => void exportBrowserIdentity().then(setBackup)}
           >
             {backup ? "Recovery key revealed" : "Reveal recovery key"}
+          </Button>
+        </div>
+        <div className="mt-7 border-t border-black/8 pt-6 dark:border-white/8">
+          <h3 className="text-sm font-semibold">Browser notifications</h3>
+          <p className="mt-2 text-sm leading-6 text-black/50 dark:text-white/45">
+            Show notifications for new messages in other channels while Buzz is
+            open in this browser.
+          </p>
+          <Button
+            className="mt-3"
+            disabled={
+              notificationPermission === "unsupported" ||
+              notificationPermission === "granted"
+            }
+            variant="outline"
+            onClick={() => {
+              void Notification.requestPermission().then((permission) => {
+                setNotificationPermission(permission);
+                if (permission === "granted") {
+                  toast.success("Browser notifications enabled");
+                } else if (permission === "denied") {
+                  toast.error("Notifications are blocked", {
+                    description:
+                      "Allow notifications for Buzz in your browser settings.",
+                  });
+                }
+              });
+            }}
+          >
+            <Bell className="mr-2 size-4" />
+            {notificationPermission === "granted"
+              ? "Notifications enabled"
+              : notificationPermission === "denied"
+                ? "Notifications blocked"
+                : notificationPermission === "unsupported"
+                  ? "Not supported by this browser"
+                  : "Enable notifications"}
           </Button>
         </div>
         <div className="mt-7 border-t border-black/8 pt-6 dark:border-white/8">

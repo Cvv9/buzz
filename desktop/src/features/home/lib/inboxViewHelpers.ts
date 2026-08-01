@@ -48,9 +48,7 @@ export function matchesInboxFilter(
   ownedAgentPubkeys?: ReadonlySet<string>,
 ) {
   if (filter === "all") {
-    return ownedAgentPubkeys
-      ? matchesInboxAllView(item, ownedAgentPubkeys)
-      : true;
+    return matchesInboxAllView(item);
   }
 
   if (filter === "thread") {
@@ -75,14 +73,11 @@ export function matchesInboxFilter(
   return item.categories.includes(filter);
 }
 
-export function matchesInboxAllView(
-  item: {
-    categories: readonly string[];
-    groupItems?: readonly FeedItem[];
-    item?: FeedItem;
-  },
-  ownedAgentPubkeys: ReadonlySet<string>,
-): boolean {
+export function matchesInboxAllView(item: {
+  categories: readonly string[];
+  groupItems?: readonly FeedItem[];
+  item?: FeedItem;
+}): boolean {
   const representative = item.item ?? item.groupItems?.at(-1);
   return (
     representative?.channelType === "dm" ||
@@ -93,11 +88,7 @@ export function matchesInboxAllView(
     [item.item, ...(item.groupItems ?? [])].some(
       (groupItem) => groupItem && isProjectInboxItem(groupItem),
     ) ||
-    item.categories.includes("needs_action") ||
-    Boolean(
-      representative &&
-        ownedAgentPubkeys.has(normalizePubkey(representative.pubkey)),
-    )
+    item.categories.includes("needs_action")
   );
 }
 

@@ -267,6 +267,9 @@ pub enum AgentsCmd {
         /// Short description of the hosted agent
         #[arg(long)]
         about: Option<String>,
+        /// Public avatar URL shown in Buzz clients
+        #[arg(long)]
+        avatar: Option<String>,
         /// Directory audience: community (everyone) or owner (only the named owner)
         #[arg(long, default_value = "community")]
         audience: String,

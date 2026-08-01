@@ -11,6 +11,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { makeBlossomGetAuthHeader } from "@/shared/lib/blossom-auth";
 import { cn } from "@/shared/lib/cn";
 import { truncatePubkey } from "@/shared/lib/pubkey";
 import type {
@@ -41,14 +42,22 @@ const PROJECT_CHANNEL_NAMES = new Set([
 const SECTION_STORAGE_PREFIX = "buzz-web:channel-sections:v1";
 
 type ChannelSectionId = "workspace" | "projects";
-type CollapsedSections = Record<ChannelSectionId, boolean>;
+type AgentSectionId = "hostedAgents" | "privateAgents" | "sharedAgents";
+type CollapsibleSectionId = ChannelSectionId | AgentSectionId;
+type CollapsedSections = Record<CollapsibleSectionId, boolean>;
 
 function sectionStorageKey(pubkey: string): string {
   return `${SECTION_STORAGE_PREFIX}:${pubkey}`;
 }
 
 function readCollapsedSections(pubkey: string): CollapsedSections {
-  const fallback = { workspace: false, projects: false };
+  const fallback = {
+    workspace: false,
+    projects: false,
+    hostedAgents: false,
+    privateAgents: false,
+    sharedAgents: false,
+  };
   try {
     const stored = window.localStorage.getItem(sectionStorageKey(pubkey));
     if (!stored) return fallback;
@@ -56,6 +65,9 @@ function readCollapsedSections(pubkey: string): CollapsedSections {
     return {
       workspace: parsed.workspace === true,
       projects: parsed.projects === true,
+      hostedAgents: parsed.hostedAgents === true,
+      privateAgents: parsed.privateAgents === true,
+      sharedAgents: parsed.sharedAgents === true,
     };
   } catch {
     return fallback;
@@ -85,6 +97,7 @@ export function ProfileAvatar({
   profile: WorkspaceProfile;
   size?: "sm" | "md";
 }) {
+  const picture = useAuthenticatedPicture(profile.picture);
   return (
     <div
       className={cn(
@@ -92,8 +105,8 @@ export function ProfileAvatar({
         size === "sm" ? "size-7 text-[0.6875rem]" : "size-9 text-xs",
       )}
     >
-      {profile.picture ? (
-        <img alt="" className="size-full object-cover" src={profile.picture} />
+      {picture ? (
+        <img alt="" className="size-full object-cover" src={picture} />
       ) : profile.isAgent ? (
         <Bot className={size === "sm" ? "size-3.5" : "size-4"} />
       ) : (
@@ -111,8 +124,65 @@ export function ProfileAvatar({
   );
 }
 
+function useAuthenticatedPicture(source?: string): string | undefined {
+  const [resolved, setResolved] = useState<string>();
+
+  useEffect(() => {
+    if (!source) {
+      setResolved(undefined);
+      return;
+    }
+
+    let url: URL;
+    try {
+      url = new URL(source, window.location.origin);
+    } catch {
+      setResolved(undefined);
+      return;
+    }
+
+    if (
+      url.origin !== window.location.origin ||
+      !url.pathname.startsWith("/media/")
+    ) {
+      setResolved(url.href);
+      return;
+    }
+
+    const controller = new AbortController();
+    let objectUrl: string | undefined;
+    setResolved(undefined);
+    void (async () => {
+      try {
+        const response = await fetch(url.href, {
+          headers: {
+            Authorization: await makeBlossomGetAuthHeader(url.href, {
+              requireDurableSigner: true,
+            }),
+          },
+          signal: controller.signal,
+        });
+        if (!response.ok) return;
+        objectUrl = URL.createObjectURL(await response.blob());
+        setResolved(objectUrl);
+      } catch {
+        // Keep the initials/bot fallback when the image cannot be authorized.
+      }
+    })();
+
+    return () => {
+      controller.abort();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [source]);
+
+  return resolved;
+}
+
 export function WorkspaceSidebar({
   identity,
+  profile,
+  unreadChannelIds,
   channels,
   agents,
   activeChannelId,
@@ -125,6 +195,8 @@ export function WorkspaceSidebar({
   onAddAgent,
 }: {
   identity: BrowserIdentity;
+  profile: WorkspaceProfile;
+  unreadChannelIds: ReadonlySet<string>;
   channels: WorkspaceChannel[];
   agents: WorkspaceProfile[];
   activeChannelId: string | null;
@@ -176,7 +248,7 @@ export function WorkspaceSidebar({
     );
   }, [activeChannelId, channels]);
 
-  const toggleSection = (section: ChannelSectionId) => {
+  const toggleSection = (section: CollapsibleSectionId) => {
     setCollapsedSections((current) => ({
       ...current,
       [section]: !current[section],
@@ -254,6 +326,7 @@ export function WorkspaceSidebar({
                 label="Workspace"
                 onSelectChannel={selectChannel}
                 onToggle={() => toggleSection("workspace")}
+                unreadChannelIds={unreadChannelIds}
               />
               {projectChannels.length ? (
                 <ChannelSection
@@ -264,6 +337,7 @@ export function WorkspaceSidebar({
                   label="Projects"
                   onSelectChannel={selectChannel}
                   onToggle={() => toggleSection("projects")}
+                  unreadChannelIds={unreadChannelIds}
                 />
               ) : null}
             </div>
@@ -280,6 +354,7 @@ export function WorkspaceSidebar({
                     active={activeChannelId === channel.id}
                     channel={channel}
                     key={channel.id}
+                    unread={unreadChannelIds.has(channel.id)}
                     onSelect={() => {
                       onSelectChannel(channel.id);
                       onClose();
@@ -290,40 +365,61 @@ export function WorkspaceSidebar({
             </div>
           ) : null}
 
-          <div>
-            <div className="mb-2 flex items-center justify-between px-2">
-              <p className="text-xs font-semibold text-black/45 dark:text-white/40">
-                Hosted agents
-              </p>
-              <span className="text-[0.6875rem] text-black/35 dark:text-white/30">
+          <section>
+            <button
+              aria-controls="hosted-agents-content"
+              aria-expanded={!collapsedSections.hostedAgents}
+              className="mb-2 flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs font-semibold text-black/45 hover:bg-black/4 hover:text-black/65 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a5a500] dark:text-white/40 dark:hover:bg-white/5 dark:hover:text-white/60"
+              data-testid="hosted-agents-toggle"
+              type="button"
+              onClick={() => toggleSection("hostedAgents")}
+            >
+              <ChevronRight
+                className={cn(
+                  "size-3 shrink-0 transition-transform",
+                  collapsedSections.hostedAgents ? "" : "rotate-90",
+                )}
+              />
+              <span className="min-w-0 flex-1 truncate">Hosted agents</span>
+              <span className="text-[0.6875rem] font-normal tabular-nums text-black/35 dark:text-white/30">
                 {agents.length}
               </span>
-            </div>
-            {agents.length ? (
-              <div className="space-y-3">
+            </button>
+            {!collapsedSections.hostedAgents && agents.length ? (
+              <div
+                className="space-y-3"
+                data-testid="hosted-agents-content"
+                id="hosted-agents-content"
+              >
                 {privateAgents.length ? (
                   <AgentGroup
                     activeChannelId={activeChannelId}
                     agents={privateAgents}
+                    collapsed={collapsedSections.privateAgents}
+                    id="privateAgents"
                     label="Private to you"
                     onAddAgent={onAddAgent}
+                    onToggle={() => toggleSection("privateAgents")}
                   />
                 ) : null}
                 {sharedAgents.length ? (
                   <AgentGroup
                     activeChannelId={activeChannelId}
                     agents={sharedAgents}
-                    label={privateAgents.length ? "For everyone" : undefined}
+                    collapsed={collapsedSections.sharedAgents}
+                    id="sharedAgents"
+                    label="For everyone"
                     onAddAgent={onAddAgent}
+                    onToggle={() => toggleSection("sharedAgents")}
                   />
                 ) : null}
               </div>
-            ) : (
+            ) : !collapsedSections.hostedAgents && !agents.length ? (
               <p className="px-2 text-xs leading-5 text-black/40 dark:text-white/35">
                 Agents appear here after the hosted runner connects.
               </p>
-            )}
-          </div>
+            ) : null}
+          </section>
         </nav>
 
         <footer className="border-t border-black/8 p-3 dark:border-white/8">
@@ -347,9 +443,7 @@ export function WorkspaceSidebar({
             type="button"
             onClick={onOpenSettings}
           >
-            <div className="flex size-8 items-center justify-center rounded-lg bg-black/7 text-xs font-semibold dark:bg-white/8">
-              {profileInitials(identity.displayName)}
-            </div>
+            <ProfileAvatar profile={profile} size="sm" />
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-medium">
                 {identity.displayName}
@@ -367,55 +461,80 @@ export function WorkspaceSidebar({
 }
 
 function AgentGroup({
+  id,
   label,
   agents,
+  collapsed,
   activeChannelId,
+  onToggle,
   onAddAgent,
 }: {
-  label?: string;
+  id: Exclude<AgentSectionId, "hostedAgents">;
+  label: string;
   agents: WorkspaceProfile[];
+  collapsed: boolean;
   activeChannelId: string | null;
+  onToggle: () => void;
   onAddAgent: (agent: WorkspaceProfile) => void;
 }) {
+  const contentId = `agent-section-${id}`;
   return (
-    <div>
-      {label ? (
-        <p className="mb-1 px-2 text-[0.6875rem] font-semibold uppercase tracking-[0.08em] text-black/35 dark:text-white/30">
-          {label}
-        </p>
-      ) : null}
-      <div className="space-y-1">
-        {agents.map((agent) => (
-          <div
-            className="flex items-center gap-2 rounded-lg px-2 py-1.5"
-            key={agent.pubkey}
-          >
-            <ProfileAvatar profile={agent} size="sm" />
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm">{agent.name}</p>
-              <p className="text-[0.6875rem] text-emerald-700 dark:text-emerald-400">
-                {agent.accessTier === "personal"
-                  ? "Personal assistant"
-                  : agent.accessTier === "admin"
-                    ? "Admin only"
-                    : "Available to everyone"}
-              </p>
+    <section>
+      <button
+        aria-controls={contentId}
+        aria-expanded={!collapsed}
+        className="mb-1 flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-[0.6875rem] font-semibold uppercase tracking-[0.08em] text-black/35 hover:bg-black/4 hover:text-black/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a5a500] dark:text-white/30 dark:hover:bg-white/5 dark:hover:text-white/55"
+        data-testid={`agent-group-${id}-toggle`}
+        type="button"
+        onClick={onToggle}
+      >
+        <ChevronRight
+          className={cn(
+            "size-3 shrink-0 transition-transform",
+            collapsed ? "" : "rotate-90",
+          )}
+        />
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+        <span className="font-normal tabular-nums">{agents.length}</span>
+      </button>
+      {!collapsed ? (
+        <div
+          className="space-y-1"
+          data-testid={`agent-group-${id}-content`}
+          id={contentId}
+        >
+          {agents.map((agent) => (
+            <div
+              className="flex items-center gap-2 rounded-lg px-2 py-1.5"
+              key={agent.pubkey}
+            >
+              <ProfileAvatar profile={agent} size="sm" />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm">{agent.name}</p>
+                <p className="text-[0.6875rem] text-emerald-700 dark:text-emerald-400">
+                  {agent.accessTier === "personal"
+                    ? "Personal assistant"
+                    : agent.accessTier === "admin"
+                      ? "Admin only"
+                      : "Available to everyone"}
+                </p>
+              </div>
+              {activeChannelId && agent.accessTier !== "personal" ? (
+                <button
+                  aria-label={`Add ${agent.name} to the current channel`}
+                  className="rounded-md p-1.5 text-black/35 hover:bg-black/6 hover:text-black/70 dark:text-white/30 dark:hover:bg-white/7 dark:hover:text-white/70"
+                  title="Add to current channel"
+                  type="button"
+                  onClick={() => onAddAgent(agent)}
+                >
+                  <Plus className="size-3.5" />
+                </button>
+              ) : null}
             </div>
-            {activeChannelId && agent.accessTier !== "personal" ? (
-              <button
-                aria-label={`Add ${agent.name} to the current channel`}
-                className="rounded-md p-1.5 text-black/35 hover:bg-black/6 hover:text-black/70 dark:text-white/30 dark:hover:bg-white/7 dark:hover:text-white/70"
-                title="Add to current channel"
-                type="button"
-                onClick={() => onAddAgent(agent)}
-              >
-                <Plus className="size-3.5" />
-              </button>
-            ) : null}
-          </div>
-        ))}
-      </div>
-    </div>
+          ))}
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -427,6 +546,7 @@ function ChannelSection({
   activeChannelId,
   onToggle,
   onSelectChannel,
+  unreadChannelIds,
 }: {
   id: ChannelSectionId;
   label: string;
@@ -435,6 +555,7 @@ function ChannelSection({
   activeChannelId: string | null;
   onToggle: () => void;
   onSelectChannel: (channelId: string) => void;
+  unreadChannelIds: ReadonlySet<string>;
 }) {
   const contentId = `channel-section-${id}`;
   return (
@@ -462,6 +583,7 @@ function ChannelSection({
               active={activeChannelId === channel.id}
               channel={channel}
               key={channel.id}
+              unread={unreadChannelIds.has(channel.id)}
               onSelect={() => onSelectChannel(channel.id)}
             />
           ))}
@@ -475,13 +597,16 @@ function ChannelButton({
   channel,
   active,
   onSelect,
+  unread = false,
 }: {
   channel: WorkspaceChannel;
   active: boolean;
   onSelect: () => void;
+  unread?: boolean;
 }) {
   return (
     <button
+      aria-label={`${channel.name}${unread ? ", unread messages" : ""}`}
       className={cn(
         "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
         active
@@ -499,6 +624,12 @@ function ChannelButton({
         <Hash className="size-3.5 shrink-0" />
       )}
       <span className="truncate">{channel.name}</span>
+      {unread ? (
+        <span
+          aria-hidden="true"
+          className="ml-auto size-2 shrink-0 rounded-full bg-[#b5b500]"
+        />
+      ) : null}
     </button>
   );
 }

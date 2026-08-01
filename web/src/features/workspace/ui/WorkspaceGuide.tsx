@@ -12,50 +12,34 @@ import type { ReactNode } from "react";
 import type { WorkspaceProfile } from "@/features/workspace/workspace-api";
 
 const AGENT_HELP: Record<string, { purpose: string; example: string }> = {
-  "VarVik Guide": {
+  "Project Brain": {
     purpose:
-      "Planning, summaries, coordination, and finding the right specialist.",
+      "Source-backed answers about projects, architecture, dependencies, timelines, deployments, and risks.",
     example:
-      "@VarVik Guide summarize this discussion and list the next actions.",
+      "@Project Brain explain the current FactoryOS architecture and identify stale evidence.",
   },
-  "VarVik Engineer": {
+  "Market Intelligence": {
     purpose:
-      "Architecture, debugging, implementation, tests, and release readiness.",
-    example: "@VarVik Engineer investigate this bug and propose a safe fix.",
-  },
-  "VarVik Creative": {
-    purpose: "Product design, UX, brand, writing, and creative feedback.",
-    example: "@VarVik Creative improve this onboarding copy and explain why.",
-  },
-  "VarVik Research": {
-    purpose:
-      "Research, comparisons, evidence summaries, and market intelligence.",
+      "On-demand market, competitor, customer, pricing, regulation, and opportunity research.",
     example:
-      "@VarVik Research compare these options and separate facts from assumptions.",
+      "@Market Intelligence compare these competitors and tell us what decision the evidence supports.",
   },
-  "VarVik Command": {
+  "Founder Chief of Staff": {
     purpose:
-      "Varun's private coordinator across Buzz, Watchdog, Sylars, and GitHub.",
+      "Varun's private coordinator for priorities, decisions, approvals, and bounded Sylars handoffs.",
     example:
-      "@VarVik Command coordinate an investigation and give me one clear plan.",
+      "@Founder Chief of Staff turn this discussion into a proposed Sylars task, but show me the scope first.",
   },
-  "Watchdog Sentinel": {
+  "Operations Desk": {
     purpose:
-      "Varun's private incident, reliability, alert, and regression investigator.",
+      "Private Watchdog, CI, and observability intake with Sylars task status and approval-aware routing.",
     example:
-      "@Watchdog Sentinel investigate this alert without changing production.",
+      "@Operations Desk group these alerts, explain the likely shared cause, and propose a read-only triage task.",
   },
-  "Sylars Coordinator": {
+  "Trend Radar": {
     purpose:
-      "Varun's private coordinator for assignments, priorities, and blockers.",
-    example:
-      "@Sylars Coordinator summarize overdue work and the main blockers.",
-  },
-  "VarVik Forge": {
-    purpose:
-      "Varun's private GitHub issue, code-fix, testing, and pull-request specialist.",
-    example:
-      "@VarVik Forge diagnose issue 123 and prepare a draft pull request.",
+      "A periodic cross-topic briefing containing only the most important market and technology signals.",
+    example: "Open the trends channel for the latest Trend Radar briefing.",
   },
 };
 
@@ -127,7 +111,7 @@ export function WorkspaceGuide({
             <li>
               <strong>3.</strong> Start your message with its exact name,
               including the @ sign—for example:{" "}
-              <Code>@VarVik Engineer review this error</Code>.
+              <Code>@Project Brain explain this project's architecture</Code>.
             </li>
             <li>
               <strong>4.</strong> Include the outcome, context, constraints, and
@@ -135,8 +119,8 @@ export function WorkspaceGuide({
             </li>
           </ol>
           <div className="mt-4 rounded-xl bg-[#d7d72e]/15 p-4 text-sm leading-6 text-black/65 dark:text-white/60">
-            <strong>Good request:</strong> “@VarVik Research compare these three
-            vendors, use sources from this year, and give me a short
+            <strong>Good request:</strong> “@Market Intelligence compare these
+            three vendors, use sources from this year, and give me a short
             recommendation by 4 PM.”
           </div>
         </GuideSection>

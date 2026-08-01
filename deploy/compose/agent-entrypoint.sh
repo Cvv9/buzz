@@ -160,7 +160,7 @@ fi
 # Publish profile and channel-add policy in one replaceable event. Keeping them
 # together prevents same-second startup writes from racing each other.
 if [ -n "${BUZZ_ACP_PROFILE_OWNER_PUBKEY:-}" ]; then
-  buzz agents publish-profile \
+  set -- buzz agents publish-profile \
     --display-name "${BUZZ_ACP_DISPLAY_NAME}" \
     --about "${BUZZ_ACP_PROFILE_ABOUT}" \
     --audience "${BUZZ_ACP_PROFILE_AUDIENCE}" \
@@ -168,12 +168,18 @@ if [ -n "${BUZZ_ACP_PROFILE_OWNER_PUBKEY:-}" ]; then
     --channel-add-policy "${BUZZ_ACP_CHANNEL_ADD_POLICY}" \
     --owner-pubkey "${BUZZ_ACP_PROFILE_OWNER_PUBKEY}"
 else
-  buzz agents publish-profile \
+  set -- buzz agents publish-profile \
     --display-name "${BUZZ_ACP_DISPLAY_NAME}" \
     --about "${BUZZ_ACP_PROFILE_ABOUT}" \
     --audience "${BUZZ_ACP_PROFILE_AUDIENCE}" \
     --access-tier "${BUZZ_ACP_PROFILE_ACCESS_TIER}" \
     --channel-add-policy "${BUZZ_ACP_CHANNEL_ADD_POLICY}"
 fi
+
+if [ -n "${BUZZ_ACP_PROFILE_AVATAR:-}" ]; then
+  set -- "$@" --avatar "${BUZZ_ACP_PROFILE_AVATAR}"
+fi
+
+"$@"
 
 exec buzz-acp
