@@ -506,6 +506,7 @@ jobs:
             REDIS_URL=redis://localhost:6379 \
             RELAY_URL=ws://localhost:3000 \
             BUZZ_BIND_ADDR=127.0.0.1:3000 \
+            BUZZ_CORS_ORIGINS=http://127.0.0.1:4173 \
             BUZZ_REQUIRE_AUTH_TOKEN=false \
             BUZZ_ALLOW_INSECURE_DEV_PUBKEY=true \
             BUZZ_RECONCILE_CHANNELS=true \

@@ -145,6 +145,7 @@ tmux new-session -d -s "${TMUX_SESSION}" "cd '${REPO_ROOT}' && env \
   REDIS_URL=redis://localhost:${REDIS_PORT} \
   RELAY_URL=ws://localhost:${RELAY_MAIN} \
   BUZZ_BIND_ADDR=127.0.0.1:${RELAY_MAIN} \
+  BUZZ_CORS_ORIGINS=http://127.0.0.1:4173 \
   BUZZ_HEALTH_PORT=${RELAY_HEALTH} \
   BUZZ_METRICS_PORT=${RELAY_METRICS} \
   BUZZ_S3_ENDPOINT=http://localhost:${MINIO_PORT} \
