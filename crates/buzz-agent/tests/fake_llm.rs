@@ -60,6 +60,13 @@ async fn spawn_fake_llm(responses: Vec<Value>) -> String {
 /// Like `spawn_fake_llm` but also captures the full JSON request body from each
 /// incoming HTTP request. Returns (url, captured_requests).
 async fn spawn_capturing_fake_llm(responses: Vec<Value>) -> (String, Arc<Mutex<Vec<Value>>>) {
+    spawn_capturing_fake_llm_with_delay(responses, Duration::ZERO).await
+}
+
+async fn spawn_capturing_fake_llm_with_delay(
+    responses: Vec<Value>,
+    response_delay: Duration,
+) -> (String, Arc<Mutex<Vec<Value>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let url = format!("http://{}", listener.local_addr().unwrap());
     let queue = Arc::new(Mutex::new(VecDeque::from(responses)));
@@ -132,6 +139,7 @@ async fn spawn_capturing_fake_llm(responses: Vec<Value>) -> (String, Arc<Mutex<V
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                     body_s.len(), body_s,
                 );
+                tokio::time::sleep(response_delay).await;
                 let _ = sock.write_all(resp.as_bytes()).await;
                 let _ = sock.shutdown().await;
             });
@@ -252,8 +260,11 @@ async fn init_session(h: &mut Harness) -> String {
     let r = h.recv().await;
     assert_eq!(r["result"]["protocolVersion"], 2);
     assert_eq!(r["result"]["agentInfo"]["name"], "buzz-agent");
-    h.send("session/new", json!({"cwd":"/tmp","mcpServers":[]}))
-        .await;
+    h.send(
+        "session/new",
+        json!({"cwd": std::env::temp_dir(), "mcpServers": []}),
+    )
+    .await;
     let r = h.recv().await;
     let sid = r["result"]["sessionId"].as_str().unwrap().to_owned();
     assert!(sid.starts_with("ses_"));
@@ -597,10 +608,13 @@ async fn steer_folds_into_active_turn_without_cancelling() {
     // A two-round turn (tool call → text). A steer sent once the run is live
     // must (a) be accepted with the matching runId, (b) NOT cancel the turn —
     // it still ends with end_turn — and (c) reach the provider as a user turn.
-    let (url, captures) = spawn_capturing_fake_llm(vec![
-        openai_tool_call("call_steer", "fake__noop", json!({})),
-        openai_text("acknowledged the steer"),
-    ])
+    let (url, captures) = spawn_capturing_fake_llm_with_delay(
+        vec![
+            openai_tool_call("call_steer", "fake__noop", json!({})),
+            openai_text("acknowledged the steer"),
+        ],
+        Duration::from_millis(50),
+    )
     .await;
     let mut h = Harness::spawn(&url).await;
     let sid = init_session(&mut h).await;

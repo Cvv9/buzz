@@ -594,6 +594,7 @@ mod git_read_authorization_tests {
                 30617,
                 &owner.public_key().to_bytes(),
                 &repo_name,
+                chrono::Utc::now().timestamp() + 60,
             )
             .await
             .expect("soft-delete announcement"),
