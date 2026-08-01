@@ -182,6 +182,34 @@ test("a recovery key is stored behind a password and locks on reload", async ({
     page.getByRole("heading", { name: "Welcome back, Vikram" }),
   ).toBeHidden();
 
+  const hostedAgentsToggle = page.getByTestId("hosted-agents-toggle");
+  const privateAgentsToggle = page.getByTestId(
+    "agent-group-privateAgents-toggle",
+  );
+  await expect(hostedAgentsToggle).toHaveAttribute("aria-expanded", "true");
+  await expect(privateAgentsToggle).toHaveAttribute("aria-expanded", "true");
+  await privateAgentsToggle.click();
+  await expect(
+    page.getByTestId("agent-group-privateAgents-content"),
+  ).toBeHidden();
+  await expect(
+    page.getByTestId("agent-group-sharedAgents-content"),
+  ).toBeVisible();
+  await hostedAgentsToggle.click();
+  await expect(page.getByTestId("hosted-agents-content")).toBeHidden();
+
+  await page.reload();
+  await page.getByLabel("Password").fill("varvik-test-password");
+  await page.getByRole("button", { name: "Sign in" }).click();
+  await expect(hostedAgentsToggle).toHaveAttribute("aria-expanded", "false");
+  await hostedAgentsToggle.click();
+  await expect(
+    page.getByTestId("agent-group-privateAgents-content"),
+  ).toBeHidden();
+  await expect(
+    page.getByTestId("agent-group-sharedAgents-content"),
+  ).toBeVisible();
+
   await page.setViewportSize({ width: 1280, height: 480 });
   await expect(page.getByTestId("workspace-shell")).toBeVisible();
   const layout = await page.evaluate(() => {

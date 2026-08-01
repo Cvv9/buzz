@@ -4233,6 +4233,24 @@ fn build_mcp_servers(config: &Config) -> Vec<McpServer> {
                     });
                 }
             }
+            // A hosted information agent may use the bundled HTTP-to-stdio MCP
+            // bridge. Forward only its narrow, explicitly named settings; the
+            // agent process environment is otherwise not copied into MCP
+            // children. The bridge never logs the credential.
+            for name in [
+                "BUZZ_REMOTE_MCP_URL",
+                "BUZZ_REMOTE_MCP_TOKEN",
+                "BUZZ_REMOTE_MCP_TIMEOUT_MS",
+            ] {
+                if let Ok(value) = std::env::var(name) {
+                    if !value.is_empty() {
+                        env.push(EnvVar {
+                            name: name.into(),
+                            value,
+                        });
+                    }
+                }
+            }
             env
         },
     }]

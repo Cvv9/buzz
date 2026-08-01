@@ -14,6 +14,7 @@ pub async fn dispatch(command: AgentsCmd, client: &BuzzClient) -> Result<(), Cli
         AgentsCmd::PublishProfile {
             display_name,
             about,
+            avatar,
             audience,
             owner_pubkey,
             access_tier,
@@ -71,6 +72,7 @@ pub async fn dispatch(command: AgentsCmd, client: &BuzzClient) -> Result<(), Cli
                 "name": display_name,
                 "display_name": display_name,
                 "about": about,
+                "avatar_url": avatar,
                 "agent_type": "agent",
                 "status": "online",
                 "audience": audience,

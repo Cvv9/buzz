@@ -29,23 +29,38 @@ multiple communities.
 
 ## Hosted AI agents
 
-The optional `agents` profile runs four shared collaborators and four
-owner-visible control agents through the existing Buzz ACP harness and Codex
-adapter.
+The optional `agents` profile runs a small information-and-routing fleet through
+the Buzz ACP harness and Codex adapter. Durable product and engineering work is
+owned by the specialist team in Sylars Work Manager; Buzz does not duplicate
+that execution roster.
 
-- `VarVik Guide` — general coordination and synthesis
-- `VarVik Engineer` — architecture, implementation, testing, and releases
-- `VarVik Creative` — product design, brand, UX, writing, and critique
-- `VarVik Research` — research, evidence synthesis, and strategy
-- `VarVik Command` — Varun's private cross-tool coordinator
-- `Watchdog Sentinel` — private incident and regression investigator
-- `Sylars Coordinator` — private work-manager coordinator
-- `VarVik Forge` — private GitHub issue, fix, test, and pull-request specialist
+- `Project Brain` — shared, read-only answers backed by Project Intelligence
+- `Market Intelligence` — shared research intake backed by Sylar's dedicated
+  MarketIntelligence specialist for durable multi-source work
+- `Founder Chief of Staff` — Varun's private portfolio and Sylars coordinator
+- `Operations Desk` — private Watchdog/CI incident intake and Sylars status
+- one owner-scoped `Personal Assistant` per configured team member — private
+  meetings, reminders, mentions, assigned-work retrieval, and daily briefs
+
+Trend Radar is a scheduled integration rather than another always-on Codex
+container. Sylars' `news-digest` job scrapes subscribed topics and posts one
+synthesized briefing to a dedicated Buzz channel. The full article feed remains
+in the Sylars dashboard.
+
+Generation-ready visual briefs for this roster live in
+[`AGENT_AVATAR_PROMPTS.md`](AGENT_AVATAR_PROMPTS.md).
 
 The private agents publish owner-scoped directory metadata. The browser shows
 them only when the signed-in pubkey matches `VARUN_PUBKEY` (falling back to
 `RELAY_OWNER_PUBKEY`), and the ACP author gate accepts prompts only from that
 owner. This is in addition to channel membership enforcement.
+
+`Project Brain` receives only `PROJECT_INTELLIGENCE_READ_TOKEN`. `Market
+Intelligence`, `Founder Chief of Staff`, and `Operations Desk` receive
+`SYLARS_CONTROL_API_TOKEN`, which can submit, read, deny, or cancel tasks but
+cannot approve machine-submitted work.
+Their remote HTTP MCP endpoints are adapted to the agent's stdio-only MCP
+transport by the bundled `buzz-http-mcp-bridge`; the bridge never logs tokens.
 
 Each agent generates a stable Nostr identity in its own private named volume on
 first startup. To use API billing, set either `CODEX_API_KEY` or

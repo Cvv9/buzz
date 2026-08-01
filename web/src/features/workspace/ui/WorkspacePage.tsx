@@ -53,7 +53,7 @@ import {
   publishWorkspaceProfile,
   reactToWorkspaceMessage,
   sendWorkspaceMessage,
-  subscribeToChannel,
+  subscribeToChannels,
 } from "@/features/workspace/workspace-api";
 
 type TimelineMessage = WorkspaceMessage & {
@@ -339,6 +339,20 @@ export function WorkspacePage() {
     () => localStorage.getItem("buzz.web.active-channel"),
   );
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
+  const [unreadChannelIds, setUnreadChannelIds] = React.useState<Set<string>>(
+    () => new Set(),
+  );
+  const activeChannelIdRef = React.useRef(activeChannelId);
+  React.useEffect(() => {
+    activeChannelIdRef.current = activeChannelId;
+    if (!activeChannelId) return;
+    setUnreadChannelIds((current) => {
+      if (!current.has(activeChannelId)) return current;
+      const next = new Set(current);
+      next.delete(activeChannelId);
+      return next;
+    });
+  }, [activeChannelId]);
   const [threadRootId, setThreadRootId] = React.useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [guideOpen, setGuideOpen] = React.useState(false);
@@ -425,20 +439,51 @@ export function WorkspacePage() {
   });
 
   React.useEffect(() => {
-    if (!activeChannelId) return;
-    return subscribeToChannel(activeChannelId, (event) => {
-      queryClient.setQueryData<WorkspaceMessage[]>(
-        ["channel-messages", activeChannelId],
-        (current = []) =>
-          current.some((existing) => existing.id === event.id)
-            ? current
-            : [...current, event].sort(
-                (a, b) =>
-                  a.created_at - b.created_at || a.id.localeCompare(b.id),
-              ),
-      );
-    });
-  }, [activeChannelId, queryClient]);
+    if (!identity || channels.length === 0) return;
+    const channelsById = new Map(
+      channels.map((channel) => [channel.id, channel]),
+    );
+    return subscribeToChannels(
+      channels.map((channel) => channel.id),
+      (event) => {
+        queryClient.setQueryData<WorkspaceMessage[]>(
+          ["channel-messages", event.channelId],
+          (current = []) =>
+            current.some((existing) => existing.id === event.id)
+              ? current
+              : [...current, event].sort(
+                  (a, b) =>
+                    a.created_at - b.created_at || a.id.localeCompare(b.id),
+                ),
+        );
+        if (
+          event.pubkey === identity.pubkey ||
+          event.channelId === activeChannelIdRef.current
+        ) {
+          return;
+        }
+        setUnreadChannelIds((current) => {
+          if (current.has(event.channelId)) return current;
+          return new Set(current).add(event.channelId);
+        });
+        const channel = channelsById.get(event.channelId);
+        if (
+          channel &&
+          document.hidden &&
+          typeof Notification !== "undefined" &&
+          Notification.permission === "granted"
+        ) {
+          new Notification(`New message in #${channel.name}`, {
+            body:
+              event.content.length > 180
+                ? `${event.content.slice(0, 177)}…`
+                : event.content,
+            tag: `buzz-channel-${event.channelId}`,
+          });
+        }
+      },
+    );
+  }, [channels, identity, queryClient]);
 
   React.useEffect(() => {
     if (!identity || !channels.length) return;
@@ -606,6 +651,7 @@ export function WorkspacePage() {
   const threadReplies = threadRootId
     ? materialized.filter((message) => message.rootEventId === threadRootId)
     : [];
+  const currentProfile = profileFor(identity.pubkey);
   const replyCounts = new Map<string, number>();
   for (const message of materialized) {
     if (message.rootEventId) {
@@ -626,6 +672,8 @@ export function WorkspacePage() {
         agents={agentsQuery.data ?? []}
         channels={channels}
         identity={identity}
+        profile={currentProfile}
+        unreadChannelIds={unreadChannelIds}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         onCreateChannel={() => setCreateChannelOpen(true)}

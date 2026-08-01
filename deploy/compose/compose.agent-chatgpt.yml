@@ -1,47 +1,23 @@
 services:
-  agent:
+  agent-project-brain:
     volumes:
       - type: bind
         source: ${VARVIK_CODEX_AUTH_FILE:?set VARVIK_CODEX_AUTH_FILE}
         target: /run/secrets/varvik-codex-auth.json
         read_only: true
-  agent-engineering:
+  agent-market-intelligence:
     volumes:
       - type: bind
         source: ${VARVIK_CODEX_AUTH_FILE:?set VARVIK_CODEX_AUTH_FILE}
         target: /run/secrets/varvik-codex-auth.json
         read_only: true
-  agent-creative:
+  agent-chief-of-staff:
     volumes:
       - type: bind
         source: ${VARVIK_CODEX_AUTH_FILE:?set VARVIK_CODEX_AUTH_FILE}
         target: /run/secrets/varvik-codex-auth.json
         read_only: true
-  agent-research:
-    volumes:
-      - type: bind
-        source: ${VARVIK_CODEX_AUTH_FILE:?set VARVIK_CODEX_AUTH_FILE}
-        target: /run/secrets/varvik-codex-auth.json
-        read_only: true
-  agent-command:
-    volumes:
-      - type: bind
-        source: ${VARVIK_CODEX_AUTH_FILE:?set VARVIK_CODEX_AUTH_FILE}
-        target: /run/secrets/varvik-codex-auth.json
-        read_only: true
-  agent-watchdog:
-    volumes:
-      - type: bind
-        source: ${VARVIK_CODEX_AUTH_FILE:?set VARVIK_CODEX_AUTH_FILE}
-        target: /run/secrets/varvik-codex-auth.json
-        read_only: true
-  agent-sylars:
-    volumes:
-      - type: bind
-        source: ${VARVIK_CODEX_AUTH_FILE:?set VARVIK_CODEX_AUTH_FILE}
-        target: /run/secrets/varvik-codex-auth.json
-        read_only: true
-  agent-forge:
+  agent-operations-desk:
     volumes:
       - type: bind
         source: ${VARVIK_CODEX_AUTH_FILE:?set VARVIK_CODEX_AUTH_FILE}
