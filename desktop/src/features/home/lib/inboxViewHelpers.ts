@@ -73,13 +73,11 @@ export function matchesInboxFilter(
   return item.categories.includes(filter);
 }
 
-export function matchesInboxAllView(
-  item: {
-    categories: readonly string[];
-    groupItems?: readonly FeedItem[];
-    item?: FeedItem;
-  },
-): boolean {
+export function matchesInboxAllView(item: {
+  categories: readonly string[];
+  groupItems?: readonly FeedItem[];
+  item?: FeedItem;
+}): boolean {
   const representative = item.item ?? item.groupItems?.at(-1);
   return (
     representative?.channelType === "dm" ||

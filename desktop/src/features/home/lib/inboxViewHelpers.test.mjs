@@ -74,16 +74,14 @@ test("matchesInboxFilter keeps generic channel traffic out of the All view", () 
 
 test("Inbox All excludes generic top-level channel traffic", () => {
   assert.equal(
-    matchesInboxAllView(
-      {
-        categories: ["activity"],
-        item: {
-          channelType: "stream",
-          pubkey: "human",
-          tags: [["h", "channel"]],
-        },
+    matchesInboxAllView({
+      categories: ["activity"],
+      item: {
+        channelType: "stream",
+        pubkey: "human",
+        tags: [["h", "channel"]],
       },
-    ),
+    }),
     false,
   );
 });
@@ -129,16 +127,14 @@ test("Inbox All includes each personally relevant message source", () => {
 
 test("Inbox All excludes generic agent posts, including owned agents", () => {
   assert.equal(
-    matchesInboxAllView(
-      {
-        categories: ["agent_activity"],
-        item: {
-          channelType: "stream",
-          pubkey: "somebody-elses-agent",
-          tags: [],
-        },
+    matchesInboxAllView({
+      categories: ["agent_activity"],
+      item: {
+        channelType: "stream",
+        pubkey: "somebody-elses-agent",
+        tags: [],
       },
-    ),
+    }),
     false,
   );
   assert.equal(
