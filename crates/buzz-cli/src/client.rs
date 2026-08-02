@@ -1251,34 +1251,36 @@ impl BuzzClient {
         }
 
         let legacy_url = format!("{}/media/upload", self.relay_url);
-        let mut desc = self.with_retry_body(|| {
-            let upload_body = upload_body.clone();
-            let legacy_url = legacy_url.clone();
-            let mime = mime.clone();
-            let sha256 = sha256.clone();
-            async move {
-                let auth_header = sign_blossom_upload(&self.keys, &sha256, &mime, &self.relay_url)?;
-                let resp = self
-                    .with_auth_tag(
-                        self.http
-                            .put(&legacy_url)
-                            .timeout(upload_timeout)
-                            .header("Authorization", auth_header)
-                            .header("Content-Type", &mime)
-                            .header("X-SHA-256", &sha256)
-                            .body(upload_body),
-                    )
-                    .send()
-                    .await?;
-                if !resp.status().is_success() {
-                    let status = resp.status().as_u16();
-                    let body = resp.text().await.unwrap_or_default();
-                    return Err(CliError::Relay { status, body });
+        let mut desc = self
+            .with_retry_body(|| {
+                let upload_body = upload_body.clone();
+                let legacy_url = legacy_url.clone();
+                let mime = mime.clone();
+                let sha256 = sha256.clone();
+                async move {
+                    let auth_header =
+                        sign_blossom_upload(&self.keys, &sha256, &mime, &self.relay_url)?;
+                    let resp = self
+                        .with_auth_tag(
+                            self.http
+                                .put(&legacy_url)
+                                .timeout(upload_timeout)
+                                .header("Authorization", auth_header)
+                                .header("Content-Type", &mime)
+                                .header("X-SHA-256", &sha256)
+                                .body(upload_body),
+                        )
+                        .send()
+                        .await?;
+                    if !resp.status().is_success() {
+                        let status = resp.status().as_u16();
+                        let body = resp.text().await.unwrap_or_default();
+                        return Err(CliError::Relay { status, body });
+                    }
+                    resp.json::<BlobDescriptor>().await.map_err(CliError::from)
                 }
-                resp.json::<BlobDescriptor>().await.map_err(CliError::from)
-            }
-        })
-        .await?;
+            })
+            .await?;
         desc.filename = Some(sanitize_upload_filename(file_path));
         Ok(desc)
     }
@@ -2356,8 +2358,8 @@ mod retry_policy_tests {
 mod tests {
     use super::{
         advance_query_cursor, build_imeta_tag, create_response_with_id,
-        detect_and_validate_upload_mime, extract_relay_response_field, upload_max_bytes, BuzzClient,
-        MAX_GENERIC_FILE_BYTES,
+        detect_and_validate_upload_mime, extract_relay_response_field, upload_max_bytes,
+        BuzzClient, MAX_GENERIC_FILE_BYTES,
     };
     use nostr::{EventBuilder, Keys, Kind, Tag};
 
@@ -2419,9 +2421,7 @@ mod tests {
         // DOCX files are Open Packaging Convention ZIP containers. `infer`
         // identifies the container as application/zip, which is a safe generic
         // attachment and must not be rejected as non-media.
-        let docx_container = [
-            0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00,
-        ];
+        let docx_container = [0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00];
         let mime = detect_and_validate_upload_mime(&docx_container).unwrap();
         assert_eq!(mime, "application/zip");
         assert_eq!(upload_max_bytes(&mime), MAX_GENERIC_FILE_BYTES);
@@ -2466,24 +2466,25 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
-        let mut file = tempfile::Builder::new()
-            .suffix(".docx")
-            .tempfile()
-            .unwrap();
-        file.write_all(&[
-            0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00,
-        ])
+        let mut file = tempfile::Builder::new().suffix(".docx").tempfile().unwrap();
+        file.write_all(&[0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00])
         .unwrap();
 
-        let client = BuzzClient::new(format!("http://{addr}"), Keys::generate(), None, None)
+        let client =
+            BuzzClient::new(format!("http://{addr}"), Keys::generate(), None, None).unwrap();
+        let descriptor = client
+            .upload_file(file.path().to_str().unwrap())
+            .await
             .unwrap();
-        let descriptor = client.upload_file(file.path().to_str().unwrap()).await.unwrap();
 
         assert!(descriptor
             .filename
             .as_deref()
             .is_some_and(|filename| filename.ends_with(".docx")));
-        assert_eq!(content_types.lock().unwrap().as_slice(), ["application/zip"]);
+        assert_eq!(
+            content_types.lock().unwrap().as_slice(),
+            ["application/zip"]
+        );
         assert!(build_imeta_tag(&descriptor)
             .iter()
             .any(|entry| entry.starts_with("filename ")));

@@ -1011,8 +1011,8 @@ pub async fn dispatch(
 mod tests {
     use super::{
         event_mention_pubkeys, find_root_from_tags, format_attachment_markdown,
-        match_profiles_by_name, merge_message_mentions, missing_members, normalize_explicit_mentions,
-        parse_member_pubkeys, resolve_names_to_pubkeys,
+        match_profiles_by_name, merge_message_mentions, missing_members,
+        normalize_explicit_mentions, parse_member_pubkeys, resolve_names_to_pubkeys,
     };
     use crate::client::BlobDescriptor;
     use buzz_sdk::mentions::{
