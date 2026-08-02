@@ -207,6 +207,12 @@ pub struct RelayAgentInfo {
     pub respond_to: Option<RespondTo>,
     #[serde(default)]
     pub respond_to_allowlist: Vec<String>,
+    #[serde(default)]
+    pub audience: Option<String>,
+    #[serde(default)]
+    pub owner_pubkey: Option<String>,
+    #[serde(default)]
+    pub access_tier: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ManagedAgentRecord {

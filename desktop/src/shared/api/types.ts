@@ -277,6 +277,9 @@ export type RelayAgent = {
   status: "online" | "away" | "offline";
   respondTo: RespondToMode | null;
   respondToAllowlist: string[];
+  audience?: "community" | "owner";
+  ownerPubkey?: string | null;
+  accessTier?: "shared" | "personal" | "admin";
 };
 
 export type ManagedAgentRuntimeLifecycle =
