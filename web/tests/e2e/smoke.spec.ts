@@ -34,6 +34,9 @@ async function installWorkspaceRelayMock(page: Page, viewerPubkey: string) {
           (index + 10).toString(16),
         );
       });
+      const sockets = new Set<MockWebSocket>();
+      const publishedEvents: ReturnType<typeof event>[] = [];
+      let reactionQueryCount = 0;
 
       class MockWebSocket {
         static readonly CONNECTING = 0;
@@ -46,12 +49,28 @@ async function installWorkspaceRelayMock(page: Page, viewerPubkey: string) {
           string,
           Set<(event: Event) => void>
         >();
+        private readonly subscriptions = new Map<
+          string,
+          {
+            kinds?: number[];
+            authors?: string[];
+            "#e"?: string[];
+            "#h"?: string[];
+          }
+        >();
 
         constructor(url: string | URL) {
           this.url = String(url);
+          sockets.add(this);
           window.setTimeout(() => {
             this.readyState = MockWebSocket.OPEN;
             this.emit("open", new Event("open"));
+            this.emit(
+              "message",
+              new MessageEvent("message", {
+                data: JSON.stringify(["AUTH", "workspace-e2e-challenge"]),
+              }),
+            );
           }, 0);
         }
 
@@ -67,9 +86,44 @@ async function installWorkspaceRelayMock(page: Page, viewerPubkey: string) {
 
         send(payload: string) {
           const envelope = JSON.parse(payload) as unknown[];
+          if (envelope[0] === "AUTH") {
+            const auth = envelope[1] as ReturnType<typeof event>;
+            window.setTimeout(
+              () =>
+                this.emit(
+                  "message",
+                  new MessageEvent("message", {
+                    data: JSON.stringify(["OK", auth.id, true, ""]),
+                  }),
+                ),
+              0,
+            );
+            return;
+          }
+          if (envelope[0] === "EVENT") {
+            const published = envelope[1] as ReturnType<typeof event>;
+            publishedEvents.push(published);
+            window.setTimeout(
+              () =>
+                this.emit(
+                  "message",
+                  new MessageEvent("message", {
+                    data: JSON.stringify(["OK", published.id, true, ""]),
+                  }),
+                ),
+              0,
+            );
+            return;
+          }
           if (envelope[0] !== "REQ") return;
           const subscriptionId = String(envelope[1]);
-          const filter = (envelope[2] ?? {}) as { kinds?: number[] };
+          const filter = (envelope[2] ?? {}) as {
+            kinds?: number[];
+            authors?: string[];
+            "#e"?: string[];
+            "#h"?: string[];
+          };
+          this.subscriptions.set(subscriptionId, filter);
           const kinds = filter.kinds ?? [];
           let events: ReturnType<typeof event>[] = [];
           if (kinds.includes(39002)) {
@@ -84,6 +138,16 @@ async function installWorkspaceRelayMock(page: Page, viewerPubkey: string) {
                 "",
                 "1",
               ),
+              event(
+                39002,
+                "f".repeat(64),
+                [
+                  ["d", "random"],
+                  ["p", pubkey, "", "owner"],
+                ],
+                "",
+                "3",
+              ),
             ];
           } else if (kinds.length === 1 && kinds.includes(39000)) {
             events = [
@@ -97,9 +161,50 @@ async function installWorkspaceRelayMock(page: Page, viewerPubkey: string) {
                 "",
                 "2",
               ),
+              event(
+                39000,
+                "f".repeat(64),
+                [
+                  ["d", "random"],
+                  ["name", "random"],
+                ],
+                "",
+                "4",
+              ),
             ];
           } else if (kinds.includes(10100) || kinds.includes(30177)) {
             events = agentEvents;
+          } else if (
+            kinds.length === 1 &&
+            kinds.includes(0) &&
+            filter.authors?.includes(pubkey)
+          ) {
+            events = [
+              event(
+                0,
+                pubkey,
+                [],
+                JSON.stringify({
+                  about: "Existing founder profile",
+                  picture:
+                    "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==",
+                  custom_field: "preserve-me",
+                }),
+                "5",
+              ),
+            ];
+          } else if (kinds.includes(9) && kinds.includes(40002)) {
+            events = [
+              event(
+                9,
+                "a".repeat(64),
+                [["h", "general"]],
+                "Welcome to Buzz",
+                "6",
+              ),
+            ];
+          } else if (kinds.length === 1 && kinds.includes(7)) {
+            if (subscriptionId.startsWith("q-")) reactionQueryCount += 1;
           }
           window.setTimeout(() => {
             for (const relayEvent of events) {
@@ -122,7 +227,41 @@ async function installWorkspaceRelayMock(page: Page, viewerPubkey: string) {
         close() {
           if (this.readyState === MockWebSocket.CLOSED) return;
           this.readyState = MockWebSocket.CLOSED;
+          sockets.delete(this);
           this.emit("close", new CloseEvent("close"));
+        }
+
+        emitRelayEvent(relayEvent: ReturnType<typeof event>) {
+          for (const [subscriptionId, filter] of this.subscriptions) {
+            if (
+              filter.kinds?.length &&
+              !filter.kinds.includes(relayEvent.kind)
+            ) {
+              continue;
+            }
+            if (
+              filter["#h"]?.length &&
+              !relayEvent.tags.some(
+                (tag) => tag[0] === "h" && filter["#h"]?.includes(tag[1]),
+              )
+            ) {
+              continue;
+            }
+            if (
+              filter["#e"]?.length &&
+              !relayEvent.tags.some(
+                (tag) => tag[0] === "e" && filter["#e"]?.includes(tag[1]),
+              )
+            ) {
+              continue;
+            }
+            this.emit(
+              "message",
+              new MessageEvent("message", {
+                data: JSON.stringify(["EVENT", subscriptionId, relayEvent]),
+              }),
+            );
+          }
         }
 
         private emit(type: string, event: Event) {
@@ -133,6 +272,18 @@ async function installWorkspaceRelayMock(page: Page, viewerPubkey: string) {
       }
 
       window.WebSocket = MockWebSocket as unknown as typeof WebSocket;
+      Object.assign(window, {
+        __BUZZ_WEB_E2E_EMIT__: (relayEvent: ReturnType<typeof event>) => {
+          for (const socket of sockets) {
+            if (socket.readyState === MockWebSocket.OPEN) {
+              socket.emitRelayEvent(relayEvent);
+            }
+          }
+        },
+        __BUZZ_WEB_E2E_EVENT__: event,
+        __BUZZ_WEB_E2E_PUBLISHED__: publishedEvents,
+        __BUZZ_WEB_E2E_REACTION_QUERY_COUNT__: () => reactionQueryCount,
+      });
     },
     { pubkey: viewerPubkey },
   );
@@ -249,6 +400,168 @@ test("a recovery key is stored behind a password and locks on reload", async ({
   expect(layout.sidebarCanScroll).toBe(true);
   expect(layout.sidebarScrollTop).toBeGreaterThan(0);
   expect(layout.chatBottom).toBeLessThanOrEqual(layout.viewportHeight);
+});
+
+test("web workspace preserves profiles and applies live-event parity rules", async ({
+  page,
+}) => {
+  const secretKey = generateSecretKey();
+  const viewerPubkey = getPublicKey(secretKey);
+  await installWorkspaceRelayMock(page, viewerPubkey);
+  await page.goto("/");
+  await page.getByLabel("Display name").fill("Vikram");
+  await page.getByLabel("Recovery key").fill(nsecEncode(secretKey));
+  await page
+    .getByLabel("Password", { exact: true })
+    .fill("parity-test-password");
+  await page.getByLabel("Confirm password").fill("parity-test-password");
+  await page.getByRole("button", { name: "Sign in with recovery key" }).click();
+  await expect(page.getByTestId("workspace-shell")).toBeVisible();
+  await expect(page.getByText("Welcome to Buzz")).toBeVisible();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const published = (
+          window as typeof window & {
+            __BUZZ_WEB_E2E_PUBLISHED__?: Array<{
+              content: string;
+              kind: number;
+            }>;
+          }
+        ).__BUZZ_WEB_E2E_PUBLISHED__;
+        return published?.find((relayEvent) => relayEvent.kind === 0)?.content;
+      }),
+    )
+    .not.toBeUndefined();
+  const publishedProfile = await page.evaluate(() => {
+    const published = (
+      window as typeof window & {
+        __BUZZ_WEB_E2E_PUBLISHED__: Array<{ content: string; kind: number }>;
+      }
+    ).__BUZZ_WEB_E2E_PUBLISHED__;
+    return JSON.parse(
+      published.find((relayEvent) => relayEvent.kind === 0)?.content ?? "{}",
+    ) as Record<string, unknown>;
+  });
+  expect(publishedProfile).toMatchObject({
+    about: "Existing founder profile",
+    custom_field: "preserve-me",
+    display_name: "Vikram",
+    name: "Vikram",
+    picture:
+      "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==",
+  });
+
+  const randomChannel = page.getByRole("button", { name: "random" });
+  await expect(randomChannel).toBeVisible();
+  for (const kind of [40003, 40099, 5, 9005]) {
+    await page.evaluate(
+      ({ eventKind }) => {
+        const helpers = window as typeof window & {
+          __BUZZ_WEB_E2E_EMIT__: (event: unknown) => void;
+          __BUZZ_WEB_E2E_EVENT__: (
+            kind: number,
+            pubkey: string,
+            tags: string[][],
+            content: string,
+            suffix: string,
+          ) => unknown;
+        };
+        helpers.__BUZZ_WEB_E2E_EMIT__(
+          helpers.__BUZZ_WEB_E2E_EVENT__(
+            eventKind,
+            "b".repeat(64),
+            [
+              ["h", "random"],
+              ["e", "6".padStart(64, "0")],
+            ],
+            eventKind === 40003 ? "Edited copy" : "",
+            String(eventKind),
+          ),
+        );
+      },
+      { eventKind: kind },
+    );
+  }
+  await expect(randomChannel).toHaveAttribute("aria-label", "random");
+
+  await page.evaluate(() => {
+    const helpers = window as typeof window & {
+      __BUZZ_WEB_E2E_EMIT__: (event: unknown) => void;
+      __BUZZ_WEB_E2E_EVENT__: (
+        kind: number,
+        pubkey: string,
+        tags: string[][],
+        content: string,
+        suffix: string,
+      ) => unknown;
+    };
+    helpers.__BUZZ_WEB_E2E_EMIT__(
+      helpers.__BUZZ_WEB_E2E_EVENT__(
+        9,
+        "b".repeat(64),
+        [["h", "random"]],
+        "A real new message",
+        "99",
+      ),
+    );
+  });
+  await expect(randomChannel).toHaveAttribute(
+    "aria-label",
+    "random, unread messages",
+  );
+
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (
+          window as typeof window & {
+            __BUZZ_WEB_E2E_REACTION_QUERY_COUNT__: () => number;
+          }
+        ).__BUZZ_WEB_E2E_REACTION_QUERY_COUNT__(),
+      ),
+    )
+    .toBeGreaterThan(0);
+  const initialReactionQueries = await page.evaluate(() =>
+    (
+      window as typeof window & {
+        __BUZZ_WEB_E2E_REACTION_QUERY_COUNT__: () => number;
+      }
+    ).__BUZZ_WEB_E2E_REACTION_QUERY_COUNT__(),
+  );
+  await page.evaluate(() => {
+    const helpers = window as typeof window & {
+      __BUZZ_WEB_E2E_EMIT__: (event: unknown) => void;
+      __BUZZ_WEB_E2E_EVENT__: (
+        kind: number,
+        pubkey: string,
+        tags: string[][],
+        content: string,
+        suffix: string,
+      ) => unknown;
+    };
+    helpers.__BUZZ_WEB_E2E_EMIT__(
+      helpers.__BUZZ_WEB_E2E_EVENT__(
+        7,
+        "c".repeat(64),
+        [["e", "6".padStart(64, "0")]],
+        "👍",
+        "100",
+      ),
+    );
+  });
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (
+          window as typeof window & {
+            __BUZZ_WEB_E2E_REACTION_QUERY_COUNT__: () => number;
+          }
+        ).__BUZZ_WEB_E2E_REACTION_QUERY_COUNT__(),
+      ),
+    )
+    .toBeGreaterThan(initialReactionQueries);
 });
 
 test("repository browser remains available at its own route", async ({

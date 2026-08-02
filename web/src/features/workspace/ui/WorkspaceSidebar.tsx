@@ -1,6 +1,7 @@
 import {
   Bot,
   BookOpen,
+  Check,
   ChevronRight,
   Hash,
   Lock,
@@ -394,6 +395,10 @@ export function WorkspaceSidebar({
                 {privateAgents.length ? (
                   <AgentGroup
                     activeChannelId={activeChannelId}
+                    activeChannelMemberPubkeys={
+                      channels.find((channel) => channel.id === activeChannelId)
+                        ?.memberPubkeys ?? []
+                    }
                     agents={privateAgents}
                     collapsed={collapsedSections.privateAgents}
                     id="privateAgents"
@@ -405,6 +410,10 @@ export function WorkspaceSidebar({
                 {sharedAgents.length ? (
                   <AgentGroup
                     activeChannelId={activeChannelId}
+                    activeChannelMemberPubkeys={
+                      channels.find((channel) => channel.id === activeChannelId)
+                        ?.memberPubkeys ?? []
+                    }
                     agents={sharedAgents}
                     collapsed={collapsedSections.sharedAgents}
                     id="sharedAgents"
@@ -466,6 +475,7 @@ function AgentGroup({
   agents,
   collapsed,
   activeChannelId,
+  activeChannelMemberPubkeys,
   onToggle,
   onAddAgent,
 }: {
@@ -474,6 +484,7 @@ function AgentGroup({
   agents: WorkspaceProfile[];
   collapsed: boolean;
   activeChannelId: string | null;
+  activeChannelMemberPubkeys: string[];
   onToggle: () => void;
   onAddAgent: (agent: WorkspaceProfile) => void;
 }) {
@@ -520,15 +531,26 @@ function AgentGroup({
                 </p>
               </div>
               {activeChannelId && agent.accessTier !== "personal" ? (
-                <button
-                  aria-label={`Add ${agent.name} to the current channel`}
-                  className="rounded-md p-1.5 text-black/35 hover:bg-black/6 hover:text-black/70 dark:text-white/30 dark:hover:bg-white/7 dark:hover:text-white/70"
-                  title="Add to current channel"
-                  type="button"
-                  onClick={() => onAddAgent(agent)}
-                >
-                  <Plus className="size-3.5" />
-                </button>
+                activeChannelMemberPubkeys.includes(agent.pubkey) ? (
+                  <span
+                    aria-label={`${agent.name} is already in the current channel`}
+                    className="rounded-md p-1.5 text-emerald-700 dark:text-emerald-400"
+                    role="img"
+                    title="Already in current channel"
+                  >
+                    <Check className="size-3.5" />
+                  </span>
+                ) : (
+                  <button
+                    aria-label={`Add ${agent.name} to the current channel`}
+                    className="rounded-md p-1.5 text-black/35 hover:bg-black/6 hover:text-black/70 dark:text-white/30 dark:hover:bg-white/7 dark:hover:text-white/70"
+                    title="Add to current channel"
+                    type="button"
+                    onClick={() => onAddAgent(agent)}
+                  >
+                    <Plus className="size-3.5" />
+                  </button>
+                )
               ) : null}
             </div>
           ))}
