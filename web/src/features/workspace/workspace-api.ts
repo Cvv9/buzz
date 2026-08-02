@@ -31,6 +31,14 @@ const MESSAGE_KINDS = [
   KIND_NIP29_DELETE,
 ];
 
+export function isConversationalWorkspaceMessage(
+  event: Pick<NostrEvent, "kind">,
+): boolean {
+  return (
+    event.kind === KIND_STREAM_MESSAGE || event.kind === KIND_STREAM_MESSAGE_V2
+  );
+}
+
 export type WorkspaceChannel = {
   id: string;
   name: string;
@@ -429,14 +437,36 @@ export function addWorkspaceMember(
   });
 }
 
-export function publishWorkspaceProfile(
+export async function publishWorkspaceProfile(
+  pubkey: string,
   displayName: string,
 ): Promise<NostrEvent> {
+  const existingEvents = await queryEvents(relayWsUrl(), {
+    kinds: [KIND_PROFILE],
+    authors: [pubkey],
+    limit: 20,
+  });
+  const existing = existingEvents.sort(
+    (a, b) => b.created_at - a.created_at || b.id.localeCompare(a.id),
+  )[0];
+  let content: Record<string, unknown> = {};
+  if (existing) {
+    try {
+      const parsed = JSON.parse(existing.content) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        content = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Preserve the valid name fields below when the existing profile is malformed.
+    }
+  }
+  const name = displayName.trim();
   return publishEvent(relayWsUrl(), {
     kind: KIND_PROFILE,
     content: JSON.stringify({
-      display_name: displayName.trim(),
-      name: displayName.trim(),
+      ...content,
+      display_name: name,
+      name,
     }),
     tags: [],
   });
@@ -508,6 +538,25 @@ export function subscribeToChannels(
       since: Math.floor(Date.now() / 1000),
     },
     (event) => onEvent(parseMessage(event)),
+    onStatus,
+  );
+}
+
+export function subscribeToReactions(
+  eventIds: string[],
+  onEvent: (reaction: NostrEvent) => void,
+  onStatus?: Parameters<typeof subscribeEvents>[3],
+): () => void {
+  const unique = [...new Set(eventIds.filter(Boolean))].slice(0, 500);
+  if (unique.length === 0) return () => {};
+  return subscribeEvents(
+    relayWsUrl(),
+    {
+      kinds: [KIND_REACTION],
+      "#e": unique,
+      since: Math.floor(Date.now() / 1000),
+    },
+    onEvent,
     onStatus,
   );
 }

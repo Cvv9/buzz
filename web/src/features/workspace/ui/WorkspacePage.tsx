@@ -1,14 +1,4 @@
-import {
-  ChevronLeft,
-  Hash,
-  Lock,
-  Menu,
-  MoreHorizontal,
-  Search,
-  Send,
-  Users,
-  X,
-} from "lucide-react";
+import { ChevronLeft, Hash, Lock, Menu, Send, Users, X } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import * as React from "react";
@@ -50,10 +40,12 @@ import {
   listProfiles,
   listReactions,
   listWorkspaceChannels,
+  isConversationalWorkspaceMessage,
   publishWorkspaceProfile,
   reactToWorkspaceMessage,
   sendWorkspaceMessage,
   subscribeToChannels,
+  subscribeToReactions,
 } from "@/features/workspace/workspace-api";
 
 type TimelineMessage = WorkspaceMessage & {
@@ -431,12 +423,25 @@ export function WorkspacePage() {
     queryFn: () => listProfiles(profilePubkeys),
     enabled: profilePubkeys.length > 0,
   });
-  const messageIds = materialized.map((message) => message.id);
+  const messageIds = React.useMemo(
+    () => materialized.map((message) => message.id),
+    [materialized],
+  );
   const reactionsQuery = useQuery({
     queryKey: ["workspace-reactions", messageIds],
     queryFn: () => listReactions(messageIds),
     enabled: messageIds.length > 0,
   });
+
+  React.useEffect(
+    () =>
+      subscribeToReactions(messageIds, () => {
+        void queryClient.invalidateQueries({
+          queryKey: ["workspace-reactions"],
+        });
+      }),
+    [messageIds, queryClient],
+  );
 
   React.useEffect(() => {
     if (!identity || channels.length === 0) return;
@@ -457,6 +462,7 @@ export function WorkspacePage() {
                 ),
         );
         if (
+          !isConversationalWorkspaceMessage(event) ||
           event.pubkey === identity.pubkey ||
           event.channelId === activeChannelIdRef.current
         ) {
@@ -489,7 +495,7 @@ export function WorkspacePage() {
     if (!identity || !channels.length) return;
     const marker = `buzz.web.profile-published.${identity.pubkey}`;
     if (localStorage.getItem(marker)) return;
-    publishWorkspaceProfile(identity.displayName)
+    publishWorkspaceProfile(identity.pubkey, identity.displayName)
       .then(() => {
         localStorage.setItem(marker, "true");
         void queryClient.invalidateQueries({
@@ -570,8 +576,10 @@ export function WorkspacePage() {
   const addAgentMutation = useMutation({
     mutationFn: (agent: WorkspaceProfile) =>
       addWorkspaceMember(activeChannelId ?? "", agent.pubkey, "bot"),
-    onSuccess: (_, agent) => {
+    onSuccess: async (_, agent) => {
       toast.success(`${agent.name} was added to this channel`);
+      await new Promise((resolve) => window.setTimeout(resolve, 350));
+      await channelsQuery.refetch();
     },
     onError: (error) => {
       toast.error("Could not add the hosted agent", {
@@ -720,24 +728,10 @@ export function WorkspacePage() {
                   </div>
                 </div>
                 <div className="flex items-center gap-1 text-black/40 dark:text-white/35">
-                  <button
-                    aria-label="Search"
-                    className="rounded-lg p-2 hover:bg-black/5 dark:hover:bg-white/5"
-                    type="button"
-                  >
-                    <Search className="size-4" />
-                  </button>
                   <span className="hidden items-center gap-1 rounded-lg px-2 py-1 text-xs sm:flex">
                     <Users className="size-3.5" />
                     {activeChannel.memberPubkeys.length}
                   </span>
-                  <button
-                    aria-label="More channel options"
-                    className="rounded-lg p-2 hover:bg-black/5 dark:hover:bg-white/5"
-                    type="button"
-                  >
-                    <MoreHorizontal className="size-4" />
-                  </button>
                 </div>
               </>
             ) : null}
