@@ -21,12 +21,14 @@ import { TeamDeleteDialog } from "./TeamDeleteDialog";
 import { TeamDialog } from "./TeamDialog";
 import { TeamsSection } from "./TeamsSection";
 import { UnifiedAgentsSection } from "./UnifiedAgentsSection";
+import { HostedAgentsSection } from "./HostedAgentsSection";
 import { useManagedAgentActions } from "./useManagedAgentActions";
 import { usePersonaActions } from "./usePersonaActions";
 import { useTeamActions } from "./useTeamActions";
 import { useProfilePanel } from "@/shared/context/ProfilePanelContext";
 import { useBakedBuildEnvQuery } from "@/features/agents/hooks";
 import { isManagedAgentActive } from "@/features/agents/lib/managedAgentControlActions";
+import { localRosterForHostedCommunity } from "@/features/agents/lib/hostedAgentView";
 import { useGlobalAgentConfig } from "@/features/agents/useGlobalAgentConfig";
 import { Button } from "@/shared/ui/button";
 import {
@@ -94,6 +96,15 @@ export function AgentsView() {
   const runningAgentCount = agents.managedAgents.filter((agent) =>
     isManagedAgentActive(agent),
   ).length;
+  const hostedAgents = agents.relayAgentsQuery.data ?? [];
+  const hasManagedHostedRoster = hostedAgents.some(
+    (agent) => agent.accessTier !== undefined,
+  );
+  const localRoster = localRosterForHostedCommunity(
+    personas.libraryPersonas,
+    teamActions.teams,
+    hasManagedHostedRoster,
+  );
   const hasSavedAgentDefaults = Boolean(
     globalConfig.preferred_runtime?.trim() ||
       globalConfig.provider?.trim() ||
@@ -212,6 +223,19 @@ export function AgentsView() {
             title="Agents"
           />
           <div className="flex flex-col gap-8">
+            <HostedAgentsSection
+              error={
+                agents.relayAgentsQuery.error instanceof Error
+                  ? agents.relayAgentsQuery.error
+                  : null
+              }
+              isLoading={agents.relayAgentsQuery.isLoading}
+              onOpenProfile={(pubkey) => {
+                openProfilePanel?.(pubkey);
+              }}
+              relayAgents={hostedAgents}
+            />
+
             <UnifiedAgentsSection
               defaultModel={inheritedDefaults.model.value}
               actionErrorMessage={agents.actionErrorMessage}
@@ -239,7 +263,7 @@ export function AgentsView() {
                 void agents.handleStartPersona(persona);
               }}
               // Persona props
-              personas={personas.libraryPersonas}
+              personas={localRoster.personas}
               personasError={
                 personas.personasQuery.error instanceof Error
                   ? personas.personasQuery.error
@@ -292,8 +316,8 @@ export function AgentsView() {
               onImport={() => {
                 teamImportInputRef.current?.click();
               }}
-              personas={personas.libraryPersonas}
-              teams={teamActions.teams}
+              personas={localRoster.personas}
+              teams={localRoster.teams}
             />
           </div>
         </div>

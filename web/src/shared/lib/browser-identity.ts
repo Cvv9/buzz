@@ -6,6 +6,8 @@ const DATABASE_VERSION = 1;
 const STORE_NAME = "identity";
 const PRIMARY_IDENTITY_KEY = "primary";
 const IDENTITY_MARKER_KEY = "buzz.web.identity.present.v1";
+const DEVICE_AUTO_UNLOCK_DISABLED_KEY =
+  "buzz.web.identity.auto-unlock.disabled.v1";
 const PASSWORD_KDF_ITERATIONS = 310_000;
 const MIN_PASSWORD_LENGTH = 10;
 
@@ -30,7 +32,17 @@ type StoredBrowserIdentityV2 = {
   encryptedSecret: ArrayBuffer;
 };
 
-type StoredBrowserIdentity = StoredBrowserIdentityV1 | StoredBrowserIdentityV2;
+type StoredBrowserIdentityV3 = Omit<StoredBrowserIdentityV2, "version"> & {
+  version: 3;
+  deviceEncryptionKey: CryptoKey;
+  deviceIv: ArrayBuffer;
+  deviceEncryptedSecret: ArrayBuffer;
+};
+
+type StoredBrowserIdentity =
+  | StoredBrowserIdentityV1
+  | StoredBrowserIdentityV2
+  | StoredBrowserIdentityV3;
 
 export type BrowserIdentity = {
   pubkey: string;
@@ -166,8 +178,46 @@ function setUnlockedIdentity(
   unlockedSecret = secret.slice();
   unlockedIdentity = identity;
   localStorage.setItem(IDENTITY_MARKER_KEY, identity.pubkey);
+  localStorage.removeItem(DEVICE_AUTO_UNLOCK_DISABLED_KEY);
   window.dispatchEvent(new Event("buzz-browser-identity-changed"));
   return identity;
+}
+
+function deviceAutoUnlockIsDisabled(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    localStorage.getItem(DEVICE_AUTO_UNLOCK_DISABLED_KEY) === "true"
+  );
+}
+
+async function createDeviceProtection(secret: Uint8Array): Promise<{
+  deviceEncryptionKey: CryptoKey;
+  deviceIv: ArrayBuffer;
+  deviceEncryptedSecret: ArrayBuffer;
+}> {
+  const deviceEncryptionKey = await crypto.subtle.generateKey(
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"],
+  );
+  const deviceIv = copyBuffer(crypto.getRandomValues(new Uint8Array(12)));
+  const deviceEncryptedSecret = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: deviceIv },
+    deviceEncryptionKey,
+    copyBuffer(secret),
+  );
+  return { deviceEncryptionKey, deviceIv, deviceEncryptedSecret };
+}
+
+async function upgradePasswordProtectedIdentity(
+  stored: StoredBrowserIdentityV2,
+  secret: Uint8Array,
+): Promise<void> {
+  await writeStoredIdentity({
+    ...stored,
+    version: 3,
+    ...(await createDeviceProtection(secret)),
+  });
 }
 
 async function persistPasswordProtectedSecret(
@@ -196,12 +246,13 @@ async function persistPasswordProtectedSecret(
   };
   await writeStoredIdentity({
     id: PRIMARY_IDENTITY_KEY,
-    version: 2,
+    version: 3,
     ...identity,
     salt,
     iterations: PASSWORD_KDF_ITERATIONS,
     iv,
     encryptedSecret,
+    ...(await createDeviceProtection(secret)),
   });
   return setUnlockedIdentity(secret, identity);
 }
@@ -231,7 +282,7 @@ export async function getStoredBrowserIdentity(): Promise<StoredBrowserIdentityS
   return {
     pubkey: stored.pubkey,
     displayName: stored.displayName,
-    protection: stored.version === 2 ? "password" : "legacy",
+    protection: stored.version === 1 ? "legacy" : "password",
   };
 }
 
@@ -240,7 +291,7 @@ export async function unlockBrowserIdentity(
 ): Promise<BrowserIdentity> {
   const stored = await readStoredIdentity();
   if (!stored) throw new Error("No saved Buzz account was found.");
-  if (stored.version !== 2) {
+  if (stored.version !== 2 && stored.version !== 3) {
     throw new Error("Set a password for this saved account before signing in.");
   }
   try {
@@ -256,6 +307,14 @@ export async function unlockBrowserIdentity(
     );
     const secret = new Uint8Array(decrypted);
     if (getPublicKey(secret) !== stored.pubkey) throw new Error("key mismatch");
+    if (stored.version === 2) {
+      try {
+        await upgradePasswordProtectedIdentity(stored, secret);
+      } catch {
+        // Keep password recovery available if this browser cannot retain a
+        // non-extractable device key. The next password unlock can retry it.
+      }
+    }
     return setUnlockedIdentity(secret, {
       pubkey: stored.pubkey,
       displayName: stored.displayName,
@@ -270,7 +329,9 @@ export async function migrateLegacyBrowserIdentity(
 ): Promise<BrowserIdentity> {
   const stored = await readStoredIdentity();
   if (!stored) throw new Error("No saved Buzz account was found.");
-  if (stored.version === 2) return unlockBrowserIdentity(password);
+  if (stored.version === 2 || stored.version === 3) {
+    return unlockBrowserIdentity(password);
+  }
   try {
     const decrypted = await crypto.subtle.decrypt(
       { name: "AES-GCM", iv: stored.iv },
@@ -287,6 +348,35 @@ export async function migrateLegacyBrowserIdentity(
     throw new Error(
       "This saved account could not be secured. Use its recovery key instead.",
     );
+  }
+}
+
+/**
+ * Restores a saved identity after a normal reload using a key that is bound to
+ * this browser profile. Password unlock remains available as the recovery path.
+ */
+export async function unlockBrowserIdentityForDevice(): Promise<BrowserIdentity | null> {
+  if (deviceAutoUnlockIsDisabled()) return null;
+  const stored = await readStoredIdentity();
+  if (!stored) {
+    localStorage.removeItem(IDENTITY_MARKER_KEY);
+    return null;
+  }
+  if (stored.version !== 3) return null;
+  try {
+    const decrypted = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: stored.deviceIv },
+      stored.deviceEncryptionKey,
+      stored.deviceEncryptedSecret,
+    );
+    const secret = new Uint8Array(decrypted);
+    if (getPublicKey(secret) !== stored.pubkey) return null;
+    return setUnlockedIdentity(secret, {
+      pubkey: stored.pubkey,
+      displayName: stored.displayName,
+    });
+  } catch {
+    return null;
   }
 }
 
@@ -327,6 +417,7 @@ export function lockBrowserIdentity(): void {
   unlockedSecret?.fill(0);
   unlockedSecret = null;
   unlockedIdentity = null;
+  localStorage.setItem(DEVICE_AUTO_UNLOCK_DISABLED_KEY, "true");
   window.dispatchEvent(new Event("buzz-browser-identity-changed"));
 }
 

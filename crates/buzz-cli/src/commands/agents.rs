@@ -14,6 +14,7 @@ pub async fn dispatch(command: AgentsCmd, client: &BuzzClient) -> Result<(), Cli
         AgentsCmd::PublishProfile {
             display_name,
             about,
+            aliases,
             avatar,
             audience,
             owner_pubkey,
@@ -26,6 +27,21 @@ pub async fn dispatch(command: AgentsCmd, client: &BuzzClient) -> Result<(), Cli
                     "--display-name must not be empty".to_string(),
                 ));
             }
+            let aliases = aliases
+                .as_deref()
+                .unwrap_or_default()
+                .split(',')
+                .map(str::trim)
+                .filter(|alias| !alias.is_empty() && *alias != display_name)
+                .fold(Vec::<String>::new(), |mut unique, alias| {
+                    if !unique
+                        .iter()
+                        .any(|existing| existing.eq_ignore_ascii_case(alias))
+                    {
+                        unique.push(alias.to_string());
+                    }
+                    unique
+                });
             let audience = audience.trim();
             if !matches!(audience, "community" | "owner") {
                 return Err(CliError::Usage(
@@ -71,6 +87,7 @@ pub async fn dispatch(command: AgentsCmd, client: &BuzzClient) -> Result<(), Cli
             let content = serde_json::json!({
                 "name": display_name,
                 "display_name": display_name,
+                "aliases": aliases,
                 "about": about,
                 "avatar_url": avatar,
                 "agent_type": "agent",

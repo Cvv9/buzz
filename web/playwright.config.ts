@@ -18,7 +18,12 @@ export default defineConfig({
   projects: [
     {
       name: "smoke",
-      testMatch: ["**/smoke.spec.ts"],
+      testMatch: [
+        "**/smoke.spec.ts",
+        "**/workspace-identity-and-agents.spec.ts",
+        "**/workspace-reactions.spec.ts",
+        "**/workspace-threads.spec.ts",
+      ],
       use: {
         ...devices["Desktop Chrome"],
       },

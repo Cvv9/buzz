@@ -964,6 +964,26 @@ mod tests {
     }
 
     #[test]
+    fn agents_preserves_hosted_visibility_metadata_for_directory_parse() {
+        let owner = "b".repeat(64);
+        let e = ev(
+            10100,
+            &format!(
+                r#"{{"name":"Chief of Staff","audience":"owner","owner_pubkey":"{owner}","access_tier":"admin"}}"#
+            ),
+            vec![],
+        );
+        let v = agents_from_events(std::slice::from_ref(&e));
+        let agents = v.get("agents").cloned().unwrap();
+        let parsed: Vec<crate::managed_agents::RelayAgentInfo> =
+            serde_json::from_value(agents).unwrap();
+
+        assert_eq!(parsed[0].audience.as_deref(), Some("owner"));
+        assert_eq!(parsed[0].owner_pubkey.as_deref(), Some(owner.as_str()));
+        assert_eq!(parsed[0].access_tier.as_deref(), Some("admin"));
+    }
+
+    #[test]
     fn relay_members_dedupes_and_defaults_role() {
         let pk1 = "a".repeat(64);
         let pk2 = "b".repeat(64);

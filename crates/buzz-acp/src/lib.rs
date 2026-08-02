@@ -3629,6 +3629,8 @@ mod agent_draft_prompt_tests {
         assert!(prompt.contains("pass real newline bytes through stdin"));
         assert!(prompt.contains("single-quoted shell strings preserve `\\n` literally"));
         assert!(prompt.contains("buzz messages send ... --content -"));
+        assert!(prompt.contains("never use `--content -` unless"));
+        assert!(prompt.contains("must end with a visible Buzz reply"));
     }
 
     #[test]

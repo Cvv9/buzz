@@ -178,7 +178,6 @@ impl ManagedAgentRecord {
             name_pool: self.name_pool.clone(),
             is_builtin: self.is_builtin,
             is_active: self.is_active,
-            // Projected by `list_personas` from the active retention scope.
             shared: false,
             source_team: self.source_team.clone(),
             source_team_persona_slug: self.source_team_persona_slug.clone(),
@@ -203,16 +202,17 @@ pub struct RelayAgentInfo {
     pub channel_ids: Vec<String>,
     pub capabilities: Vec<String>,
     pub status: String,
-    #[serde(default)]
     pub respond_to: Option<RespondTo>,
     #[serde(default)]
     pub respond_to_allowlist: Vec<String>,
+    pub audience: Option<String>,
+    pub owner_pubkey: Option<String>,
+    pub access_tier: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ManagedAgentRecord {
     pub pubkey: String,
     pub name: String,
-    #[serde(default)]
     pub persona_id: Option<String>,
     /// Team this instance was deployed from. Resolves runtime team instructions.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -105,8 +105,9 @@ export function WorkspaceGuide({
               <strong>1.</strong> Open the channel where the work belongs.
             </li>
             <li>
-              <strong>2.</strong> Use the + beside an agent to add it to that
-              channel.
+              <strong>2.</strong> Mention an available hosted agent and Buzz
+              adds it to that channel automatically. Use the + beside an agent
+              only when you want to add it before the first mention.
             </li>
             <li>
               <strong>3.</strong> Start your message with its exact name,

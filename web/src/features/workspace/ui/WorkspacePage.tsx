@@ -1,332 +1,50 @@
-import { ChevronLeft, Hash, Lock, Menu, Send, Users, X } from "lucide-react";
+import { ChevronLeft, Hash, Lock, Menu, Users, X } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import * as React from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-import { toast } from "sonner";
-import {
-  type BrowserIdentity,
-  type StoredBrowserIdentitySummary,
-  getStoredBrowserIdentity,
-  getUnlockedBrowserIdentity,
-  lockBrowserIdentity,
-} from "@/shared/lib/browser-identity";
-import { cn } from "@/shared/lib/cn";
 import { truncatePubkey } from "@/shared/lib/pubkey";
 import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
 import { IdentityGate } from "./IdentityGate";
 import { EmptyMembership } from "./EmptyMembership";
-import { ProfileAvatar, WorkspaceSidebar } from "./WorkspaceSidebar";
+import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import { WorkspaceGuide } from "./WorkspaceGuide";
 import { WorkspaceSettings } from "./WorkspaceSettings";
+import { WorkspaceComposer } from "./WorkspaceComposer";
+import { WorkspaceMessageRow } from "./WorkspaceMessageRow";
+import { useAgentMentionDelivery } from "../useAgentMentionDelivery";
+import { useWorkspaceIdentity } from "../useWorkspaceIdentity";
 import {
-  KIND_DELETION,
-  KIND_NIP29_DELETE,
-  KIND_STREAM_MESSAGE,
-  KIND_STREAM_MESSAGE_EDIT,
-  KIND_STREAM_MESSAGE_V2,
-  type ReactionSummary,
-  type WorkspaceChannel,
   type WorkspaceMessage,
   type WorkspaceProfile,
-  addWorkspaceMember,
   createWorkspaceChannel,
   deleteWorkspaceMessage,
   editWorkspaceMessage,
   listAgents,
   listChannelMessages,
   listProfiles,
-  listReactions,
   listWorkspaceChannels,
   isConversationalWorkspaceMessage,
   publishWorkspaceProfile,
-  reactToWorkspaceMessage,
-  sendWorkspaceMessage,
   subscribeToChannels,
-  subscribeToReactions,
 } from "@/features/workspace/workspace-api";
-
-type TimelineMessage = WorkspaceMessage & {
-  edited?: boolean;
-};
-
-function tagValue(event: WorkspaceMessage, name: string): string | undefined {
-  return event.tags.find((tag) => tag[0] === name)?.[1];
-}
-
-function materializeMessages(events: WorkspaceMessage[]): TimelineMessage[] {
-  const deleted = new Set(
-    events
-      .filter(
-        (event) =>
-          event.kind === KIND_DELETION || event.kind === KIND_NIP29_DELETE,
-      )
-      .map((event) => tagValue(event, "e"))
-      .filter((value): value is string => Boolean(value)),
-  );
-  const edits = new Map<string, WorkspaceMessage>();
-  for (const event of events) {
-    if (event.kind !== KIND_STREAM_MESSAGE_EDIT) continue;
-    const target = tagValue(event, "e");
-    if (!target) continue;
-    const current = edits.get(target);
-    if (!current || event.created_at >= current.created_at) {
-      edits.set(target, event);
-    }
-  }
-  return events
-    .filter(
-      (event) =>
-        event.kind === KIND_STREAM_MESSAGE ||
-        event.kind === KIND_STREAM_MESSAGE_V2,
-    )
-    .filter((event) => !deleted.has(event.id))
-    .map((event) => {
-      const edit = edits.get(event.id);
-      return edit ? { ...event, content: edit.content, edited: true } : event;
-    });
-}
-
-function MessageActions({
-  own,
-  onReply,
-  onReact,
-  onEdit,
-  onDelete,
-}: {
-  own: boolean;
-  onReply: () => void;
-  onReact: (emoji: string) => void;
-  onEdit: () => void;
-  onDelete: () => void;
-}) {
-  return (
-    <div className="absolute -top-4 right-4 flex items-center overflow-hidden rounded-lg border border-black/10 bg-white opacity-0 shadow-sm transition-opacity group-hover:opacity-100 focus-within:opacity-100 dark:border-white/10 dark:bg-[#22251f]">
-      {["👍", "✅", "❤️"].map((emoji) => (
-        <button
-          aria-label={`React with ${emoji}`}
-          className="px-2 py-1.5 text-sm hover:bg-black/5 dark:hover:bg-white/5"
-          key={emoji}
-          type="button"
-          onClick={() => onReact(emoji)}
-        >
-          {emoji}
-        </button>
-      ))}
-      <button
-        className="border-l border-black/8 px-2 py-1.5 text-xs hover:bg-black/5 dark:border-white/8 dark:hover:bg-white/5"
-        type="button"
-        onClick={onReply}
-      >
-        Reply
-      </button>
-      {own ? (
-        <>
-          <button
-            className="px-2 py-1.5 text-xs hover:bg-black/5 dark:hover:bg-white/5"
-            type="button"
-            onClick={onEdit}
-          >
-            Edit
-          </button>
-          <button
-            className="px-2 py-1.5 text-xs text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950/30"
-            type="button"
-            onClick={onDelete}
-          >
-            Delete
-          </button>
-        </>
-      ) : null}
-    </div>
-  );
-}
-
-function MessageRow({
-  message,
-  profile,
-  ownPubkey,
-  reactions,
-  replyCount,
-  onOpenThread,
-  onReact,
-  onEdit,
-  onDelete,
-}: {
-  message: TimelineMessage;
-  profile: WorkspaceProfile;
-  ownPubkey: string;
-  reactions: ReactionSummary[];
-  replyCount: number;
-  onOpenThread: () => void;
-  onReact: (emoji: string) => void;
-  onEdit: () => void;
-  onDelete: () => void;
-}) {
-  const timestamp = new Intl.DateTimeFormat(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(message.created_at * 1000);
-  return (
-    <article className="group relative flex gap-3 px-5 py-2.5 hover:bg-black/[0.025] dark:hover:bg-white/[0.025] sm:px-7">
-      <ProfileAvatar profile={profile} />
-      <div className="min-w-0 flex-1">
-        <div className="flex items-baseline gap-2">
-          <span className="truncate text-sm font-semibold">{profile.name}</span>
-          {profile.isAgent ? (
-            <span className="rounded-md bg-[#d7d72e]/25 px-1.5 py-0.5 text-[0.625rem] font-semibold text-[#707000] dark:text-[#e4e56a]">
-              AGENT
-            </span>
-          ) : null}
-          <time className="text-[0.6875rem] text-black/35 dark:text-white/30">
-            {timestamp}
-          </time>
-          {message.edited ? (
-            <span className="text-[0.6875rem] text-black/30 dark:text-white/25">
-              edited
-            </span>
-          ) : null}
-        </div>
-        <div className="prose prose-sm mt-0.5 max-w-none break-words text-[0.9375rem] leading-6 prose-p:my-0 prose-pre:my-2 dark:prose-invert">
-          <Markdown remarkPlugins={[remarkGfm]}>{message.content}</Markdown>
-        </div>
-        {reactions.length || replyCount ? (
-          <div className="mt-2 flex flex-wrap items-center gap-1.5">
-            {reactions.map((reaction) => (
-              <button
-                className={cn(
-                  "rounded-lg border px-2 py-0.5 text-xs",
-                  reaction.authors.includes(ownPubkey)
-                    ? "border-[#b6b71e] bg-[#d7d72e]/20"
-                    : "border-black/10 bg-black/[0.025] hover:bg-black/5 dark:border-white/10 dark:bg-white/[0.03] dark:hover:bg-white/[0.06]",
-                )}
-                key={reaction.emoji}
-                type="button"
-                onClick={() => onReact(reaction.emoji)}
-              >
-                {reaction.emoji} {reaction.authors.length}
-              </button>
-            ))}
-            {replyCount ? (
-              <button
-                className="ml-1 text-xs font-medium text-[#777800] hover:underline dark:text-[#d7d72e]"
-                type="button"
-                onClick={onOpenThread}
-              >
-                {replyCount} {replyCount === 1 ? "reply" : "replies"}
-              </button>
-            ) : null}
-          </div>
-        ) : null}
-      </div>
-      <MessageActions
-        own={message.pubkey === ownPubkey}
-        onDelete={onDelete}
-        onEdit={onEdit}
-        onReact={onReact}
-        onReply={onOpenThread}
-      />
-    </article>
-  );
-}
-
-function Composer({
-  channel,
-  agents,
-  replyTo,
-  onCancelReply,
-  onSend,
-  sending,
-}: {
-  channel: WorkspaceChannel;
-  agents: WorkspaceProfile[];
-  replyTo?: TimelineMessage;
-  onCancelReply?: () => void;
-  onSend: (content: string, mentions: string[]) => void;
-  sending: boolean;
-}) {
-  const [content, setContent] = React.useState("");
-  const textareaRef = React.useRef<HTMLTextAreaElement>(null);
-  React.useEffect(() => {
-    if (replyTo) textareaRef.current?.focus();
-  }, [replyTo]);
-
-  const submit = () => {
-    const trimmed = content.trim();
-    if (!trimmed || sending) return;
-    const lowered = trimmed.toLocaleLowerCase();
-    const mentions = agents
-      .filter((agent) => lowered.includes(`@${agent.name.toLocaleLowerCase()}`))
-      .map((agent) => agent.pubkey);
-    onSend(trimmed, mentions);
-    setContent("");
-  };
-
-  return (
-    <div className="shrink-0 px-4 pb-4 pt-2 sm:px-6 sm:pb-5">
-      <div className="overflow-hidden rounded-2xl border border-black/12 bg-white shadow-[0_8px_28px_rgba(30,33,25,0.06)] focus-within:border-[#b6b71e] dark:border-white/12 dark:bg-[#20231e] dark:shadow-none">
-        {replyTo ? (
-          <div className="flex items-center justify-between border-b border-black/8 bg-black/[0.025] px-4 py-2 text-xs dark:border-white/8 dark:bg-white/[0.025]">
-            <span className="truncate text-black/55 dark:text-white/50">
-              Replying in thread
-            </span>
-            <button
-              aria-label="Cancel reply"
-              className="rounded p-1 hover:bg-black/5 dark:hover:bg-white/5"
-              type="button"
-              onClick={onCancelReply}
-            >
-              <X className="size-3.5" />
-            </button>
-          </div>
-        ) : null}
-        <textarea
-          aria-label={`Message ${channel.name}`}
-          className="block max-h-40 min-h-16 w-full resize-none bg-transparent px-4 py-3 text-sm outline-none placeholder:text-black/35 dark:placeholder:text-white/30"
-          placeholder={
-            agents.length
-              ? `Message #${channel.name}, or @mention an agent`
-              : `Message #${channel.name}`
-          }
-          ref={textareaRef}
-          rows={2}
-          value={content}
-          onChange={(event) => setContent(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              submit();
-            }
-          }}
-        />
-        <div className="flex items-center justify-between px-3 pb-2.5">
-          <p className="text-[0.6875rem] text-black/30 dark:text-white/25">
-            Enter to send · Shift + Enter for a new line
-          </p>
-          <Button
-            aria-label="Send message"
-            className="size-8 bg-[#d7d72e] p-0 text-[#171912] hover:bg-[#e5e54d]"
-            disabled={!content.trim() || sending}
-            type="button"
-            onClick={submit}
-          >
-            <Send className="size-3.5" />
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
+import {
+  materializeMessages,
+  type TimelineMessage,
+} from "@/features/workspace/workspace-messages";
+import { useWorkspaceReactions } from "@/features/workspace/useWorkspaceReactions";
 
 export function WorkspacePage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const [identity, setIdentity] = React.useState<BrowserIdentity | null>(null);
-  const [storedIdentity, setStoredIdentity] =
-    React.useState<StoredBrowserIdentitySummary | null>(null);
-  const [identityLoading, setIdentityLoading] = React.useState(true);
+  const {
+    identity,
+    identityLoading,
+    lock: lockIdentity,
+    setIdentity,
+    setStoredIdentity,
+    storedIdentity,
+  } = useWorkspaceIdentity();
   const [activeChannelId, setActiveChannelId] = React.useState<string | null>(
     () => localStorage.getItem("buzz.web.active-channel"),
   );
@@ -346,6 +64,9 @@ export function WorkspacePage() {
     });
   }, [activeChannelId]);
   const [threadRootId, setThreadRootId] = React.useState<string | null>(null);
+  const [expandedThreadIds, setExpandedThreadIds] = React.useState<Set<string>>(
+    () => new Set(),
+  );
   const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [guideOpen, setGuideOpen] = React.useState(false);
   const [createChannelOpen, setCreateChannelOpen] = React.useState(false);
@@ -353,22 +74,6 @@ export function WorkspacePage() {
   const [channelAbout, setChannelAbout] = React.useState("");
   const [editingMessage, setEditingMessage] =
     React.useState<TimelineMessage | null>(null);
-
-  React.useEffect(() => {
-    let active = true;
-    const unlocked = getUnlockedBrowserIdentity();
-    if (unlocked) setIdentity(unlocked);
-    getStoredBrowserIdentity()
-      .then((stored) => {
-        if (active) setStoredIdentity(stored);
-      })
-      .finally(() => {
-        if (active) setIdentityLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
 
   const channelsQuery = useQuery({
     queryKey: ["workspace-channels", identity?.pubkey],
@@ -400,6 +105,13 @@ export function WorkspacePage() {
 
   const activeChannel =
     channels.find((channel) => channel.id === activeChannelId) ?? null;
+  const { addAgentMutation, sendMutation } = useAgentMentionDelivery({
+    activeChannel,
+    activeChannelId,
+    agents: agentsQuery.data ?? [],
+    identity,
+    refetchChannels: channelsQuery.refetch,
+  });
   const messagesQuery = useQuery({
     queryKey: ["channel-messages", activeChannelId],
     queryFn: () => listChannelMessages(activeChannelId ?? ""),
@@ -409,39 +121,23 @@ export function WorkspacePage() {
     () => materializeMessages(messagesQuery.data ?? []),
     [messagesQuery.data],
   );
+  const { reactionActorPubkeys, reactions, toggleReaction } =
+    useWorkspaceReactions(materialized, identity?.pubkey ?? "");
   const profilePubkeys = React.useMemo(
     () => [
       ...(identity ? [identity.pubkey] : []),
       ...materialized.map((message) => message.pubkey),
       ...channels.flatMap((channel) => channel.memberPubkeys),
       ...(agentsQuery.data ?? []).map((agent) => agent.pubkey),
+      ...reactionActorPubkeys,
     ],
-    [agentsQuery.data, channels, identity, materialized],
+    [agentsQuery.data, channels, identity, materialized, reactionActorPubkeys],
   );
   const profilesQuery = useQuery({
     queryKey: ["workspace-profiles", [...new Set(profilePubkeys)].sort()],
     queryFn: () => listProfiles(profilePubkeys),
     enabled: profilePubkeys.length > 0,
   });
-  const messageIds = React.useMemo(
-    () => materialized.map((message) => message.id),
-    [materialized],
-  );
-  const reactionsQuery = useQuery({
-    queryKey: ["workspace-reactions", messageIds],
-    queryFn: () => listReactions(messageIds),
-    enabled: messageIds.length > 0,
-  });
-
-  React.useEffect(
-    () =>
-      subscribeToReactions(messageIds, () => {
-        void queryClient.invalidateQueries({
-          queryKey: ["workspace-reactions"],
-        });
-      }),
-    [messageIds, queryClient],
-  );
 
   React.useEffect(() => {
     if (!identity || channels.length === 0) return;
@@ -507,34 +203,6 @@ export function WorkspacePage() {
       });
   }, [channels.length, identity, queryClient]);
 
-  const sendMutation = useMutation({
-    mutationFn: ({
-      content,
-      replyTo,
-      mentions,
-    }: {
-      content: string;
-      replyTo?: TimelineMessage;
-      mentions: string[];
-    }) =>
-      sendWorkspaceMessage(activeChannelId ?? "", content, replyTo, mentions),
-    onSuccess: (event, variables) => {
-      queryClient.setQueryData<WorkspaceMessage[]>(
-        ["channel-messages", activeChannelId],
-        (current = []) => [
-          ...current,
-          {
-            ...event,
-            channelId: activeChannelId ?? "",
-            rootEventId: variables.replyTo
-              ? (variables.replyTo.rootEventId ?? variables.replyTo.id)
-              : null,
-            parentEventId: variables.replyTo?.id ?? null,
-          },
-        ],
-      );
-    },
-  });
   const createChannelMutation = useMutation({
     mutationFn: () => createWorkspaceChannel(channelName, channelAbout),
     onSuccess: async () => {
@@ -544,17 +212,6 @@ export function WorkspacePage() {
       await new Promise((resolve) => window.setTimeout(resolve, 350));
       await channelsQuery.refetch();
     },
-  });
-  const reactMutation = useMutation({
-    mutationFn: ({
-      message,
-      emoji,
-    }: {
-      message: TimelineMessage;
-      emoji: string;
-    }) => reactToWorkspaceMessage(message, emoji),
-    onSuccess: () =>
-      queryClient.invalidateQueries({ queryKey: ["workspace-reactions"] }),
   });
   const editMutation = useMutation({
     mutationFn: ({
@@ -573,24 +230,6 @@ export function WorkspacePage() {
     mutationFn: deleteWorkspaceMessage,
     onSuccess: () => messagesQuery.refetch(),
   });
-  const addAgentMutation = useMutation({
-    mutationFn: (agent: WorkspaceProfile) =>
-      addWorkspaceMember(activeChannelId ?? "", agent.pubkey, "bot"),
-    onSuccess: async (_, agent) => {
-      toast.success(`${agent.name} was added to this channel`);
-      await new Promise((resolve) => window.setTimeout(resolve, 350));
-      await channelsQuery.refetch();
-    },
-    onError: (error) => {
-      toast.error("Could not add the hosted agent", {
-        description:
-          error instanceof Error
-            ? error.message
-            : "Owner or admin access is required.",
-      });
-    },
-  });
-
   if (identityLoading) {
     return (
       <div className="flex min-h-[100dvh] items-center justify-center bg-[#151713] text-white/55">
@@ -660,15 +299,42 @@ export function WorkspacePage() {
     ? materialized.filter((message) => message.rootEventId === threadRootId)
     : [];
   const currentProfile = profileFor(identity.pubkey);
+  const reactionActorName = (pubkey: string) =>
+    pubkey === identity.pubkey ? "You" : profileFor(pubkey).name;
   const replyCounts = new Map<string, number>();
+  const repliesByThread = new Map<string, TimelineMessage[]>();
   for (const message of materialized) {
     if (message.rootEventId) {
       replyCounts.set(
         message.rootEventId,
         (replyCounts.get(message.rootEventId) ?? 0) + 1,
       );
+      const replies = repliesByThread.get(message.rootEventId) ?? [];
+      replies.push(message);
+      repliesByThread.set(message.rootEventId, replies);
     }
   }
+  const toggleInlineThread = (messageId: string) => {
+    setExpandedThreadIds((current) => {
+      const next = new Set(current);
+      if (next.has(messageId)) next.delete(messageId);
+      else next.add(messageId);
+      return next;
+    });
+  };
+  const openInlineThread = (messageId: string) => {
+    setExpandedThreadIds((current) =>
+      current.has(messageId) ? current : new Set(current).add(messageId),
+    );
+  };
+  const closeInlineThread = (messageId: string) => {
+    setExpandedThreadIds((current) => {
+      if (!current.has(messageId)) return current;
+      const next = new Set(current);
+      next.delete(messageId);
+      return next;
+    });
+  };
 
   return (
     <div
@@ -691,6 +357,7 @@ export function WorkspacePage() {
         onSelectChannel={(channelId) => {
           setActiveChannelId(channelId);
           setThreadRootId(null);
+          setExpandedThreadIds(new Set());
         }}
       />
 
@@ -751,24 +418,88 @@ export function WorkspacePage() {
                 ))}
               </div>
             ) : topLevel.length ? (
-              topLevel.map((message) => (
-                <MessageRow
-                  key={message.id}
-                  message={message}
-                  ownPubkey={identity.pubkey}
-                  profile={profileFor(message.pubkey)}
-                  reactions={reactionsQuery.data?.get(message.id) ?? []}
-                  replyCount={replyCounts.get(message.id) ?? 0}
-                  onDelete={() => {
-                    if (window.confirm("Delete this message?")) {
-                      deleteMutation.mutate(message);
-                    }
-                  }}
-                  onEdit={() => setEditingMessage(message)}
-                  onOpenThread={() => setThreadRootId(message.id)}
-                  onReact={(emoji) => reactMutation.mutate({ message, emoji })}
-                />
-              ))
+              topLevel.map((message) => {
+                const replies = repliesByThread.get(message.id) ?? [];
+                const inlineExpanded = expandedThreadIds.has(message.id);
+                const replyTarget = replies[replies.length - 1] ?? message;
+                return (
+                  <div key={message.id}>
+                    <WorkspaceMessageRow
+                      message={message}
+                      ownPubkey={identity.pubkey}
+                      profile={profileFor(message.pubkey)}
+                      reactions={reactions?.get(message.id) ?? []}
+                      replyCount={replyCounts.get(message.id) ?? 0}
+                      reactionActorName={reactionActorName}
+                      threadExpanded={inlineExpanded}
+                      onDelete={() => {
+                        if (window.confirm("Delete this message?")) {
+                          deleteMutation.mutate(message);
+                        }
+                      }}
+                      onEdit={() => setEditingMessage(message)}
+                      onOpenThreadPanel={() => {
+                        closeInlineThread(message.id);
+                        setThreadRootId(message.id);
+                      }}
+                      onReact={(emoji) => toggleReaction(message, emoji)}
+                      onReply={() => openInlineThread(message.id)}
+                      onToggleInlineThread={() =>
+                        toggleInlineThread(message.id)
+                      }
+                    />
+                    {inlineExpanded ? (
+                      <section
+                        aria-label={`Replies to ${profileFor(message.pubkey).name}`}
+                        className="mb-2 ml-10 border-l border-black/10 pl-2 dark:border-white/10 sm:ml-14 sm:pl-3"
+                        data-testid={`inline-thread-${message.id}`}
+                        id={`inline-thread-${message.id}`}
+                      >
+                        <p className="px-2 pt-2 text-xs font-medium text-black/40 dark:text-white/35">
+                          {replies.length}{" "}
+                          {replies.length === 1 ? "reply" : "replies"}
+                        </p>
+                        {replies.map((reply) => (
+                          <WorkspaceMessageRow
+                            key={reply.id}
+                            message={reply}
+                            ownPubkey={identity.pubkey}
+                            profile={profileFor(reply.pubkey)}
+                            reactions={reactions?.get(reply.id) ?? []}
+                            replyCount={0}
+                            reactionActorName={reactionActorName}
+                            onDelete={() => deleteMutation.mutate(reply)}
+                            onEdit={() => setEditingMessage(reply)}
+                            onOpenThreadPanel={() =>
+                              setThreadRootId(message.id)
+                            }
+                            onReact={(emoji) => toggleReaction(reply, emoji)}
+                            onReply={() => openInlineThread(message.id)}
+                            onToggleInlineThread={() => {}}
+                          />
+                        ))}
+                        {activeChannel ? (
+                          <WorkspaceComposer
+                            agents={agentsQuery.data ?? []}
+                            channel={activeChannel}
+                            compact
+                            replyTo={replyTarget}
+                            sending={sendMutation.isPending}
+                            onCancelReply={() => closeInlineThread(message.id)}
+                            onSend={(content, mentions) =>
+                              sendMutation.mutate({
+                                content,
+                                mentions,
+                                replyTo: replyTarget,
+                              })
+                            }
+                          />
+                        ) : null}
+                      </section>
+                    ) : null}
+                  </div>
+                );
+              })
             ) : (
               <div className="flex h-full min-h-72 items-center justify-center px-6 text-center">
                 <div className="max-w-sm">
@@ -786,7 +517,7 @@ export function WorkspacePage() {
             )}
           </div>
           {activeChannel ? (
-            <Composer
+            <WorkspaceComposer
               agents={agentsQuery.data ?? []}
               channel={activeChannel}
               sending={sendMutation.isPending}
@@ -818,22 +549,25 @@ export function WorkspacePage() {
             </header>
             <div className="min-h-0 flex-1 overflow-y-auto py-4">
               {[threadRoot, ...threadReplies].map((message) => (
-                <MessageRow
+                <WorkspaceMessageRow
                   key={message.id}
                   message={message}
                   ownPubkey={identity.pubkey}
                   profile={profileFor(message.pubkey)}
-                  reactions={reactionsQuery.data?.get(message.id) ?? []}
+                  reactions={reactions?.get(message.id) ?? []}
                   replyCount={0}
+                  reactionActorName={reactionActorName}
                   onDelete={() => deleteMutation.mutate(message)}
                   onEdit={() => setEditingMessage(message)}
-                  onOpenThread={() => {}}
-                  onReact={(emoji) => reactMutation.mutate({ message, emoji })}
+                  onOpenThreadPanel={() => {}}
+                  onReact={(emoji) => toggleReaction(message, emoji)}
+                  onReply={() => {}}
+                  onToggleInlineThread={() => {}}
                 />
               ))}
             </div>
             {activeChannel ? (
-              <Composer
+              <WorkspaceComposer
                 agents={agentsQuery.data ?? []}
                 channel={activeChannel}
                 replyTo={threadRoot}
@@ -967,8 +701,7 @@ export function WorkspacePage() {
           identity={identity}
           onClose={() => setSettingsOpen(false)}
           onSignOut={() => {
-            lockBrowserIdentity();
-            setIdentity(null);
+            lockIdentity();
             setSettingsOpen(false);
             queryClient.clear();
           }}

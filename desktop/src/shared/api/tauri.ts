@@ -117,6 +117,9 @@ type RawRelayAgent = {
   status: RelayAgent["status"];
   respond_to?: RelayAgent["respondTo"];
   respond_to_allowlist?: string[];
+  audience?: string;
+  owner_pubkey?: string | null;
+  access_tier?: string;
 };
 export type RawManagedAgent = {
   pubkey: string;
@@ -683,6 +686,17 @@ function fromRawRelayAgent(agent: RawRelayAgent): RelayAgent {
     status: agent.status,
     respondTo: agent.respond_to ?? null,
     respondToAllowlist: agent.respond_to_allowlist ?? [],
+    audience:
+      agent.audience === "owner" || agent.audience === "community"
+        ? agent.audience
+        : undefined,
+    ownerPubkey: agent.owner_pubkey ?? null,
+    accessTier:
+      agent.access_tier === "shared" ||
+      agent.access_tier === "personal" ||
+      agent.access_tier === "admin"
+        ? agent.access_tier
+        : undefined,
   };
 }
 

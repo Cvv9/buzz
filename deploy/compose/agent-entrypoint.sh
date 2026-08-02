@@ -179,6 +179,9 @@ fi
 if [ -n "${BUZZ_ACP_PROFILE_AVATAR:-}" ]; then
   set -- "$@" --avatar "${BUZZ_ACP_PROFILE_AVATAR}"
 fi
+if [ -n "${BUZZ_ACP_PROFILE_ALIASES:-}" ]; then
+  set -- "$@" --aliases "${BUZZ_ACP_PROFILE_ALIASES}"
+fi
 
 "$@"
 
