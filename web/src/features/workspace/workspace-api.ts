@@ -68,9 +68,12 @@ export type WorkspaceMessage = NostrEvent & {
 };
 
 export type ReactionSummary = {
+  /** The message that received this reaction. */
   eventId: string;
   emoji: string;
   authors: string[];
+  /** The latest reaction event from each author, used for NIP-09 removal. */
+  reactionEventIdsByAuthor: Record<string, string>;
 };
 
 function firstTag(event: NostrEvent, name: string): string | undefined {
@@ -364,9 +367,15 @@ export async function listReactions(
       eventId: target,
       emoji: reaction.content,
       authors: [],
+      reactionEventIdsByAuthor: {},
     };
     if (!summary.authors.includes(reaction.pubkey)) {
       summary.authors.push(reaction.pubkey);
+    }
+    const existingReactionId =
+      summary.reactionEventIdsByAuthor[reaction.pubkey];
+    if (!existingReactionId || reaction.id > existingReactionId) {
+      summary.reactionEventIdsByAuthor[reaction.pubkey] = reaction.id;
     }
     byEmoji.set(reaction.content, summary);
     grouped.set(target, byEmoji);
@@ -507,6 +516,40 @@ export function reactToWorkspaceMessage(
     kind: KIND_REACTION,
     content: emoji,
     tags: [["e", message.id]],
+  });
+}
+
+/**
+ * Remove the caller's reaction through NIP-09. If the client has not yet
+ * received the reaction id (for example, an immediate second click), look it
+ * up by the exact target, author, and emoji before publishing the deletion.
+ */
+export async function removeWorkspaceReaction(
+  message: WorkspaceMessage,
+  emoji: string,
+  ownPubkey: string,
+  knownReactionEventId?: string,
+): Promise<NostrEvent | null> {
+  let reactionEventId = knownReactionEventId;
+  if (!reactionEventId) {
+    const reactions = await queryEvents(relayWsUrl(), {
+      kinds: [KIND_REACTION],
+      authors: [ownPubkey],
+      "#e": [message.id],
+      limit: 50,
+    });
+    reactionEventId = reactions
+      .filter((reaction) => reaction.content === emoji)
+      .sort(
+        (left, right) =>
+          right.created_at - left.created_at || right.id.localeCompare(left.id),
+      )[0]?.id;
+  }
+  if (!reactionEventId) return null;
+  return publishEvent(relayWsUrl(), {
+    kind: KIND_DELETION,
+    content: "",
+    tags: [["e", reactionEventId]],
   });
 }
 
