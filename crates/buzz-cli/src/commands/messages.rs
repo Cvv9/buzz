@@ -46,6 +46,29 @@ fn find_root_from_tags(tags: &serde_json::Value) -> Option<String> {
     root.or(reply)
 }
 
+/// Format an uploaded attachment using the markdown form the desktop renderer
+/// expects. Generic files deliberately use a normal link so matching `imeta`
+/// metadata is rendered as a FileCard instead of an invalid image preview.
+fn format_attachment_markdown(desc: &crate::client::BlobDescriptor) -> String {
+    if desc.mime_type.starts_with("video/") {
+        return format!("\n![video]({})", desc.url);
+    }
+    if desc.mime_type.starts_with("image/") {
+        return format!("\n![image]({})", desc.url);
+    }
+
+    let label = desc
+        .filename
+        .as_deref()
+        .or_else(|| desc.url.rsplit('/').next())
+        .unwrap_or("file");
+    let escaped_label = label
+        .replace('\\', "\\\\")
+        .replace('[', "\\[")
+        .replace(']', "\\]");
+    format!("\n[{escaped_label}]({})", desc.url)
+}
+
 /// Build a `ThreadRef` for a reply, given the immediate parent's event ID.
 ///
 /// Fetches the parent event from the relay and inspects its NIP-10 `e` tags to
@@ -619,13 +642,7 @@ pub async fn cmd_send_message(
             .await
             .map_err(|e| CliError::Other(format!("upload failed for {file_path}: {e}")))?;
         media_tags.push(crate::client::build_imeta_tag(&desc));
-        if desc.mime_type.starts_with("video/") {
-            media_content.push_str("\n![video](");
-        } else {
-            media_content.push_str("\n![image](");
-        }
-        media_content.push_str(&desc.url);
-        media_content.push(')');
+        media_content.push_str(&format_attachment_markdown(&desc));
     }
     let final_content = if media_content.is_empty() {
         p.content.clone()
@@ -993,10 +1010,11 @@ pub async fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::{
-        event_mention_pubkeys, find_root_from_tags, match_profiles_by_name, merge_message_mentions,
-        missing_members, normalize_explicit_mentions, parse_member_pubkeys,
-        resolve_names_to_pubkeys,
+        event_mention_pubkeys, find_root_from_tags, format_attachment_markdown,
+        match_profiles_by_name, merge_message_mentions, missing_members, normalize_explicit_mentions,
+        parse_member_pubkeys, resolve_names_to_pubkeys,
     };
+    use crate::client::BlobDescriptor;
     use buzz_sdk::mentions::{
         extract_at_mentions_with_known, extract_at_names, match_names_to_profiles, MentionProfile,
     };
@@ -1011,6 +1029,40 @@ mod tests {
     const PK_VALID_A: &str = "35c18ae273fccfaf80d629e20e7f8721b90499379addff533054acc2504c12b4";
     const PK_VALID_B: &str = "c6237ef84fa537c78dcee78efd2d4e59f728859c7f194da42ac51ededfa0be05";
     const PK_VALID_C: &str = "f4a42a97e594b77bdbd8ee35191c8b28a94a4cb871d96f32921558275421fb68";
+
+    fn attachment(mime_type: &str, filename: Option<&str>) -> BlobDescriptor {
+        BlobDescriptor {
+            url: "https://relay.test/media/abc123.file".into(),
+            sha256: "abc123".into(),
+            size: 42,
+            mime_type: mime_type.into(),
+            uploaded: 0,
+            dim: None,
+            blurhash: None,
+            thumb: None,
+            duration: None,
+            filename: filename.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn attachments_use_renderer_compatible_markdown() {
+        assert_eq!(
+            format_attachment_markdown(&attachment("image/png", Some("diagram.png"))),
+            "\n![image](https://relay.test/media/abc123.file)"
+        );
+        assert_eq!(
+            format_attachment_markdown(&attachment("video/mp4", Some("demo.mp4"))),
+            "\n![video](https://relay.test/media/abc123.file)"
+        );
+        assert_eq!(
+            format_attachment_markdown(&attachment(
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                Some("invoice[final].docx"),
+            )),
+            "\n[invoice\\[final\\].docx](https://relay.test/media/abc123.file)"
+        );
+    }
 
     #[test]
     fn root_marker_wins_over_reply_marker() {

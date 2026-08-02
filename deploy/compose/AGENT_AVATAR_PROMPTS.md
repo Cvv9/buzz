@@ -74,7 +74,7 @@ The generated files currently selected for Buzz are:
 | Founder Chief of Staff | `asset_d5nppedgh_1785604773325.png` |
 | Operations Desk | `asset_zc6kclirz_1785604773325_7e546ea0.png` |
 | Trend Radar | `asset_gydewt4z6_1785604773325.png` |
-| Varun Personal Assistant | `asset_03j6iyytb_1785604773325.png` |
+| Lanaya (Varun Personal Assistant) | `asset_hf3py6whj_1785604773325.png` |
 | Vikram Personal Assistant | `asset_2ao80cax0_1785604773325.png` |
 | Adhika Personal Assistant | `asset_oeme4nnow_1785604773325.png` |
 | Swathi Personal Assistant | `asset_hf3py6whj_1785604773325.png` |

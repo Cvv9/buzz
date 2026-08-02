@@ -34,6 +34,10 @@ pub struct BlobDescriptor {
     /// Duration in seconds for video/audio (optional).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<f64>,
+    /// Original filename captured client-side. The relay stores blobs by hash,
+    /// so this preserves a useful FileCard label in the outgoing `imeta` tag.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
 }
 
 /// Build an `imeta` tag array from a BlobDescriptor (NIP-92 media metadata).
@@ -57,16 +61,30 @@ pub fn build_imeta_tag(d: &BlobDescriptor) -> Vec<String> {
     if let Some(dur) = d.duration {
         tag.push(format!("duration {dur}"));
     }
+    if let Some(ref filename) = d.filename {
+        tag.push(format!("filename {filename}"));
+    }
     tag
 }
 
-/// MIME types accepted for upload.
-const ALLOWED_MIMES: &[&str] = &[
-    "image/jpeg",
-    "image/png",
-    "image/gif",
-    "image/webp",
-    "video/mp4",
+/// MIME types rejected from generic uploads. This mirrors the relay's
+/// defence-in-depth deny-list; all other non-media files are served as forced
+/// downloads, including documents, archives, text, and opaque data.
+const BLOCKED_UPLOAD_MIMES: &[&str] = &[
+    "text/html",
+    "application/xhtml+xml",
+    "image/svg+xml",
+    "application/javascript",
+    "text/javascript",
+    "application/x-msdownload",
+    "application/x-executable",
+    "application/vnd.microsoft.portable-executable",
+    "application/x-mach-binary",
+    "application/x-sharedlib",
+    "application/x-elf",
+    "application/x-msi",
+    "application/vnd.android.package-archive",
+    "application/x-apple-diskimage",
 ];
 
 /// Maximum file size for image uploads (50 MB).
@@ -74,6 +92,50 @@ const MAX_IMAGE_BYTES: u64 = 50 * 1024 * 1024;
 
 /// Maximum file size for video uploads (500 MB).
 const MAX_VIDEO_BYTES: u64 = 500 * 1024 * 1024;
+
+/// Maximum file size for generic attachments (100 MB, matching relay default).
+const MAX_GENERIC_FILE_BYTES: u64 = 100 * 1024 * 1024;
+
+/// Detect an upload MIME and reject active content or executable payloads.
+///
+/// Unrecognised bytes deliberately become `application/octet-stream`: the
+/// relay stores generic files as attachments with safe response headers, which
+/// supports ordinary text and document formats without an `infer` signature.
+fn detect_and_validate_upload_mime(bytes: &[u8]) -> Result<String, CliError> {
+    let mime = infer::get(bytes)
+        .map(|t| t.mime_type().to_string())
+        .unwrap_or_else(|| "application/octet-stream".to_string());
+    if BLOCKED_UPLOAD_MIMES.contains(&mime.as_str()) {
+        return Err(CliError::Usage(format!("unsupported file type: {mime}")));
+    }
+    Ok(mime)
+}
+
+/// Select the client-side cap for an upload category.
+fn upload_max_bytes(mime: &str) -> u64 {
+    if mime.starts_with("video/") {
+        MAX_VIDEO_BYTES
+    } else if mime.starts_with("image/") {
+        MAX_IMAGE_BYTES
+    } else {
+        MAX_GENERIC_FILE_BYTES
+    }
+}
+
+/// Sanitize the display filename so the server accepts it in an `imeta` tag.
+///
+/// The relay never knows the original filename because media is content
+/// addressed. Keep only its final path component, remove control characters,
+/// and cap it at 255 characters — the same contract as the desktop client.
+fn sanitize_upload_filename(path: &str) -> String {
+    let base = path.rsplit(['/', '\\']).next().unwrap_or(path).trim();
+    let cleaned: String = base.chars().filter(|c| !c.is_control()).take(255).collect();
+    if cleaned.is_empty() {
+        "file".to_string()
+    } else {
+        cleaned
+    }
+}
 
 /// Sign a NIP-98 HTTP auth event (kind:27235) and return the Authorization header value.
 ///
@@ -1108,21 +1170,12 @@ impl BuzzClient {
         let bytes = std::fs::read(file_path)
             .map_err(|e| CliError::Other(format!("failed to read {file_path}: {e}")))?;
 
-        // 2. Detect MIME from magic bytes
-        let mime = infer::get(&bytes)
-            .map(|t| t.mime_type().to_string())
-            .unwrap_or_else(|| "application/octet-stream".to_string());
-
-        if !ALLOWED_MIMES.contains(&mime.as_str()) {
-            return Err(CliError::Usage(format!("unsupported file type: {mime}")));
-        }
+        // 2. Detect MIME from magic bytes. Generic files use the relay's
+        // forced-download path, so documents such as DOCX are valid uploads.
+        let mime = detect_and_validate_upload_mime(&bytes)?;
 
         // 3. Size check
-        let max = if mime.starts_with("video/") {
-            MAX_VIDEO_BYTES
-        } else {
-            MAX_IMAGE_BYTES
-        };
+        let max = upload_max_bytes(&mime);
         if bytes.len() as u64 > max {
             return Err(CliError::Usage(format!(
                 "file too large: {} bytes (max {})",
@@ -1183,7 +1236,10 @@ impl BuzzClient {
         // (404 or 405), fall back to the legacy /media/upload endpoint.  The 404/405 switch
         // itself is not retried; only transient failures on the selected legacy endpoint are.
         match result {
-            Ok(desc) => return Ok(desc),
+            Ok(mut desc) => {
+                desc.filename = Some(sanitize_upload_filename(file_path));
+                return Ok(desc);
+            }
             Err(CliError::Relay { status: s, body: _ })
                 if should_retry_legacy_upload(
                     reqwest::StatusCode::from_u16(s).unwrap_or(reqwest::StatusCode::NOT_FOUND),
@@ -1195,7 +1251,7 @@ impl BuzzClient {
         }
 
         let legacy_url = format!("{}/media/upload", self.relay_url);
-        self.with_retry_body(|| {
+        let mut desc = self.with_retry_body(|| {
             let upload_body = upload_body.clone();
             let legacy_url = legacy_url.clone();
             let mime = mime.clone();
@@ -1222,7 +1278,9 @@ impl BuzzClient {
                 resp.json::<BlobDescriptor>().await.map_err(CliError::from)
             }
         })
-        .await
+        .await?;
+        desc.filename = Some(sanitize_upload_filename(file_path));
+        Ok(desc)
     }
 
     /// Download a Blossom media blob using BUD-01 `t=get` auth.
@@ -2297,7 +2355,9 @@ mod retry_policy_tests {
 #[cfg(test)]
 mod tests {
     use super::{
-        advance_query_cursor, create_response_with_id, extract_relay_response_field, BuzzClient,
+        advance_query_cursor, build_imeta_tag, create_response_with_id,
+        detect_and_validate_upload_mime, extract_relay_response_field, upload_max_bytes, BuzzClient,
+        MAX_GENERIC_FILE_BYTES,
     };
     use nostr::{EventBuilder, Keys, Kind, Tag};
 
@@ -2352,6 +2412,81 @@ mod tests {
         assert_eq!(v["workflow_id"].as_str(), Some("relay-id"));
         assert_eq!(v["event_id"].as_str(), Some("abc"));
         assert_eq!(v["accepted"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn generic_document_container_uses_generic_upload_path() {
+        // DOCX files are Open Packaging Convention ZIP containers. `infer`
+        // identifies the container as application/zip, which is a safe generic
+        // attachment and must not be rejected as non-media.
+        let docx_container = [
+            0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00,
+        ];
+        let mime = detect_and_validate_upload_mime(&docx_container).unwrap();
+        assert_eq!(mime, "application/zip");
+        assert_eq!(upload_max_bytes(&mime), MAX_GENERIC_FILE_BYTES);
+    }
+
+    #[tokio::test]
+    async fn generic_upload_preserves_filename_in_imeta_metadata() {
+        use axum::http::HeaderMap;
+        use axum::routing::put;
+        use axum::{Json, Router};
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+        use tokio::net::TcpListener;
+
+        let content_types = Arc::new(Mutex::new(Vec::new()));
+        let app = Router::new().route(
+            "/upload",
+            put({
+                let content_types = content_types.clone();
+                move |headers: HeaderMap| {
+                    let content_types = content_types.clone();
+                    async move {
+                        content_types.lock().unwrap().push(
+                            headers
+                                .get("content-type")
+                                .and_then(|value| value.to_str().ok())
+                                .unwrap_or_default()
+                                .to_string(),
+                        );
+                        Json(serde_json::json!({
+                            "url": "https://relay.test/media/aabbcc.zip",
+                            "sha256": "aabbcc",
+                            "size": 10,
+                            "type": "application/zip",
+                            "uploaded": 0,
+                        }))
+                    }
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let mut file = tempfile::Builder::new()
+            .suffix(".docx")
+            .tempfile()
+            .unwrap();
+        file.write_all(&[
+            0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00,
+        ])
+        .unwrap();
+
+        let client = BuzzClient::new(format!("http://{addr}"), Keys::generate(), None, None)
+            .unwrap();
+        let descriptor = client.upload_file(file.path().to_str().unwrap()).await.unwrap();
+
+        assert!(descriptor
+            .filename
+            .as_deref()
+            .is_some_and(|filename| filename.ends_with(".docx")));
+        assert_eq!(content_types.lock().unwrap().as_slice(), ["application/zip"]);
+        assert!(build_imeta_tag(&descriptor)
+            .iter()
+            .any(|entry| entry.starts_with("filename ")));
     }
 
     // --- (a) auth-suppression regression pair ---
