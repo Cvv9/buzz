@@ -53,6 +53,7 @@ export type WorkspaceChannel = {
 export type WorkspaceProfile = {
   pubkey: string;
   name: string;
+  aliases?: string[];
   picture?: string;
   about?: string;
   isAgent?: boolean;
@@ -82,6 +83,14 @@ function firstTag(event: NostrEvent, name: string): string | undefined {
 
 function allTags(event: NostrEvent, name: string): string[][] {
   return event.tags.filter((tag) => tag[0] === name);
+}
+
+function profileAliases(content: Record<string, unknown>): string[] {
+  if (!Array.isArray(content.aliases)) return [];
+  return content.aliases
+    .filter((alias): alias is string => typeof alias === "string")
+    .map((alias) => alias.trim())
+    .filter(Boolean);
 }
 
 function dedupeReplaceable(events: NostrEvent[]): NostrEvent[] {
@@ -224,6 +233,7 @@ export async function listProfiles(
     profiles.set(event.pubkey, {
       pubkey: event.pubkey,
       name,
+      aliases: profileAliases(content),
       picture:
         typeof content.picture === "string"
           ? content.picture
@@ -278,6 +288,7 @@ export async function listAgents(
             existing?.name ||
             truncatePubkey(pubkey),
         ).trim() || truncatePubkey(pubkey),
+      aliases: profileAliases(content),
       picture:
         typeof content.picture === "string"
           ? content.picture

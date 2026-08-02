@@ -267,6 +267,9 @@ pub enum AgentsCmd {
         /// Short description of the hosted agent
         #[arg(long)]
         about: Option<String>,
+        /// Comma-separated legacy or alternate names that may address the agent
+        #[arg(long)]
+        aliases: Option<String>,
         /// Public avatar URL shown in Buzz clients
         #[arg(long)]
         avatar: Option<String>,

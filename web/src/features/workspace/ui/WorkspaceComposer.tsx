@@ -38,7 +38,11 @@ export function WorkspaceComposer({
     if (!trimmed || sending) return;
     const lowered = trimmed.toLocaleLowerCase();
     const mentions = agents
-      .filter((agent) => lowered.includes(`@${agent.name.toLocaleLowerCase()}`))
+      .filter((agent) =>
+        [agent.name, ...(agent.aliases ?? [])].some((name) =>
+          lowered.includes(`@${name.toLocaleLowerCase()}`),
+        ),
+      )
       .map((agent) => agent.pubkey);
     onSend(trimmed, mentions);
     setContent("");

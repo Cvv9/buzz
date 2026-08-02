@@ -30,6 +30,7 @@ export async function installWorkspaceRelayMock(
           [],
           JSON.stringify({
             name: `Workspace Agent ${index + 1}`,
+            aliases: index === 6 ? ["Research Agent"] : [],
             access_tier: index < 6 ? "personal" : "shared",
           }),
           (index + 10).toString(16),

@@ -134,7 +134,7 @@ test("mentioning an eligible hosted agent adds it before the message", async ({
 
   await expect(page.getByText("Workspace Agent 7")).toBeVisible();
   const composer = page.getByLabel("Message general");
-  await composer.fill("@Workspace Agent 7 investigate this request");
+  await composer.fill("@Research Agent investigate this request");
   await composer.press("Enter");
   const agentPubkey = "7".padStart(64, "0");
   await expect
