@@ -34,7 +34,10 @@ pub async fn dispatch(command: AgentsCmd, client: &BuzzClient) -> Result<(), Cli
                 .map(str::trim)
                 .filter(|alias| !alias.is_empty() && *alias != display_name)
                 .fold(Vec::<String>::new(), |mut unique, alias| {
-                    if !unique.iter().any(|existing| existing.eq_ignore_ascii_case(alias)) {
+                    if !unique
+                        .iter()
+                        .any(|existing| existing.eq_ignore_ascii_case(alias))
+                    {
                         unique.push(alias.to_string());
                     }
                     unique
