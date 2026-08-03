@@ -2468,7 +2468,7 @@ mod tests {
 
         let mut file = tempfile::Builder::new().suffix(".docx").tempfile().unwrap();
         file.write_all(&[0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00])
-        .unwrap();
+            .unwrap();
 
         let client =
             BuzzClient::new(format!("http://{addr}"), Keys::generate(), None, None).unwrap();
