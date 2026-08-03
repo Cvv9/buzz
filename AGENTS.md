@@ -84,6 +84,19 @@ just relay                # start relay at ws://localhost:3000
 just ci                   # run before any PR
 ```
 
+On Windows, the default agent shell is PowerShell. Do **not** dot-source or
+execute the extensionless `bin/activate-hermit` file from PowerShell: Windows
+will open an interactive "Select an app" dialog. Run commands through the
+PowerShell wrapper instead:
+
+```powershell
+./scripts/with-toolchain.ps1 cargo test
+./scripts/with-toolchain.ps1 pnpm --dir desktop test
+```
+
+The wrapper uses the installed native Rust/Node tools and keeps all activation
+inside the background PowerShell process.
+
 See CONTRIBUTING.md for full setup details and dependency requirements.
 
 ---
@@ -105,8 +118,10 @@ in parallel (Rust, desktop JS, Tauri Rust, mobile Flutter) — no overlap with
 pre-commit. Builds are CI-only. Run `just fix-all` to auto-fix all formatting
 in one shot. Run `just ci` for the full local gate. Run `just hooks` to
 re-install hooks after env changes. Before agents run Git or hooks, activate the
-repo's Hermit environment (`. ./bin/activate-hermit`); do not rewrite hook
-commands to compensate for an unconfigured shell `PATH`.
+repo's Hermit environment (`. ./bin/activate-hermit` on Unix, or
+`./scripts/with-toolchain.ps1 <command...>` on Windows); do not invoke the Unix
+activation file directly from PowerShell and do not rewrite hook commands to
+compensate for an unconfigured shell `PATH`.
 
 **Commit with `git commit -s`.** The required **DCO Check** fails any PR with a commit missing a `Signed-off-by` trailer, and `just hooks` installs a `commit-msg` hook that adds it to commits you create locally (`git rebase` and `git cherry-pick` still need `--signoff`) — if you build commit commands programmatically, include `-s` every time. To repair a branch that already has unsigned commits: `git rebase --signoff main`, then force-push.
 

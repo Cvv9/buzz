@@ -191,11 +191,11 @@ impl ManagedAgentRecord {
         })
     }
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelayAgentInfo {
     pub pubkey: String,
     pub name: String,
+    pub avatar_url: Option<String>,
     pub agent_type: String,
     pub channels: Vec<String>,
     #[serde(default)]

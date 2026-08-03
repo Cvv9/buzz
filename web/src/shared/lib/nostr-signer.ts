@@ -3,6 +3,7 @@ import {
   generateSecretKey,
   getPublicKey,
 } from "nostr-tools/pure";
+import { v2 as nip44 } from "nostr-tools/nip44";
 import {
   getBrowserSecretKey,
   hasUnlockedBrowserIdentity,
@@ -24,6 +25,10 @@ export type SignedNostrEvent = UnsignedNostrEvent & {
 type Nip07Provider = {
   getPublicKey(): Promise<string>;
   signEvent(event: UnsignedNostrEvent): Promise<SignedNostrEvent>;
+  nip44?: {
+    encrypt(pubkey: string, plaintext: string): Promise<string>;
+    decrypt(pubkey: string, ciphertext: string): Promise<string>;
+  };
 };
 
 declare global {
@@ -117,4 +122,50 @@ export async function signNostrEvent(
     throw new Error("Failed to create the ephemeral browser identity.");
   }
   return signed;
+}
+
+/**
+ * Encrypt private client state to the signed-in identity using NIP-44 v2.
+ *
+ * Browser identities hold a device-unlocked secret locally. NIP-07 identities
+ * delegate the operation to their extension, so private state never leaves the
+ * signer unencrypted. This is shared by the web read-state implementation and
+ * deliberately has no ephemeral fallback: an unread marker must never be
+ * published under a throwaway identity.
+ */
+export async function nip44EncryptToSelf(
+  pubkey: string,
+  plaintext: string,
+): Promise<string> {
+  const browserSecret = await getBrowserSecretKey();
+  if (browserSecret) {
+    return nip44.encrypt(
+      plaintext,
+      nip44.utils.getConversationKey(browserSecret, pubkey),
+    );
+  }
+
+  const provider = typeof window === "undefined" ? undefined : window.nostr;
+  if (provider?.nip44) return provider.nip44.encrypt(pubkey, plaintext);
+
+  throw new Nip07UnavailableError();
+}
+
+/** Decrypt NIP-44 state addressed to the signed-in identity. */
+export async function nip44DecryptFromSelf(
+  pubkey: string,
+  ciphertext: string,
+): Promise<string> {
+  const browserSecret = await getBrowserSecretKey();
+  if (browserSecret) {
+    return nip44.decrypt(
+      ciphertext,
+      nip44.utils.getConversationKey(browserSecret, pubkey),
+    );
+  }
+
+  const provider = typeof window === "undefined" ? undefined : window.nostr;
+  if (provider?.nip44) return provider.nip44.decrypt(pubkey, ciphertext);
+
+  throw new Nip07UnavailableError();
 }

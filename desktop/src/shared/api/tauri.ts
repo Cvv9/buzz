@@ -110,6 +110,7 @@ type RawSendChannelMessageResult = {
 type RawRelayAgent = {
   pubkey: string;
   name: string;
+  avatar_url?: string | null;
   agent_type: string;
   channels: string[];
   channel_ids: string[];
@@ -679,6 +680,7 @@ function fromRawRelayAgent(agent: RawRelayAgent): RelayAgent {
   return {
     pubkey: agent.pubkey,
     name: agent.name,
+    avatarUrl: agent.avatar_url ?? null,
     agentType: agent.agent_type,
     channels: agent.channels,
     channelIds: agent.channel_ids ?? [],

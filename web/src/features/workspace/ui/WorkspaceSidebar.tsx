@@ -4,6 +4,7 @@ import {
   Check,
   ChevronRight,
   Hash,
+  Inbox,
   Lock,
   MessageCircle,
   Plus,
@@ -183,6 +184,8 @@ function useAuthenticatedPicture(source?: string): string | undefined {
 export function WorkspaceSidebar({
   identity,
   profile,
+  inboxUnreadCount,
+  inboxOpen,
   unreadChannelIds,
   channels,
   agents,
@@ -193,10 +196,13 @@ export function WorkspaceSidebar({
   onCreateChannel,
   onOpenSettings,
   onOpenGuide,
+  onOpenInbox,
   onAddAgent,
 }: {
   identity: BrowserIdentity;
   profile: WorkspaceProfile;
+  inboxUnreadCount: number;
+  inboxOpen: boolean;
   unreadChannelIds: ReadonlySet<string>;
   channels: WorkspaceChannel[];
   agents: WorkspaceProfile[];
@@ -207,6 +213,7 @@ export function WorkspaceSidebar({
   onCreateChannel: () => void;
   onOpenSettings: () => void;
   onOpenGuide: () => void;
+  onOpenInbox: () => void;
   onAddAgent: (agent: WorkspaceProfile) => void;
 }) {
   const streams = channels.filter((channel) => channel.type !== "dm");
@@ -304,6 +311,33 @@ export function WorkspaceSidebar({
           className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-4"
           data-testid="workspace-sidebar-scroll"
         >
+          <button
+            aria-label={
+              inboxUnreadCount
+                ? `Inbox, ${inboxUnreadCount} unread notifications`
+                : "Inbox"
+            }
+            className={cn(
+              "mb-4 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
+              inboxOpen
+                ? "bg-[#d7d72e]/35 font-medium text-[#363600] dark:text-[#f1f29e]"
+                : "text-black/65 hover:bg-black/5 dark:text-white/60 dark:hover:bg-white/5",
+            )}
+            data-testid="workspace-inbox-button"
+            type="button"
+            onClick={() => {
+              onOpenInbox();
+              onClose();
+            }}
+          >
+            <Inbox className="size-3.5 shrink-0" />
+            <span className="min-w-0 flex-1 truncate">Inbox</span>
+            {inboxUnreadCount ? (
+              <span className="min-w-5 rounded-full bg-orange-500 px-1.5 py-0.5 text-center text-[0.6875rem] font-semibold tabular-nums text-white">
+                {inboxUnreadCount > 99 ? "99+" : inboxUnreadCount}
+              </span>
+            ) : null}
+          </button>
           <div className="mb-6">
             <div className="mb-2 flex items-center justify-between px-2">
               <p className="text-xs font-semibold text-black/45 dark:text-white/40">
@@ -649,7 +683,7 @@ function ChannelButton({
       {unread ? (
         <span
           aria-hidden="true"
-          className="ml-auto size-2 shrink-0 rounded-full bg-[#b5b500]"
+          className="ml-auto size-2 shrink-0 rounded-full bg-orange-500"
         />
       ) : null}
     </button>

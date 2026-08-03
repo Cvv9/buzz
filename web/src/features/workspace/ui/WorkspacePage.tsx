@@ -8,6 +8,7 @@ import { Input } from "@/shared/ui/input";
 import { IdentityGate } from "./IdentityGate";
 import { EmptyMembership } from "./EmptyMembership";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
+import { WorkspaceInbox } from "./WorkspaceInbox";
 import { WorkspaceGuide } from "./WorkspaceGuide";
 import { WorkspaceSettings } from "./WorkspaceSettings";
 import { WorkspaceComposer } from "./WorkspaceComposer";
@@ -33,6 +34,7 @@ import {
   type TimelineMessage,
 } from "@/features/workspace/workspace-messages";
 import { useWorkspaceReactions } from "@/features/workspace/useWorkspaceReactions";
+import { useWorkspaceReadState } from "@/features/workspace/workspace-read-state";
 
 export function WorkspacePage() {
   const queryClient = useQueryClient();
@@ -48,21 +50,10 @@ export function WorkspacePage() {
   const [activeChannelId, setActiveChannelId] = React.useState<string | null>(
     () => localStorage.getItem("buzz.web.active-channel"),
   );
-  const [sidebarOpen, setSidebarOpen] = React.useState(false);
-  const [unreadChannelIds, setUnreadChannelIds] = React.useState<Set<string>>(
-    () => new Set(),
+  const [workspaceView, setWorkspaceView] = React.useState<"channel" | "inbox">(
+    "channel",
   );
-  const activeChannelIdRef = React.useRef(activeChannelId);
-  React.useEffect(() => {
-    activeChannelIdRef.current = activeChannelId;
-    if (!activeChannelId) return;
-    setUnreadChannelIds((current) => {
-      if (!current.has(activeChannelId)) return current;
-      const next = new Set(current);
-      next.delete(activeChannelId);
-      return next;
-    });
-  }, [activeChannelId]);
+  const [sidebarOpen, setSidebarOpen] = React.useState(false);
   const [threadRootId, setThreadRootId] = React.useState<string | null>(null);
   const [expandedThreadIds, setExpandedThreadIds] = React.useState<Set<string>>(
     () => new Set(),
@@ -121,6 +112,18 @@ export function WorkspacePage() {
     () => materializeMessages(messagesQuery.data ?? []),
     [messagesQuery.data],
   );
+  const {
+    inboxItems,
+    markAllRead,
+    markInboxItemRead,
+    recordIncomingMessage,
+    unreadChannelIds,
+  } = useWorkspaceReadState({
+    activeChannelId,
+    channels,
+    currentMessages: materialized,
+    identityPubkey: identity?.pubkey,
+  });
   const { reactionActorPubkeys, reactions, toggleReaction } =
     useWorkspaceReactions(materialized, identity?.pubkey ?? "");
   const profilePubkeys = React.useMemo(
@@ -157,17 +160,13 @@ export function WorkspacePage() {
                     a.created_at - b.created_at || a.id.localeCompare(b.id),
                 ),
         );
+        recordIncomingMessage(event);
         if (
           !isConversationalWorkspaceMessage(event) ||
-          event.pubkey === identity.pubkey ||
-          event.channelId === activeChannelIdRef.current
+          event.pubkey === identity.pubkey
         ) {
           return;
         }
-        setUnreadChannelIds((current) => {
-          if (current.has(event.channelId)) return current;
-          return new Set(current).add(event.channelId);
-        });
         const channel = channelsById.get(event.channelId);
         if (
           channel &&
@@ -185,7 +184,7 @@ export function WorkspacePage() {
         }
       },
     );
-  }, [channels, identity, queryClient]);
+  }, [channels, identity, queryClient, recordIncomingMessage]);
 
   React.useEffect(() => {
     if (!identity || !channels.length) return;
@@ -346,6 +345,8 @@ export function WorkspacePage() {
         agents={agentsQuery.data ?? []}
         channels={channels}
         identity={identity}
+        inboxOpen={workspaceView === "inbox"}
+        inboxUnreadCount={inboxItems.length}
         profile={currentProfile}
         unreadChannelIds={unreadChannelIds}
         open={sidebarOpen}
@@ -354,236 +355,266 @@ export function WorkspacePage() {
         onAddAgent={(agent) => addAgentMutation.mutate(agent)}
         onOpenSettings={() => setSettingsOpen(true)}
         onOpenGuide={() => setGuideOpen(true)}
+        onOpenInbox={() => setWorkspaceView("inbox")}
         onSelectChannel={(channelId) => {
           setActiveChannelId(channelId);
+          setWorkspaceView("channel");
           setThreadRootId(null);
           setExpandedThreadIds(new Set());
         }}
       />
 
       <main className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
-        <section
-          className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
-          data-testid="workspace-chat-pane"
-        >
-          <header className="flex h-16 shrink-0 items-center gap-3 border-b border-black/8 px-4 dark:border-white/8 sm:px-6">
-            <button
-              aria-label="Open navigation"
-              className="rounded-lg p-2 hover:bg-black/5 md:hidden dark:hover:bg-white/5"
-              type="button"
-              onClick={() => setSidebarOpen(true)}
+        {workspaceView === "inbox" ? (
+          <WorkspaceInbox
+            channels={channels}
+            items={inboxItems}
+            onMarkAllRead={markAllRead}
+            onMarkItemRead={markInboxItemRead}
+            onSelectItem={(item) => {
+              if (!item.channelId) {
+                markInboxItemRead(item);
+                return;
+              }
+              markInboxItemRead(item);
+              setActiveChannelId(item.channelId);
+              setWorkspaceView("channel");
+              setThreadRootId(null);
+              setExpandedThreadIds(new Set());
+            }}
+            profileFor={profileFor}
+          />
+        ) : (
+          <>
+            <section
+              className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+              data-testid="workspace-chat-pane"
             >
-              <Menu className="size-4" />
-            </button>
-            {activeChannel ? (
-              <>
-                <div className="flex min-w-0 flex-1 items-center gap-2">
-                  {activeChannel.visibility === "private" ? (
-                    <Lock className="size-4 shrink-0 text-black/40 dark:text-white/35" />
-                  ) : (
-                    <Hash className="size-4 shrink-0 text-black/40 dark:text-white/35" />
-                  )}
-                  <div className="min-w-0">
-                    <h1 className="truncate text-sm font-semibold">
-                      {activeChannel.name}
-                    </h1>
-                    {activeChannel.topic || activeChannel.about ? (
-                      <p className="truncate text-xs text-black/40 dark:text-white/35">
-                        {activeChannel.topic || activeChannel.about}
-                      </p>
-                    ) : null}
-                  </div>
-                </div>
-                <div className="flex items-center gap-1 text-black/40 dark:text-white/35">
-                  <span className="hidden items-center gap-1 rounded-lg px-2 py-1 text-xs sm:flex">
-                    <Users className="size-3.5" />
-                    {activeChannel.memberPubkeys.length}
-                  </span>
-                </div>
-              </>
-            ) : null}
-          </header>
+              <header className="flex h-16 shrink-0 items-center gap-3 border-b border-black/8 px-4 dark:border-white/8 sm:px-6">
+                <button
+                  aria-label="Open navigation"
+                  className="rounded-lg p-2 hover:bg-black/5 md:hidden dark:hover:bg-white/5"
+                  type="button"
+                  onClick={() => setSidebarOpen(true)}
+                >
+                  <Menu className="size-4" />
+                </button>
+                {activeChannel ? (
+                  <>
+                    <div className="flex min-w-0 flex-1 items-center gap-2">
+                      {activeChannel.visibility === "private" ? (
+                        <Lock className="size-4 shrink-0 text-black/40 dark:text-white/35" />
+                      ) : (
+                        <Hash className="size-4 shrink-0 text-black/40 dark:text-white/35" />
+                      )}
+                      <div className="min-w-0">
+                        <h1 className="truncate text-sm font-semibold">
+                          {activeChannel.name}
+                        </h1>
+                        {activeChannel.topic || activeChannel.about ? (
+                          <p className="truncate text-xs text-black/40 dark:text-white/35">
+                            {activeChannel.topic || activeChannel.about}
+                          </p>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1 text-black/40 dark:text-white/35">
+                      <span className="hidden items-center gap-1 rounded-lg px-2 py-1 text-xs sm:flex">
+                        <Users className="size-3.5" />
+                        {activeChannel.memberPubkeys.length}
+                      </span>
+                    </div>
+                  </>
+                ) : null}
+              </header>
 
-          <div className="min-h-0 flex-1 overflow-y-auto py-4">
-            {messagesQuery.isPending ? (
-              <div className="space-y-4 px-6 py-4">
-                {[0, 1, 2, 3].map((item) => (
-                  <div className="flex animate-pulse gap-3" key={item}>
-                    <div className="size-9 rounded-xl bg-black/8 dark:bg-white/8" />
-                    <div className="flex-1 space-y-2">
-                      <div className="h-3 w-32 rounded bg-black/8 dark:bg-white/8" />
-                      <div className="h-3 w-2/3 rounded bg-black/6 dark:bg-white/6" />
+              <div className="min-h-0 flex-1 overflow-y-auto py-4">
+                {messagesQuery.isPending ? (
+                  <div className="space-y-4 px-6 py-4">
+                    {[0, 1, 2, 3].map((item) => (
+                      <div className="flex animate-pulse gap-3" key={item}>
+                        <div className="size-9 rounded-xl bg-black/8 dark:bg-white/8" />
+                        <div className="flex-1 space-y-2">
+                          <div className="h-3 w-32 rounded bg-black/8 dark:bg-white/8" />
+                          <div className="h-3 w-2/3 rounded bg-black/6 dark:bg-white/6" />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : topLevel.length ? (
+                  topLevel.map((message) => {
+                    const replies = repliesByThread.get(message.id) ?? [];
+                    const inlineExpanded = expandedThreadIds.has(message.id);
+                    const replyTarget = replies[replies.length - 1] ?? message;
+                    return (
+                      <div key={message.id}>
+                        <WorkspaceMessageRow
+                          message={message}
+                          ownPubkey={identity.pubkey}
+                          profile={profileFor(message.pubkey)}
+                          reactions={reactions?.get(message.id) ?? []}
+                          replyCount={replyCounts.get(message.id) ?? 0}
+                          reactionActorName={reactionActorName}
+                          threadExpanded={inlineExpanded}
+                          onDelete={() => {
+                            if (window.confirm("Delete this message?")) {
+                              deleteMutation.mutate(message);
+                            }
+                          }}
+                          onEdit={() => setEditingMessage(message)}
+                          onOpenThreadPanel={() => {
+                            closeInlineThread(message.id);
+                            setThreadRootId(message.id);
+                          }}
+                          onReact={(emoji) => toggleReaction(message, emoji)}
+                          onReply={() => openInlineThread(message.id)}
+                          onToggleInlineThread={() =>
+                            toggleInlineThread(message.id)
+                          }
+                        />
+                        {inlineExpanded ? (
+                          <section
+                            aria-label={`Replies to ${profileFor(message.pubkey).name}`}
+                            className="mb-2 ml-10 border-l border-black/10 pl-2 dark:border-white/10 sm:ml-14 sm:pl-3"
+                            data-testid={`inline-thread-${message.id}`}
+                            id={`inline-thread-${message.id}`}
+                          >
+                            <p className="px-2 pt-2 text-xs font-medium text-black/40 dark:text-white/35">
+                              {replies.length}{" "}
+                              {replies.length === 1 ? "reply" : "replies"}
+                            </p>
+                            {replies.map((reply) => (
+                              <WorkspaceMessageRow
+                                key={reply.id}
+                                message={reply}
+                                ownPubkey={identity.pubkey}
+                                profile={profileFor(reply.pubkey)}
+                                reactions={reactions?.get(reply.id) ?? []}
+                                replyCount={0}
+                                reactionActorName={reactionActorName}
+                                onDelete={() => deleteMutation.mutate(reply)}
+                                onEdit={() => setEditingMessage(reply)}
+                                onOpenThreadPanel={() =>
+                                  setThreadRootId(message.id)
+                                }
+                                onReact={(emoji) =>
+                                  toggleReaction(reply, emoji)
+                                }
+                                onReply={() => openInlineThread(message.id)}
+                                onToggleInlineThread={() => {}}
+                              />
+                            ))}
+                            {activeChannel ? (
+                              <WorkspaceComposer
+                                agents={agentsQuery.data ?? []}
+                                channel={activeChannel}
+                                compact
+                                replyTo={replyTarget}
+                                sending={sendMutation.isPending}
+                                onCancelReply={() =>
+                                  closeInlineThread(message.id)
+                                }
+                                onSend={(content, mentions) =>
+                                  sendMutation.mutate({
+                                    content,
+                                    mentions,
+                                    replyTo: replyTarget,
+                                  })
+                                }
+                              />
+                            ) : null}
+                          </section>
+                        ) : null}
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="flex h-full min-h-72 items-center justify-center px-6 text-center">
+                    <div className="max-w-sm">
+                      <div className="mx-auto flex size-12 items-center justify-center rounded-2xl bg-[#d7d72e]/25 text-[#7d7e00]">
+                        <Hash className="size-5" />
+                      </div>
+                      <h2 className="mt-4 font-semibold">
+                        Start the conversation in #{activeChannel?.name}
+                      </h2>
+                      <p className="mt-2 text-sm leading-6 text-black/45 dark:text-white/40">
+                        Share an update or mention a hosted agent to give it
+                        work.
+                      </p>
                     </div>
                   </div>
-                ))}
+                )}
               </div>
-            ) : topLevel.length ? (
-              topLevel.map((message) => {
-                const replies = repliesByThread.get(message.id) ?? [];
-                const inlineExpanded = expandedThreadIds.has(message.id);
-                const replyTarget = replies[replies.length - 1] ?? message;
-                return (
-                  <div key={message.id}>
+              {activeChannel ? (
+                <WorkspaceComposer
+                  agents={agentsQuery.data ?? []}
+                  channel={activeChannel}
+                  sending={sendMutation.isPending}
+                  onSend={(content, mentions) =>
+                    sendMutation.mutate({ content, mentions })
+                  }
+                />
+              ) : null}
+            </section>
+
+            {threadRoot ? (
+              <aside className="fixed inset-0 z-40 flex flex-col bg-[#f8f9f4] dark:bg-[#171916] md:static md:w-[24rem] md:border-l md:border-black/8 md:dark:border-white/8">
+                <header className="flex h-16 shrink-0 items-center gap-3 border-b border-black/8 px-4 dark:border-white/8">
+                  <button
+                    aria-label="Close thread"
+                    className="rounded-lg p-2 hover:bg-black/5 dark:hover:bg-white/5"
+                    type="button"
+                    onClick={() => setThreadRootId(null)}
+                  >
+                    <ChevronLeft className="size-4 md:hidden" />
+                    <X className="hidden size-4 md:block" />
+                  </button>
+                  <div>
+                    <h2 className="text-sm font-semibold">Thread</h2>
+                    <p className="text-xs text-black/40 dark:text-white/35">
+                      #{activeChannel?.name}
+                    </p>
+                  </div>
+                </header>
+                <div className="min-h-0 flex-1 overflow-y-auto py-4">
+                  {[threadRoot, ...threadReplies].map((message) => (
                     <WorkspaceMessageRow
+                      key={message.id}
                       message={message}
                       ownPubkey={identity.pubkey}
                       profile={profileFor(message.pubkey)}
                       reactions={reactions?.get(message.id) ?? []}
-                      replyCount={replyCounts.get(message.id) ?? 0}
+                      replyCount={0}
                       reactionActorName={reactionActorName}
-                      threadExpanded={inlineExpanded}
-                      onDelete={() => {
-                        if (window.confirm("Delete this message?")) {
-                          deleteMutation.mutate(message);
-                        }
-                      }}
+                      onDelete={() => deleteMutation.mutate(message)}
                       onEdit={() => setEditingMessage(message)}
-                      onOpenThreadPanel={() => {
-                        closeInlineThread(message.id);
-                        setThreadRootId(message.id);
-                      }}
+                      onOpenThreadPanel={() => {}}
                       onReact={(emoji) => toggleReaction(message, emoji)}
-                      onReply={() => openInlineThread(message.id)}
-                      onToggleInlineThread={() =>
-                        toggleInlineThread(message.id)
-                      }
+                      onReply={() => {}}
+                      onToggleInlineThread={() => {}}
                     />
-                    {inlineExpanded ? (
-                      <section
-                        aria-label={`Replies to ${profileFor(message.pubkey).name}`}
-                        className="mb-2 ml-10 border-l border-black/10 pl-2 dark:border-white/10 sm:ml-14 sm:pl-3"
-                        data-testid={`inline-thread-${message.id}`}
-                        id={`inline-thread-${message.id}`}
-                      >
-                        <p className="px-2 pt-2 text-xs font-medium text-black/40 dark:text-white/35">
-                          {replies.length}{" "}
-                          {replies.length === 1 ? "reply" : "replies"}
-                        </p>
-                        {replies.map((reply) => (
-                          <WorkspaceMessageRow
-                            key={reply.id}
-                            message={reply}
-                            ownPubkey={identity.pubkey}
-                            profile={profileFor(reply.pubkey)}
-                            reactions={reactions?.get(reply.id) ?? []}
-                            replyCount={0}
-                            reactionActorName={reactionActorName}
-                            onDelete={() => deleteMutation.mutate(reply)}
-                            onEdit={() => setEditingMessage(reply)}
-                            onOpenThreadPanel={() =>
-                              setThreadRootId(message.id)
-                            }
-                            onReact={(emoji) => toggleReaction(reply, emoji)}
-                            onReply={() => openInlineThread(message.id)}
-                            onToggleInlineThread={() => {}}
-                          />
-                        ))}
-                        {activeChannel ? (
-                          <WorkspaceComposer
-                            agents={agentsQuery.data ?? []}
-                            channel={activeChannel}
-                            compact
-                            replyTo={replyTarget}
-                            sending={sendMutation.isPending}
-                            onCancelReply={() => closeInlineThread(message.id)}
-                            onSend={(content, mentions) =>
-                              sendMutation.mutate({
-                                content,
-                                mentions,
-                                replyTo: replyTarget,
-                              })
-                            }
-                          />
-                        ) : null}
-                      </section>
-                    ) : null}
-                  </div>
-                );
-              })
-            ) : (
-              <div className="flex h-full min-h-72 items-center justify-center px-6 text-center">
-                <div className="max-w-sm">
-                  <div className="mx-auto flex size-12 items-center justify-center rounded-2xl bg-[#d7d72e]/25 text-[#7d7e00]">
-                    <Hash className="size-5" />
-                  </div>
-                  <h2 className="mt-4 font-semibold">
-                    Start the conversation in #{activeChannel?.name}
-                  </h2>
-                  <p className="mt-2 text-sm leading-6 text-black/45 dark:text-white/40">
-                    Share an update or mention a hosted agent to give it work.
-                  </p>
+                  ))}
                 </div>
-              </div>
-            )}
-          </div>
-          {activeChannel ? (
-            <WorkspaceComposer
-              agents={agentsQuery.data ?? []}
-              channel={activeChannel}
-              sending={sendMutation.isPending}
-              onSend={(content, mentions) =>
-                sendMutation.mutate({ content, mentions })
-              }
-            />
-          ) : null}
-        </section>
-
-        {threadRoot ? (
-          <aside className="fixed inset-0 z-40 flex flex-col bg-[#f8f9f4] dark:bg-[#171916] md:static md:w-[24rem] md:border-l md:border-black/8 md:dark:border-white/8">
-            <header className="flex h-16 shrink-0 items-center gap-3 border-b border-black/8 px-4 dark:border-white/8">
-              <button
-                aria-label="Close thread"
-                className="rounded-lg p-2 hover:bg-black/5 dark:hover:bg-white/5"
-                type="button"
-                onClick={() => setThreadRootId(null)}
-              >
-                <ChevronLeft className="size-4 md:hidden" />
-                <X className="hidden size-4 md:block" />
-              </button>
-              <div>
-                <h2 className="text-sm font-semibold">Thread</h2>
-                <p className="text-xs text-black/40 dark:text-white/35">
-                  #{activeChannel?.name}
-                </p>
-              </div>
-            </header>
-            <div className="min-h-0 flex-1 overflow-y-auto py-4">
-              {[threadRoot, ...threadReplies].map((message) => (
-                <WorkspaceMessageRow
-                  key={message.id}
-                  message={message}
-                  ownPubkey={identity.pubkey}
-                  profile={profileFor(message.pubkey)}
-                  reactions={reactions?.get(message.id) ?? []}
-                  replyCount={0}
-                  reactionActorName={reactionActorName}
-                  onDelete={() => deleteMutation.mutate(message)}
-                  onEdit={() => setEditingMessage(message)}
-                  onOpenThreadPanel={() => {}}
-                  onReact={(emoji) => toggleReaction(message, emoji)}
-                  onReply={() => {}}
-                  onToggleInlineThread={() => {}}
-                />
-              ))}
-            </div>
-            {activeChannel ? (
-              <WorkspaceComposer
-                agents={agentsQuery.data ?? []}
-                channel={activeChannel}
-                replyTo={threadRoot}
-                sending={sendMutation.isPending}
-                onSend={(content, mentions) =>
-                  sendMutation.mutate({
-                    content,
-                    mentions,
-                    replyTo:
-                      threadReplies[threadReplies.length - 1] ?? threadRoot,
-                  })
-                }
-              />
+                {activeChannel ? (
+                  <WorkspaceComposer
+                    agents={agentsQuery.data ?? []}
+                    channel={activeChannel}
+                    replyTo={threadRoot}
+                    sending={sendMutation.isPending}
+                    onSend={(content, mentions) =>
+                      sendMutation.mutate({
+                        content,
+                        mentions,
+                        replyTo:
+                          threadReplies[threadReplies.length - 1] ?? threadRoot,
+                      })
+                    }
+                  />
+                ) : null}
+              </aside>
             ) : null}
-          </aside>
-        ) : null}
+          </>
+        )}
       </main>
 
       {createChannelOpen ? (

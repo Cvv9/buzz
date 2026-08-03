@@ -14,6 +14,7 @@ export const KIND_REACTION = 7;
 export const KIND_STREAM_MESSAGE = 9;
 export const KIND_AGENT_PROFILE = 10100;
 export const KIND_ARCHIVED_IDENTITIES = 13535;
+export const KIND_READ_STATE = 30078;
 export const KIND_CHANNEL_METADATA = 39000;
 export const KIND_CHANNEL_MEMBERS = 39002;
 export const KIND_STREAM_MESSAGE_V2 = 40002;
