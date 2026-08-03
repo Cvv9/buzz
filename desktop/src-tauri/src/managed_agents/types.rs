@@ -191,17 +191,10 @@ impl ManagedAgentRecord {
         })
     }
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelayAgentInfo {
     pub pubkey: String,
     pub name: String,
-    /// Avatar declared by the signed kind:10100 agent directory record.
-    ///
-    /// This is deliberately distinct from the author's kind:0 profile image:
-    /// hosted operators can update their roster independently of any legacy
-    /// profile event that might still be indexed for the same pubkey.
-    #[serde(default)]
     pub avatar_url: Option<String>,
     pub agent_type: String,
     pub channels: Vec<String>,
