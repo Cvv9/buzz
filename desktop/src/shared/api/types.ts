@@ -270,6 +270,8 @@ export type RelayMember = {
 export type RelayAgent = {
   pubkey: string;
   name: string;
+  /** Avatar declared in the authoritative kind:10100 agent directory entry. */
+  avatarUrl?: string | null;
   agentType: string;
   channels: string[];
   channelIds: string[];

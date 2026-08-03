@@ -123,6 +123,72 @@ test("web workspace preserves profiles and applies live-event parity rules", asy
     "random, unread messages",
   );
 
+  const inboxButton = page.getByTestId("workspace-inbox-button");
+  await expect(inboxButton).toHaveAttribute("aria-label", "Inbox");
+  await page.evaluate((pubkey) => {
+    const helpers = window as typeof window & {
+      __BUZZ_WEB_E2E_EMIT__: (event: unknown) => void;
+      __BUZZ_WEB_E2E_EVENT__: (
+        kind: number,
+        pubkey: string,
+        tags: string[][],
+        content: string,
+        suffix: string,
+      ) => unknown;
+    };
+    helpers.__BUZZ_WEB_E2E_EMIT__(
+      helpers.__BUZZ_WEB_E2E_EVENT__(
+        9,
+        "c".repeat(64),
+        [
+          ["h", "random"],
+          ["p", pubkey],
+        ],
+        "Please review this",
+        "101",
+      ),
+    );
+  }, viewerPubkey);
+  await expect(inboxButton).toHaveAttribute(
+    "aria-label",
+    "Inbox, 1 unread notifications",
+  );
+  await inboxButton.click();
+  await expect(page.getByTestId("workspace-inbox")).toBeVisible();
+  await expect(page.getByText("Please review this")).toBeVisible();
+
+  await page.evaluate((pubkey) => {
+    const helpers = window as typeof window & {
+      __BUZZ_WEB_E2E_EMIT__: (event: unknown) => void;
+      __BUZZ_WEB_E2E_EVENT__: (
+        kind: number,
+        pubkey: string,
+        tags: string[][],
+        content: string,
+        suffix: string,
+      ) => unknown;
+    };
+    helpers.__BUZZ_WEB_E2E_EMIT__(
+      helpers.__BUZZ_WEB_E2E_EVENT__(
+        46010,
+        "d".repeat(64),
+        [["p", pubkey]],
+        "Approval required",
+        "102",
+      ),
+    );
+  }, viewerPubkey);
+  await expect(inboxButton).toHaveAttribute(
+    "aria-label",
+    "Inbox, 2 unread notifications",
+  );
+  await page.getByRole("button", { name: /Approval required/ }).click();
+  await expect(page.getByTestId("workspace-inbox")).toBeVisible();
+  await expect(inboxButton).toHaveAttribute(
+    "aria-label",
+    "Inbox, 1 unread notifications",
+  );
+
   await expect
     .poll(() =>
       page.evaluate(() =>

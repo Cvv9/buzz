@@ -984,6 +984,25 @@ mod tests {
     }
 
     #[test]
+    fn agents_preserves_directory_avatar_for_hosted_presentation() {
+        let e = ev(
+            10100,
+            r#"{"name":"Lanaya","avatar_url":"https://relay.example/lanaya-current.png"}"#,
+            vec![],
+        );
+        let v = agents_from_events(std::slice::from_ref(&e));
+        let agents = v.get("agents").cloned().unwrap();
+        let parsed: Vec<crate::managed_agents::RelayAgentInfo> =
+            serde_json::from_value(agents).unwrap();
+
+        assert_eq!(parsed[0].name, "Lanaya");
+        assert_eq!(
+            parsed[0].avatar_url.as_deref(),
+            Some("https://relay.example/lanaya-current.png")
+        );
+    }
+
+    #[test]
     fn relay_members_dedupes_and_defaults_role() {
         let pk1 = "a".repeat(64);
         let pk2 = "b".repeat(64);

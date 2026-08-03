@@ -5,6 +5,7 @@ import { useIsArchivedPredicate } from "@/features/identity-archive/hooks";
 import { useUsersBatchQuery } from "@/features/profile/hooks";
 import { PresenceBadge } from "@/features/presence/ui/PresenceBadge";
 import { useIdentityQuery } from "@/shared/api/hooks";
+import { getHostedAgentPresentation } from "@/features/agents/lib/hostedAgentPresentation";
 import type { RelayAgent } from "@/shared/api/types";
 import { Card } from "@/shared/ui/card";
 import { SectionHeader } from "@/shared/ui/PageHeader";
@@ -152,7 +153,10 @@ function HostedAgentGroup({
           <div className="divide-y divide-border/60">
             {agents.map((agent) => {
               const profile = profiles[agent.pubkey.toLowerCase()];
-              const displayName = profile?.displayName?.trim() || agent.name;
+              const { avatarUrl, displayName } = getHostedAgentPresentation(
+                agent,
+                profile,
+              );
               return (
                 <button
                   className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/45"
@@ -162,7 +166,7 @@ function HostedAgentGroup({
                   type="button"
                 >
                   <UserAvatar
-                    avatarUrl={profile?.avatarUrl ?? null}
+                    avatarUrl={avatarUrl}
                     className="h-10 w-10 shrink-0"
                     displayName={displayName}
                   />
