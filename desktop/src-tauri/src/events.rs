@@ -499,6 +499,24 @@ pub fn build_profile_with_existing(
     Ok(EventBuilder::new(Kind::Custom(0), content))
 }
 
+/// Kind 0 — NIP-01 profile metadata (full snapshot).
+pub fn build_profile(
+    display_name: Option<&str>,
+    name: Option<&str>,
+    picture: Option<&str>,
+    about: Option<&str>,
+    nip05: Option<&str>,
+) -> Result<EventBuilder, String> {
+    build_profile_with_existing(
+        &serde_json::Map::new(),
+        display_name,
+        name,
+        picture,
+        about,
+        nip05,
+    )
+}
+
 // ── Huddles ──────────────────────────────────────────────────────────────────
 
 /// Validate that a string is a valid UUID (defense-in-depth for `&str` channel IDs).
