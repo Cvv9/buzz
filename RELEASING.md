@@ -252,6 +252,33 @@ host's Wayland/GStreamer/graphics stack and requires GLib >= 2.72
   | `TAURI_SIGNING_PRIVATE_KEY` | Secret | Tauri updater private key |
   | `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Secret | Password for the private key |
 
+### Fork-owned desktop releases
+
+`release.yml` derives both the updater manifest endpoint and all versioned
+artifact URLs from `github.repository`. For example, a release running in
+`Cvv9/buzz` embeds and publishes through `https://github.com/Cvv9/buzz`, while
+the `block/buzz` release URLs remain unchanged. The workflow creates the rolling
+`buzz-desktop-latest` release on its first stable desktop release.
+
+Non-`block/buzz` repositories use an Apple Developer ID and App Store Connect
+notarization path rather than Block's signing service. Configure these repository
+settings before pushing a `desktop-v*` tag; the setup job validates them before
+starting any platform build:
+
+| Name | Purpose |
+|------|---------|
+| `APPLE_CERTIFICATE_BASE64` | Base64-encoded Developer ID Application `.p12` certificate |
+| `APPLE_CERTIFICATE_PASSWORD` | Password for that `.p12` certificate |
+| `APPLE_SIGNING_IDENTITY` | Variable: Developer ID Application signing identity name |
+| `APPLE_TEAM_ID` | Variable: Apple Developer Team ID expected in the signed bundle |
+| `APPLE_API_KEY_BASE64` | Base64-encoded App Store Connect API-key `.p8` file |
+| `APPLE_API_KEY_ID` | Variable: App Store Connect API key ID |
+| `APPLE_API_ISSUER_ID` | Variable: App Store Connect API key issuer ID |
+
+The fork still needs `BUZZ_UPDATER_PUBLIC_KEY` (or
+`SPROUT_UPDATER_PUBLIC_KEY`) and `TAURI_SIGNING_PRIVATE_KEY`; they must be the
+same Tauri updater key pair used to sign every platform's update artifact.
+
 Mobile candidate publication requires workflow-dispatch access and the existing
 release App because strict tag protection denies direct human creation. The App
 must be installed on `block/buzz`, have Contents write and Metadata read, and

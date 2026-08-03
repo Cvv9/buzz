@@ -14,7 +14,6 @@ jobs:
   # create the release objects all four platform jobs upload into.
   setup:
     name: Setup
-    if: github.repository == 'block/buzz'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -22,6 +21,9 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       source_sha: ${{ steps.source.outputs.source_sha }}
+      updater_endpoint: ${{ steps.release_channel.outputs.updater_endpoint }}
+      release_download_base: ${{ steps.release_channel.outputs.release_download_base }}
+      release_page_url: ${{ steps.release_channel.outputs.release_page_url }}
     steps:
       - name: Determine version
         id: version
@@ -33,6 +35,76 @@ jobs:
         run: |
           if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
             echo "::error::Invalid version '$VERSION'. Expected semver (e.g. 0.4.0 or 1.0.0-beta.1)"
+            exit 1
+          fi
+
+      # The updater must stay within the repository that publishes these
+      # artifacts. Deriving it from the workflow context keeps forks from
+      # accidentally updating into block/buzz, while resolving to the exact
+      # same URLs for the upstream repository.
+      - name: Configure repository-owned release channel
+        id: release_channel
+        env:
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$RELEASE_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            echo "::error::Invalid GitHub release repository: $RELEASE_REPOSITORY"
+            exit 1
+          fi
+          RELEASE_DOWNLOAD_BASE="https://github.com/${RELEASE_REPOSITORY}/releases/download"
+          echo "release_download_base=${RELEASE_DOWNLOAD_BASE}" >> "$GITHUB_OUTPUT"
+          echo "updater_endpoint=${RELEASE_DOWNLOAD_BASE}/buzz-desktop-latest/latest.json" >> "$GITHUB_OUTPUT"
+          echo "release_page_url=https://github.com/${RELEASE_REPOSITORY}/releases/latest" >> "$GITHUB_OUTPUT"
+
+      # Validate every credential before fan-out. Forks do not inherit secrets,
+      # and use their own Apple Developer ID/notary path rather than Block's
+      # signing service, so this avoids consuming four runners before failure.
+      - name: Verify desktop release credentials
+        env:
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          UPDATER_PUBLIC_KEY: ${{ secrets.BUZZ_UPDATER_PUBLIC_KEY || secrets.SPROUT_UPDATER_PUBLIC_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          OSX_CODESIGN_ROLE: ${{ secrets.OSX_CODESIGN_ROLE }}
+          CODESIGN_S3_BUCKET: ${{ secrets.CODESIGN_S3_BUCKET }}
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ vars.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ vars.APPLE_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          required=(
+            UPDATER_PUBLIC_KEY
+            TAURI_SIGNING_PRIVATE_KEY
+          )
+          if [[ "$RELEASE_REPOSITORY" == "block/buzz" ]]; then
+            required+=(
+              OSX_CODESIGN_ROLE
+              CODESIGN_S3_BUCKET
+            )
+          else
+            required+=(
+              APPLE_CERTIFICATE_BASE64
+              APPLE_CERTIFICATE_PASSWORD
+              APPLE_SIGNING_IDENTITY
+              APPLE_TEAM_ID
+              APPLE_API_KEY_BASE64
+              APPLE_API_KEY_ID
+              APPLE_API_ISSUER_ID
+            )
+          fi
+          missing=()
+          for credential in "${required[@]}"; do
+            if [[ -z "${!credential}" ]]; then
+              missing+=("$credential")
+            fi
+          done
+          if [[ ${#missing[@]} -gt 0 ]]; then
+            echo "::error::Desktop release credentials are not configured: ${missing[*]}"
+            echo "::error::Configure the updater key pair and this repository's macOS signing credentials before releasing from ${GITHUB_REPOSITORY}."
             exit 1
           fi
 
@@ -51,7 +123,6 @@ jobs:
 
   release:
     name: Release
-    if: github.repository == 'block/buzz'
     runs-on: macos-latest
     needs: setup
     timeout-minutes: 60
@@ -63,6 +134,7 @@ jobs:
       sig: ${{ steps.read-sig.outputs.sig }}
     env:
       VERSION: ${{ needs.setup.outputs.version }}
+      VITE_BUZZ_RELEASES_URL: ${{ needs.setup.outputs.release_page_url }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -87,7 +159,7 @@ jobs:
         run: cd desktop && node scripts/build-release-config.mjs
         env:
           BUZZ_UPDATER_PUBLIC_KEY: ${{ secrets.BUZZ_UPDATER_PUBLIC_KEY || secrets.SPROUT_UPDATER_PUBLIC_KEY }}
-          BUZZ_UPDATER_ENDPOINT: https://github.com/block/buzz/releases/download/buzz-desktop-latest/latest.json
+          BUZZ_UPDATER_ENDPOINT: ${{ needs.setup.outputs.updater_endpoint }}
 
       - name: Build sidecars
         run: |
@@ -138,7 +210,7 @@ jobs:
         run: cd desktop && pnpm tauri build --verbose --no-sign --features mesh-llm --config src-tauri/tauri.release.conf.json
         env:
           BUZZ_UPDATER_PUBLIC_KEY: ${{ secrets.BUZZ_UPDATER_PUBLIC_KEY || secrets.SPROUT_UPDATER_PUBLIC_KEY }}
-          BUZZ_UPDATER_ENDPOINT: https://github.com/block/buzz/releases/download/buzz-desktop-latest/latest.json
+          BUZZ_UPDATER_ENDPOINT: ${{ needs.setup.outputs.updater_endpoint }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
@@ -171,6 +243,7 @@ jobs:
 
       - name: Codesign and Notarize
         id: codesign
+        if: github.repository == 'block/buzz'
         uses: block/apple-codesign-action@679535d1ab7c5a7c18e6f9afcba3464512cc3dde # v1.1.0
         with:
           osx-codesign-role: ${{ secrets.OSX_CODESIGN_ROLE }}
@@ -179,13 +252,12 @@ jobs:
           entitlements-plist-path: ${{ runner.temp }}/entitlements.plist
           artifact-name: buzz-${{ github.sha }}-${{ github.run_id }}-arm64
 
-      - name: Replace DMG and rebuild updater archive
+      - name: Replace DMG and signed app
+        if: github.repository == 'block/buzz'
         env:
           SIGNED_DMG: ${{ steps.codesign.outputs.signed-dmg-path }}
           SIGNED_APP_ZIP: ${{ steps.codesign.outputs.signed-artifact-path }}
           UNSIGNED_DMG: ${{ steps.unsigned.outputs.dmg }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           BUNDLE_DIR="desktop/src-tauri/target/release/bundle"
@@ -201,13 +273,36 @@ jobs:
           rm -rf "${APP_DIR}/Buzz.app"
           cp -R "${EXTRACT_DIR}/Buzz.app" "${APP_DIR}/Buzz.app"
 
-          # Rebuild the updater archive from the signed .app and re-sign it with the Tauri updater key.
+      - name: Sign and notarize with Apple Developer ID
+        if: github.repository != 'block/buzz'
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ vars.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ vars.APPLE_API_ISSUER_ID }}
+        run: |
+          bash desktop/scripts/sign-and-notarize-macos.sh \
+            desktop/src-tauri/target/release/bundle/macos/Buzz.app \
+            "${{ steps.unsigned.outputs.dmg }}" \
+            desktop/src-tauri/Entitlements.plist
+
+      - name: Rebuild updater archive from signed app
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          APP_DIR="desktop/src-tauri/target/release/bundle/macos"
           rm -f "${APP_DIR}/Buzz.app.tar.gz" "${APP_DIR}/Buzz.app.tar.gz.sig"
           (cd "$APP_DIR" && tar -czf Buzz.app.tar.gz Buzz.app)
           TARBALL_ABS="$(pwd)/${APP_DIR}/Buzz.app.tar.gz"
           (cd desktop && pnpm tauri signer sign "$TARBALL_ABS")
 
       - name: Verify code signature
+        if: github.repository == 'block/buzz'
         run: |
           codesign --verify --deep --strict --verbose=2 \
             desktop/src-tauri/target/release/bundle/macos/Buzz.app
@@ -215,6 +310,17 @@ jobs:
             desktop/src-tauri/target/release/bundle/macos/Buzz.app
           desktop/scripts/verify-macos-entitlements.sh \
             desktop/src-tauri/target/release/bundle/macos/Buzz.app
+
+      - name: Verify Apple Developer ID release
+        if: github.repository != 'block/buzz'
+        env:
+          DMG_PATH: ${{ steps.unsigned.outputs.dmg }}
+        run: |
+          set -euo pipefail
+          APP_DIR="desktop/src-tauri/target/release/bundle/macos/Buzz.app"
+          codesign --verify --deep --strict --verbose=2 "$APP_DIR"
+          desktop/scripts/verify-macos-entitlements.sh "$APP_DIR"
+          xcrun stapler validate "$DMG_PATH"
 
       - name: Locate build artifacts
         id: artifacts
@@ -264,7 +370,6 @@ jobs:
 
   release-macos-x64:
     name: Release macOS (Intel)
-    if: github.repository == 'block/buzz'
     runs-on: macos-latest
     needs: setup
     timeout-minutes: 60
@@ -277,6 +382,7 @@ jobs:
     env:
       VERSION: ${{ needs.setup.outputs.version }}
       TARGET: x86_64-apple-darwin
+      VITE_BUZZ_RELEASES_URL: ${{ needs.setup.outputs.release_page_url }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -304,7 +410,7 @@ jobs:
         run: cd desktop && node scripts/build-release-config.mjs
         env:
           BUZZ_UPDATER_PUBLIC_KEY: ${{ secrets.BUZZ_UPDATER_PUBLIC_KEY || secrets.SPROUT_UPDATER_PUBLIC_KEY }}
-          BUZZ_UPDATER_ENDPOINT: https://github.com/block/buzz/releases/download/buzz-desktop-latest/latest.json
+          BUZZ_UPDATER_ENDPOINT: ${{ needs.setup.outputs.updater_endpoint }}
 
       - name: Build sidecars
         run: |
@@ -315,7 +421,7 @@ jobs:
         run: cd desktop && pnpm tauri build --verbose --no-sign --target "$TARGET" --config src-tauri/tauri.release.conf.json
         env:
           BUZZ_UPDATER_PUBLIC_KEY: ${{ secrets.BUZZ_UPDATER_PUBLIC_KEY || secrets.SPROUT_UPDATER_PUBLIC_KEY }}
-          BUZZ_UPDATER_ENDPOINT: https://github.com/block/buzz/releases/download/buzz-desktop-latest/latest.json
+          BUZZ_UPDATER_ENDPOINT: ${{ needs.setup.outputs.updater_endpoint }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
@@ -345,6 +451,7 @@ jobs:
 
       - name: Codesign and Notarize
         id: codesign
+        if: github.repository == 'block/buzz'
         uses: block/apple-codesign-action@679535d1ab7c5a7c18e6f9afcba3464512cc3dde # v1.1.0
         with:
           osx-codesign-role: ${{ secrets.OSX_CODESIGN_ROLE }}
@@ -353,13 +460,12 @@ jobs:
           entitlements-plist-path: ${{ runner.temp }}/entitlements.plist
           artifact-name: buzz-${{ github.sha }}-${{ github.run_id }}-x64
 
-      - name: Replace DMG and rebuild updater archive
+      - name: Replace DMG and signed app
+        if: github.repository == 'block/buzz'
         env:
           SIGNED_DMG: ${{ steps.codesign.outputs.signed-dmg-path }}
           SIGNED_APP_ZIP: ${{ steps.codesign.outputs.signed-artifact-path }}
           UNSIGNED_DMG: ${{ steps.unsigned.outputs.dmg }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           APP_DIR="desktop/src-tauri/target/${TARGET}/release/bundle/macos"
@@ -374,18 +480,52 @@ jobs:
           rm -rf "${APP_DIR}/Buzz.app"
           cp -R "${EXTRACT_DIR}/Buzz.app" "${APP_DIR}/Buzz.app"
 
-          # Rebuild the updater archive from the signed .app and re-sign with the Tauri updater key.
+      - name: Sign and notarize with Apple Developer ID
+        if: github.repository != 'block/buzz'
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
+          APPLE_API_KEY_ID: ${{ vars.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_ID: ${{ vars.APPLE_API_ISSUER_ID }}
+        run: |
+          bash desktop/scripts/sign-and-notarize-macos.sh \
+            desktop/src-tauri/target/${TARGET}/release/bundle/macos/Buzz.app \
+            "${{ steps.unsigned.outputs.dmg }}" \
+            desktop/src-tauri/Entitlements.plist
+
+      - name: Rebuild updater archive from signed app
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          APP_DIR="desktop/src-tauri/target/${TARGET}/release/bundle/macos"
           rm -f "${APP_DIR}/Buzz.app.tar.gz" "${APP_DIR}/Buzz.app.tar.gz.sig"
           (cd "$APP_DIR" && tar -czf Buzz.app.tar.gz Buzz.app)
           TARBALL_ABS="$(pwd)/${APP_DIR}/Buzz.app.tar.gz"
           (cd desktop && pnpm tauri signer sign "$TARBALL_ABS")
 
       - name: Verify code signature
+        if: github.repository == 'block/buzz'
         run: |
           APP_DIR="desktop/src-tauri/target/${TARGET}/release/bundle/macos/Buzz.app"
           codesign --verify --deep --strict --verbose=2 "$APP_DIR"
           spctl --assess --type execute --verbose=4 "$APP_DIR"
           desktop/scripts/verify-macos-entitlements.sh "$APP_DIR"
+
+      - name: Verify Apple Developer ID release
+        if: github.repository != 'block/buzz'
+        env:
+          DMG_PATH: ${{ steps.unsigned.outputs.dmg }}
+        run: |
+          set -euo pipefail
+          APP_DIR="desktop/src-tauri/target/${TARGET}/release/bundle/macos/Buzz.app"
+          codesign --verify --deep --strict --verbose=2 "$APP_DIR"
+          desktop/scripts/verify-macos-entitlements.sh "$APP_DIR"
+          xcrun stapler validate "$DMG_PATH"
 
       - name: Locate updater archive
         id: artifacts
@@ -425,7 +565,6 @@ jobs:
 
   release-linux:
     name: Release Linux
-    if: github.repository == 'block/buzz'
     runs-on: ubuntu-latest
     # Digest-pinned like the SHA-pinned actions below; Renovate keeps it fresh.
     container: ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90
@@ -437,6 +576,7 @@ jobs:
       # AppImage tools (linuxdeploy, appimagetool) are themselves AppImages.
       # Containers lack FUSE, so we must use the extract-and-run fallback.
       APPIMAGE_EXTRACT_AND_RUN: "1"
+      VITE_BUZZ_RELEASES_URL: ${{ needs.setup.outputs.release_page_url }}
     # This job runs in a container where the default run shell is dash;
     # the AppImage steps below use bash-only syntax ([[ ]], mapfile, arrays).
     defaults:
@@ -570,13 +710,13 @@ jobs:
         run: cd desktop && node scripts/build-release-config.mjs
         env:
           BUZZ_UPDATER_PUBLIC_KEY: ${{ secrets.BUZZ_UPDATER_PUBLIC_KEY || secrets.SPROUT_UPDATER_PUBLIC_KEY }}
-          BUZZ_UPDATER_ENDPOINT: https://github.com/block/buzz/releases/download/buzz-desktop-latest/latest.json
+          BUZZ_UPDATER_ENDPOINT: ${{ needs.setup.outputs.updater_endpoint }}
 
       - name: Build Linux Tauri app
         run: cd desktop && pnpm tauri build --verbose --ci --bundles deb,appimage --config src-tauri/tauri.release.conf.json
         env:
           BUZZ_UPDATER_PUBLIC_KEY: ${{ secrets.BUZZ_UPDATER_PUBLIC_KEY || secrets.SPROUT_UPDATER_PUBLIC_KEY }}
-          BUZZ_UPDATER_ENDPOINT: https://github.com/block/buzz/releases/download/buzz-desktop-latest/latest.json
+          BUZZ_UPDATER_ENDPOINT: ${{ needs.setup.outputs.updater_endpoint }}
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -665,6 +805,7 @@ jobs:
     env:
       VERSION: ${{ needs.setup.outputs.version }}
       TARGET: x86_64-pc-windows-msvc
+      VITE_BUZZ_RELEASES_URL: ${{ needs.setup.outputs.release_page_url }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -707,7 +848,7 @@ jobs:
         run: cd desktop && node scripts/build-release-config.mjs
         env:
           BUZZ_UPDATER_PUBLIC_KEY: ${{ secrets.BUZZ_UPDATER_PUBLIC_KEY || secrets.SPROUT_UPDATER_PUBLIC_KEY }}
-          BUZZ_UPDATER_ENDPOINT: https://github.com/block/buzz/releases/download/buzz-desktop-latest/latest.json
+          BUZZ_UPDATER_ENDPOINT: ${{ needs.setup.outputs.updater_endpoint }}
 
       - name: Build sidecars
         shell: bash
@@ -720,7 +861,7 @@ jobs:
         run: cd desktop && pnpm tauri build --verbose --target "$TARGET" --bundles nsis --config src-tauri/tauri.release.conf.json
         env:
           BUZZ_UPDATER_PUBLIC_KEY: ${{ secrets.BUZZ_UPDATER_PUBLIC_KEY || secrets.SPROUT_UPDATER_PUBLIC_KEY }}
-          BUZZ_UPDATER_ENDPOINT: https://github.com/block/buzz/releases/download/buzz-desktop-latest/latest.json
+          BUZZ_UPDATER_ENDPOINT: ${{ needs.setup.outputs.updater_endpoint }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           CMAKE_POLICY_VERSION_MINIMUM: "3.5"
@@ -886,9 +1027,10 @@ jobs:
           ARCHIVE_X64: ${{ needs.release-macos-x64.outputs.archive_name }}
           ARCHIVE_LINUX: ${{ needs.release-linux.outputs.archive_name }}
           ARCHIVE_WIN: ${{ needs.release-windows.outputs.archive_name }}
+          RELEASE_DOWNLOAD_BASE: ${{ needs.setup.outputs.release_download_base }}
         run: |
           set -euo pipefail
-          BASE="https://github.com/block/buzz/releases/download/desktop-v${VERSION}"
+          BASE="${RELEASE_DOWNLOAD_BASE}/desktop-v${VERSION}"
           TRIPLES=()
 
           add_triple() {
@@ -946,6 +1088,18 @@ jobs:
       - name: Publish complete versioned release
         if: env.already_published != 'true'
         run: gh release edit "desktop-v${VERSION}" --draft=false
+
+      - name: Create rolling updater release
+        if: ${{ !contains(needs.setup.outputs.version, '-') }}
+        run: |
+          set -euo pipefail
+          if ! gh release view buzz-desktop-latest >/dev/null 2>&1; then
+            gh release create buzz-desktop-latest \
+              --target "${{ needs.setup.outputs.source_sha }}" \
+              --title "Buzz Desktop updater manifest" \
+              --notes "Rolling updater manifest for Buzz Desktop releases." \
+              --latest=false
+          fi
 
       - name: Upload latest.json to rolling release last
         if: ${{ !contains(needs.setup.outputs.version, '-') }}

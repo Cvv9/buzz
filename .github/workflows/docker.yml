@@ -77,6 +77,10 @@ env:
   # letter, so use its canonical registry spelling unless a variable overrides it.
   IMAGE_NAME: ${{ vars.GHCR_IMAGE != '' && vars.GHCR_IMAGE || 'ghcr.io/cvv9/buzz' }}
   PUSH_GATEWAY_IMAGE: ${{ vars.GHCR_PUSH_GATEWAY_IMAGE != '' && vars.GHCR_PUSH_GATEWAY_IMAGE || 'ghcr.io/cvv9/buzz-push-gateway' }}
+  # Public GitHub release channel embedded in the bundled web app. Forks
+  # default to their own repository; set the variable only to deliberately
+  # publish downloads from another trusted release repository.
+  DESKTOP_RELEASES_REPOSITORY: ${{ vars.BUZZ_DESKTOP_RELEASES_REPOSITORY != '' && vars.BUZZ_DESKTOP_RELEASES_REPOSITORY || github.repository }}
 
 jobs:
   build:
@@ -172,6 +176,8 @@ jobs:
           target: runtime
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VITE_BUZZ_RELEASES_REPOSITORY=${{ env.DESKTOP_RELEASES_REPOSITORY }}
           # Push by digest, not by tag — the merge job assembles the tags
           # into one multi-arch manifest. This is what makes the native-arm
           # matrix possible.
@@ -190,6 +196,8 @@ jobs:
           target: runtime-debug
           platforms: ${{ matrix.platform }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VITE_BUZZ_RELEASES_REPOSITORY=${{ env.DESKTOP_RELEASES_REPOSITORY }}
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
           cache-from: |
             type=registry,ref=${{ env.IMAGE_NAME }}-buildcache:${{ matrix.arch }}

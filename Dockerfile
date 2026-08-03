@@ -27,6 +27,14 @@ ARG EXTRA_CA_CERTS=
 # npmjs, so public CI builds are unaffected. Consumed by the web-builder stage.
 ARG NPM_REGISTRY=
 
+# Public GitHub owner/repository from which the browser invite page resolves
+# desktop packages. This is intentionally a build argument: Vite embeds public
+# VITE_* settings in the static bundle and runtime container environment cannot
+# change them. Empty keeps source builds on the upstream block/buzz channel.
+# Example fork deployment:
+#   docker build --build-arg VITE_BUZZ_RELEASES_REPOSITORY=Cvv9/buzz ...
+ARG VITE_BUZZ_RELEASES_REPOSITORY=
+
 # ─── Stage 1: cargo-chef base ───────────────────────────────────────────────
 FROM rust:${RUST_VERSION}-${DEBIAN_VERSION} AS chef
 # Trust an optional corporate-proxy CA before any network fetch (no-op if unset).
@@ -106,7 +114,10 @@ ENV NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt
 # corepack reads COREPACK_NPM_REGISTRY to fetch the pinned pnpm; pnpm/npm read
 # the .npmrc registry for dependency installs.
 ARG NPM_REGISTRY
+ARG VITE_BUZZ_RELEASES_REPOSITORY
 ENV COREPACK_NPM_REGISTRY=${NPM_REGISTRY}
+# The browser bundle only reads VITE_* settings at build time.
+ENV VITE_BUZZ_RELEASES_REPOSITORY=${VITE_BUZZ_RELEASES_REPOSITORY}
 # When using a mirror, disable corepack's npmjs signature check: the mirror
 # republishes tarballs without the public registry's provenance signatures, so
 # strict verification fails ("No compatible signature found"). Only relaxed on
