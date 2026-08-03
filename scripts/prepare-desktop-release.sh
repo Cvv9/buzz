@@ -9,6 +9,11 @@ mode="${2:-publish}"
 }
 
 remote="${RELEASE_REMOTE:-origin}"
+release_repo="${RELEASE_REPOSITORY:-$(git remote get-url "$remote" | sed -E 's|.*github\.com[:/]||; s|\.git$||')}"
+[[ "$release_repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || {
+  echo "release repository must be an owner/repository pair; got '$release_repo'" >&2
+  exit 1
+}
 git fetch "$remote" refs/heads/main:refs/remotes/origin/main --no-tags
 git fetch "$remote" '+refs/tags/v*:refs/tags/v*' '+refs/tags/desktop-v*:refs/tags/desktop-v*'
 base_sha="$(git rev-parse refs/remotes/origin/main)"
@@ -22,7 +27,7 @@ fi
 
 git checkout -B "$branch" "$base_sha"
 just bump-desktop-version "$version"
-scripts/desktop_release.py generate "$version" --base "$base_sha" --repo block/buzz
+scripts/desktop_release.py generate "$version" --base "$base_sha" --repo "$release_repo"
 
 git add \
   .release/desktop-candidate.json \
@@ -44,7 +49,7 @@ Co-authored-by: $agent_name <$agent_email>
 EOF
 git -c user.name='Wes' -c user.email='wesbillman@users.noreply.github.com' \
   commit -s -F "$msg"
-scripts/desktop_release.py validate --candidate HEAD --version "$version" --repo block/buzz
+scripts/desktop_release.py validate --candidate HEAD --version "$version" --repo "$release_repo"
 
 candidate_sha="$(git rev-parse HEAD)"
 previous_tag="$(python3 -c 'import json; print(json.load(open(".release/desktop-candidate.json"))["previous_tag"] or "initial")')"

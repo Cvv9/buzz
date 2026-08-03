@@ -30,7 +30,11 @@ const BACKGROUND_BLOCKED_STATES = new Set<UpdateStatus["state"]>([
   "manual-required",
 ]);
 
-const GITHUB_RELEASES_URL = "https://github.com/block/buzz/releases/latest";
+// Release builds inject the repository that owns their signed updater
+// artifacts. Local OSS builds retain the canonical manual-download page.
+const GITHUB_RELEASES_URL =
+  import.meta.env.VITE_BUZZ_RELEASES_URL ??
+  "https://github.com/block/buzz/releases/latest";
 
 function toErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);

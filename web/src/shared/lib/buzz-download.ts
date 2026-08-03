@@ -1,7 +1,47 @@
-export const BUZZ_RELEASES_URL = "https://github.com/block/buzz/releases";
-const BUZZ_RELEASES_API_URL =
-  "https://api.github.com/repos/block/buzz/releases?per_page=10";
-const CACHE_KEY = "buzz.latestDownload.v1";
+/** Default public release channel for source builds that do not configure one. */
+export const DEFAULT_BUZZ_RELEASES_REPOSITORY = "block/buzz";
+
+type BuzzReleaseSource = {
+  repository: string;
+  releasesUrl: string;
+  releasesApiUrl: string;
+};
+
+/**
+ * Resolve the GitHub release channel baked into the web bundle.
+ *
+ * `VITE_BUZZ_RELEASES_REPOSITORY` is a build-time setting, intentionally
+ * limited to a GitHub owner/repository pair so a malformed deployment setting
+ * cannot turn the invite page into an arbitrary external redirect.
+ */
+export function resolveBuzzReleaseSource(
+  configuredRepository: string | undefined,
+): BuzzReleaseSource {
+  const repository = configuredRepository?.trim();
+  const isValidGitHubRepository =
+    repository !== undefined &&
+    /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/[A-Za-z0-9](?:[A-Za-z0-9._-]{0,99})$/.test(
+      repository,
+    );
+  const resolvedRepository = isValidGitHubRepository
+    ? repository
+    : DEFAULT_BUZZ_RELEASES_REPOSITORY;
+
+  return {
+    repository: resolvedRepository,
+    releasesUrl: `https://github.com/${resolvedRepository}/releases`,
+    releasesApiUrl: `https://api.github.com/repos/${resolvedRepository}/releases?per_page=10`,
+  };
+}
+
+const releaseSource = resolveBuzzReleaseSource(
+  import.meta.env?.VITE_BUZZ_RELEASES_REPOSITORY,
+);
+
+export const BUZZ_RELEASES_REPOSITORY = releaseSource.repository;
+export const BUZZ_RELEASES_URL = releaseSource.releasesUrl;
+const BUZZ_RELEASES_API_URL = releaseSource.releasesApiUrl;
+const CACHE_KEY = "buzz.latestDownload.v2";
 const CACHE_TTL_MS = 60 * 60 * 1000;
 
 export type BuzzDownloadPlatform = {
@@ -145,12 +185,14 @@ export async function resolveBuzzDownloadUrlForPlatform(
   try {
     const cached = JSON.parse(sessionStorage.getItem(CACHE_KEY) ?? "null") as {
       expiresAt: number;
+      repository: string;
       platform: BuzzDownloadPlatform;
       url: string;
     } | null;
     if (
       cached &&
       cached.expiresAt > Date.now() &&
+      cached.repository === BUZZ_RELEASES_REPOSITORY &&
       cached.platform.operatingSystem === platform.operatingSystem &&
       cached.platform.architecture === platform.architecture
     ) {
@@ -175,6 +217,7 @@ export async function resolveBuzzDownloadUrlForPlatform(
         CACHE_KEY,
         JSON.stringify({
           expiresAt: Date.now() + CACHE_TTL_MS,
+          repository: BUZZ_RELEASES_REPOSITORY,
           platform,
           url,
         }),
