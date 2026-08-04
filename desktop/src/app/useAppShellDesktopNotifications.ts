@@ -22,6 +22,7 @@ import {
   resolveSlotSound,
 } from "@/features/notifications/lib/sound";
 import type { Channel, RelayEvent } from "@/shared/api/types";
+import { KIND_APPROVAL_REQUEST } from "@/shared/constants/kinds";
 
 export function useAppShellDesktopNotifications({
   channels,
@@ -134,6 +135,11 @@ export function useAppShellDesktopNotifications({
       target: import("@/features/notifications/lib/desktop").DesktopNotificationTarget,
     ) => {
       await revealDesktopAppWindow();
+
+      if (target.kind === KIND_APPROVAL_REQUEST) {
+        await goHome();
+        return;
+      }
 
       if (!target.channelId) {
         void goHome();

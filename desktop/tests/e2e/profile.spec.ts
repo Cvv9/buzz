@@ -1168,7 +1168,7 @@ test("renders settings in the app shell with a back button", async ({
   await expect(inboxNavButton).toBeVisible();
 });
 
-test("notification settings drive the Inbox badge and desktop alerts", async ({
+test("notification settings drive the approval Inbox badge and desktop alerts", async ({
   page,
 }) => {
   async function getAppBadgeCount() {
@@ -1196,7 +1196,7 @@ test("notification settings drive the Inbox badge and desktop alerts", async ({
 
   // The dock badge sums unreadChannelIds.size + homeBadgeCount. Seeded test
   // channels may start with unreads, so capture the baseline after navigating
-  // to general (which marks it read) but before injecting the mock mention.
+  // to general (which marks it read) but before injecting the approval.
   const baseline = await getAppBadgeCount();
 
   await page.evaluate(() => {
@@ -1215,17 +1215,17 @@ test("notification settings drive the Inbox badge and desktop alerts", async ({
     };
 
     win.__BUZZ_E2E_PUSH_MOCK_FEED_ITEM__?.({
-      category: "mention",
+      category: "needs_action",
       channel_id: "1c7e1c02-87bb-5e88-b2da-5a7a9432d0c9",
       channel_name: "engineering",
       content: "Please review the rollout checklist.",
       created_at: Math.floor(Date.now() / 1000) + 5,
       id: `mock-feed-notification-${Date.now()}`,
-      kind: 9,
+      kind: 46010,
       pubkey:
         "bb22a5299220cad76ffd46190ccbeede8ab5dc260faa28b6e5a2cb31b9aff260",
       tags: [
-        ["e", "1c7e1c02-87bb-5e88-b2da-5a7a9432d0c9"],
+        ["h", "1c7e1c02-87bb-5e88-b2da-5a7a9432d0c9"],
         [
           "p",
           "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
@@ -1266,7 +1266,7 @@ test("notification settings drive the Inbox badge and desktop alerts", async ({
   expect(notifications).toEqual([
     {
       body: "Please review the rollout checklist.",
-      title: "bob mentioned you in #engineering",
+      title: "bob requested approval in #engineering",
     },
   ]);
 
@@ -1279,23 +1279,25 @@ test("notification settings drive the Inbox badge and desktop alerts", async ({
   });
   expect(clickedNotification).toBe(true);
 
-  await expect(page.getByTestId("chat-title")).toHaveText("engineering");
-  await expect(page.getByTestId("message-timeline")).toContainText(
+  await expectHomeView(page);
+  await expect(page.getByTestId("home-inbox-list")).toContainText(
     "Please review the rollout checklist.",
   );
 
   await openSettings(page, "notifications");
   await page.getByTestId("notifications-home-badge-toggle").click();
   await page.getByTestId("settings-back-to-app").click();
-  await expect(page.getByTestId("chat-title")).toHaveText("engineering");
+  await expectHomeView(page);
   await expect(page.getByTestId("sidebar-home-count")).toHaveCount(0);
   await expect.poll(getAppBadgeCount).toBe(baseline);
 
   await openSettings(page, "notifications");
   await page.getByTestId("notifications-home-badge-toggle").click();
   await page.getByTestId("settings-back-to-app").click();
-  await expect(page.getByTestId("sidebar-home-count")).toHaveText("1");
-  await expect.poll(getAppBadgeCount).toBe(baseline + 1);
+  // Visiting the approval Inbox marks the current item seen. Re-enabling
+  // badges must not resurrect a badge for that already-seen request.
+  await expect(page.getByTestId("sidebar-home-count")).toHaveCount(0);
+  await expect.poll(getAppBadgeCount).toBe(baseline);
 
   await page
     .getByTestId("app-sidebar")
