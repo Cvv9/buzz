@@ -10,13 +10,31 @@ export function getSharedChannelIds(channels: readonly Channel[] | undefined) {
 }
 
 export function relayAgentIsSharedWithUser(
-  agent: Pick<RelayAgent, "channelIds" | "respondTo" | "respondToAllowlist">,
+  agent: Pick<
+    RelayAgent,
+    "channelIds" | "ownerPubkey" | "respondTo" | "respondToAllowlist"
+  >,
   sharedChannelIds: ReadonlySet<string>,
   currentPubkey?: string | null,
 ) {
   const normalizedCurrentPubkey = currentPubkey
     ? normalizePubkey(currentPubkey)
     : null;
+
+  const normalizedOwnerPubkey = agent.ownerPubkey
+    ? normalizePubkey(agent.ownerPubkey)
+    : null;
+
+  // The relay defaults a missing respond_to value to owner-only. Hosted
+  // personal/admin agents are still invocable by their owner even when they
+  // are not members of the channel being composed in.
+  if (
+    normalizedCurrentPubkey &&
+    normalizedOwnerPubkey === normalizedCurrentPubkey &&
+    (agent.respondTo === null || agent.respondTo === "owner-only")
+  ) {
+    return true;
+  }
 
   if (agent.respondTo === "allowlist" && normalizedCurrentPubkey) {
     return agent.respondToAllowlist
@@ -54,13 +72,16 @@ export function getMentionableAgentPubkeys({
   return pubkeys;
 }
 
-export function isAgentIdentityInManagedList(
+export function isAgentIdentityInKnownDirectories(
   candidate: { isAgent?: boolean; pubkey: string },
   managedAgentPubkeys: ReadonlySet<string>,
+  relayAgentPubkeys: ReadonlySet<string> = new Set(),
 ) {
+  const pubkey = normalizePubkey(candidate.pubkey);
   return (
     candidate.isAgent !== true ||
-    managedAgentPubkeys.has(normalizePubkey(candidate.pubkey))
+    managedAgentPubkeys.has(pubkey) ||
+    relayAgentPubkeys.has(pubkey)
   );
 }
 

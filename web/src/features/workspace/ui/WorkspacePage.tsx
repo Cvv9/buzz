@@ -335,8 +335,8 @@ export function WorkspacePage() {
   }
 
   const profileFor = (pubkey: string): WorkspaceProfile =>
-    profilesQuery.data?.get(pubkey) ??
-    agentsQuery.data?.find((profile) => profile.pubkey === pubkey) ?? {
+    agentsQuery.data?.find((profile) => profile.pubkey === pubkey) ??
+    profilesQuery.data?.get(pubkey) ?? {
       pubkey,
       name:
         pubkey === identity.pubkey

@@ -699,7 +699,10 @@ export function useMentionSendFlow({
         ]);
         const explicitAgentPubkeys = explicitMentionPubkeys.filter(
           (pubkey) =>
-            mentions.isAgentPubkey(pubkey) ||
+            mentions
+              .extractMentionAgentPubkeys(trimmed)
+              .map(normalizePubkey)
+              .includes(normalizePubkey(pubkey)) ||
             createdPersonaAgentPubkeySet.has(pubkey),
         );
         const pubkeys = explicitMentionPubkeys;
@@ -728,6 +731,33 @@ export function useMentionSendFlow({
           } catch {
             // Keep the hook-based managed-agent filtering even if the query
             // fallback misses; ordinary non-members still get prompted.
+          }
+        }
+
+        const explicitAgentPubkeySet = new Set(
+          explicitAgentPubkeys.map(normalizePubkey),
+        );
+        const mentionedRelayAgentPubkeys = promptNonMemberPubkeys.filter(
+          (pubkey) => explicitAgentPubkeySet.has(normalizePubkey(pubkey)),
+        );
+        // The relay is authoritative for channel moderation. Attempt the
+        // agent add directly so an owner/admin send does not race a separate
+        // role lookup; permission failures fall through to the existing
+        // confirmation dialog without publishing the message.
+        const autoInviteAgentPubkeys = mentionedRelayAgentPubkeys;
+        if (autoInviteAgentPubkeys.length > 0) {
+          const result = await addMembersMutation.mutateAsync({
+            channelId: effectiveChannelId ?? undefined,
+            pubkeys: autoInviteAgentPubkeys,
+            role: "bot",
+          });
+          if (result.errors.length === 0) {
+            const invitedAgentPubkeys = new Set(
+              autoInviteAgentPubkeys.map(normalizePubkey),
+            );
+            promptNonMemberPubkeys = promptNonMemberPubkeys.filter(
+              (pubkey) => !invitedAgentPubkeys.has(normalizePubkey(pubkey)),
+            );
           }
         }
 
@@ -765,6 +795,7 @@ export function useMentionSendFlow({
       }
     },
     [
+      addMembersMutation,
       completeSend,
       channelType,
       createMentionedPersonaAgents,
@@ -773,7 +804,7 @@ export function useMentionSendFlow({
       getNonMemberMentionPubkeys,
       getDmThreadAgentMentionError,
       mentions.extractMentionPubkeys,
-      mentions.isAgentPubkey,
+      mentions.extractMentionAgentPubkeys,
       mentions.isManagedAgentPubkey,
       onPrepareSendChannel,
     ],

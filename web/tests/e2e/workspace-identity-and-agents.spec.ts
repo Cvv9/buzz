@@ -190,6 +190,71 @@ test("mentioning an eligible hosted agent adds it before the message", async ({
   ).toBeVisible();
 });
 
+test("admin-edited hosted agent identity is shared across the web roster and mentions", async ({
+  page,
+}) => {
+  const secretKey = generateSecretKey();
+  const viewerPubkey = getPublicKey(secretKey);
+  const agentPubkey = "7".padStart(64, "0");
+  const avatarUrl =
+    "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
+  await installWorkspaceRelayMock(page, viewerPubkey, {
+    hostedAgentConfig: {
+      agentPubkey,
+      name: "Sylar",
+      avatarUrl,
+      model: "gpt-5.6-terra",
+    },
+  });
+  await page.goto("/");
+  await page.getByLabel("Display name").fill("Vikram");
+  await page.getByLabel("Recovery key").fill(nsecEncode(secretKey));
+  await page.getByLabel("Password", { exact: true }).fill("web-agent-config");
+  await page.getByLabel("Confirm password").fill("web-agent-config");
+  await page.getByRole("button", { name: "Sign in with recovery key" }).click();
+
+  await expect(page.getByText("Sylar", { exact: true }).first()).toBeVisible();
+  await expect(
+    page.getByText("Workspace Agent 7", { exact: true }),
+  ).toHaveCount(0);
+
+  const composer = page.getByLabel("Message general");
+  await composer.fill("@Sylar check the deployment");
+  await composer.press("Enter");
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (
+          window as typeof window & {
+            __BUZZ_WEB_E2E_PUBLISHED__: Array<{
+              kind: number;
+              tags: string[][];
+            }>;
+          }
+        ).__BUZZ_WEB_E2E_PUBLISHED__.filter(
+          (relayEvent) => relayEvent.kind === 9000 || relayEvent.kind === 9,
+        ),
+      ),
+    )
+    .toEqual([
+      expect.objectContaining({
+        kind: 9000,
+        tags: [
+          ["h", "general"],
+          ["p", agentPubkey],
+          ["role", "bot"],
+        ],
+      }),
+      expect.objectContaining({
+        kind: 9,
+        tags: [
+          ["h", "general"],
+          ["p", agentPubkey],
+        ],
+      }),
+    ]);
+});
+
 test("an already-present personal agent remains mentionable", async ({
   page,
 }) => {

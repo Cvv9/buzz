@@ -11698,6 +11698,18 @@ export function maybeInstallE2eTauriMocks() {
           payload as Parameters<typeof handleGetChannelMembers>[0],
           activeConfig,
         );
+      case "list_relay_members":
+        return { members: mockRelayMembers.map((member) => ({ ...member })) };
+      case "get_my_relay_membership": {
+        const pubkey = getMockMemberPubkey(activeConfig);
+        const membership = mockRelayMembers.find(
+          (member) => member.pubkey === pubkey,
+        );
+        if (!membership) {
+          throw new Error("relay returned 404 Not Found");
+        }
+        return { ...membership };
+      }
       case "update_channel":
         return handleUpdateChannel(
           (payload as { input: Parameters<typeof handleUpdateChannel>[0] })

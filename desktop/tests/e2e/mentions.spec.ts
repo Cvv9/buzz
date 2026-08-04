@@ -203,7 +203,6 @@ test("@ trigger prioritizes channel members before runnable personas and other m
   await page.goto("/");
   await page.getByTestId("channel-general").click();
   await expect(page.getByTestId("chat-title")).toHaveText("general");
-
   const input = page.getByTestId("message-input");
   await input.fill("@");
 
@@ -826,14 +825,21 @@ test("managed relay agents are visible in channel mentions regardless of relay p
   await expect(dropdown.getByText("agent")).toBeVisible();
 });
 
-test("relay-only agents stay hidden from channel mentions even when allowlisted", async ({
+test("hosted relay agents replace starter personas in channel mentions", async ({
   page,
 }) => {
   await installMockBridge(page, {
+    personas: [
+      {
+        id: "custom:physiotherapist",
+        displayName: "Physiotherapist",
+        isActive: true,
+      },
+    ],
     relayAgents: [
       {
         pubkey: ALLOWLIST_RELAY_AGENT_PUBKEY,
-        name: "quinn",
+        name: "Sylar",
         respondTo: "allowlist",
         respondToAllowlist: [MOCK_VIEWER_PUBKEY],
       },
@@ -844,9 +850,104 @@ test("relay-only agents stay hidden from channel mentions even when allowlisted"
   await expect(page.getByTestId("chat-title")).toHaveText("general");
 
   const input = page.getByTestId("message-input");
-  await input.fill("@quinn");
+  await input.fill("@");
 
-  await expect(autocomplete(page)).toHaveCount(0);
+  const dropdown = autocomplete(page);
+  await expect(dropdown.getByText("Sylar", { exact: true })).toBeVisible();
+  await expect(dropdown.getByText("Fizz", { exact: true })).toHaveCount(0);
+  await expect(dropdown.getByText("Honey", { exact: true })).toHaveCount(0);
+  await expect(dropdown.getByText("Bumble", { exact: true })).toHaveCount(0);
+  await expect(
+    dropdown.getByText("Physiotherapist", { exact: true }),
+  ).toHaveCount(0);
+});
+
+test("owner-only hosted agents remain mentionable by their owner outside agent channels", async ({
+  page,
+}) => {
+  await installMockBridge(page, {
+    relayAgents: [
+      {
+        pubkey: ALLOWLIST_RELAY_AGENT_PUBKEY,
+        name: "Lina",
+        ownerPubkey: MOCK_VIEWER_PUBKEY,
+        accessTier: "personal",
+        audience: "owner",
+        respondTo: "owner-only",
+      },
+    ],
+  });
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+
+  const input = page.getByTestId("message-input");
+  await input.fill("@lina");
+
+  const row = autocomplete(page).locator("button", { hasText: "Lina" });
+  await expect(row).toBeVisible();
+  await expect(row.getByText("agent")).toBeVisible();
+  await expect(row.getByText("not in channel")).toBeVisible();
+});
+
+test("an exact authorized agent name resolves even when the autocomplete row is not selected", async ({
+  page,
+}) => {
+  await installMockBridge(page, {
+    relayAgents: [
+      {
+        pubkey: ALLOWLIST_RELAY_AGENT_PUBKEY,
+        name: "Lina",
+        ownerPubkey: MOCK_VIEWER_PUBKEY,
+        respondTo: "owner-only",
+      },
+    ],
+  });
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+  const input = page.getByTestId("message-input");
+  await input.fill("@Lina");
+  await expect(
+    autocomplete(page).locator("button", { hasText: "Lina" }),
+  ).toBeVisible();
+  await input.fill("@Lina say hi");
+  await page.getByTestId("send-message").click();
+  await expect(page.getByRole("alertdialog")).toHaveCount(0);
+
+  await expect
+    .poll(async () =>
+      (await readCommandPayloadLog(page)).some(({ command, payload }) => {
+        if (command !== "add_channel_members") return false;
+        const input = payload as Record<string, unknown> | null;
+        return (
+          input?.role === "bot" &&
+          Array.isArray(input.pubkeys) &&
+          input.pubkeys.includes(ALLOWLIST_RELAY_AGENT_PUBKEY)
+        );
+      }),
+    )
+    .toBe(true);
+
+  await expect
+    .poll(async () =>
+      (await readCommandPayloadLog(page)).some(({ command, payload }) => {
+        if (command !== "plugin:websocket|send") return false;
+        const data = (payload as { message?: { data?: string } } | undefined)
+          ?.message?.data;
+        return (
+          data?.includes('"kind":9') === true &&
+          data.includes(`["p","${ALLOWLIST_RELAY_AGENT_PUBKEY}"]`)
+        );
+      }),
+    )
+    .toBe(true);
+
+  const mentionChip = page
+    .getByTestId("message-row")
+    .last()
+    .locator("[data-mention].agent-mention-highlight", { hasText: "Lina" });
+  await expect(mentionChip).toBeVisible();
 });
 
 test("mentioning an in-channel stopped managed agent starts it before sending", async ({
