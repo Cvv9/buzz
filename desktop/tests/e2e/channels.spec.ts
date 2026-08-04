@@ -665,7 +665,7 @@ test("sends the first message from the new direct message composer", async ({
   await page.getByTestId("message-input").fill(message);
   await page.getByTestId("send-message").click();
 
-  await expect(page.getByTestId("chat-title")).toHaveText("charlie");
+  await expect(page.getByTestId("chat-title")).toHaveText("bob-tyler");
   await expect(page.getByTestId("message-timeline")).toContainText(message);
 });
 
