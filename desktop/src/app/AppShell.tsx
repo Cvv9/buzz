@@ -65,7 +65,6 @@ import {
 } from "@/features/settings/ui/SettingsPanels";
 import { HuddleProvider } from "@/features/huddle";
 import { AppHuddleBar } from "@/app/AppHuddleBar";
-import { useDueReminderBadgeCount } from "@/features/reminders/hooks";
 import { RemindMeLaterProvider } from "@/features/reminders/ui/RemindMeLaterProvider";
 import { useReminderNotifications } from "@/features/reminders/useReminderNotifications";
 import { AppSidebar } from "@/features/sidebar/ui/AppSidebar";
@@ -426,10 +425,6 @@ export function AppShell() {
       channels,
     );
 
-  const dueReminderBadge = useDueReminderBadgeCount(
-    identityQuery.data?.pubkey,
-    notificationSettings.settings.homeBadgeEnabled,
-  );
   const isNotifiedForThread = React.useCallback(
     (rootId: string) =>
       !mutedRootIds.has(rootId) &&
@@ -827,7 +822,7 @@ export function AppShell() {
                             fallbackDisplayName={
                               identityQuery.data?.displayName
                             }
-                            homeBadgeCount={homeBadgeCount + dueReminderBadge}
+                            homeBadgeCount={homeBadgeCount}
                             addCommunityPrefill={addCommunityDialog.prefill}
                             isAddCommunityOpen={addCommunityDialog.open}
                             relayConnectionCard={relayConnectionCard}

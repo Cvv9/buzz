@@ -205,14 +205,14 @@ async function seedNestedAnchor(page: import("@playwright/test").Page) {
 
       push({
         id: anchor.id,
-        kind: anchor.kind,
+        kind: 46010,
         pubkey: anchor.pubkey,
         content: anchor.content,
         created_at: anchor.created_at,
         channel_id: channelId,
         channel_name: "general",
         tags: anchor.tags,
-        category: "mention",
+        category: "needs_action",
       });
 
       return { root, anchor };
@@ -253,14 +253,14 @@ async function injectNewerSibling(
 
       replace(oldAnchorId, {
         id: sibling.id,
-        kind: sibling.kind,
+        kind: 46010,
         pubkey: sibling.pubkey,
         content: sibling.content,
         created_at: sibling.created_at + 1,
         channel_id: channelId,
         channel_name: "general",
         tags: sibling.tags,
-        category: "mention",
+        category: "needs_action",
       });
 
       return { sibling, oldAnchorId };
@@ -434,14 +434,14 @@ test.describe("inbox stable-conversation regressions", () => {
         });
         push({
           id: replyB.id,
-          kind: replyB.kind,
+          kind: 46010,
           pubkey: replyB.pubkey,
           content: replyB.content,
           created_at: replyB.created_at,
           channel_id: channelId,
           channel_name: "general",
           tags: replyB.tags,
-          category: "mention",
+          category: "needs_action",
         });
         return replyB;
       },
@@ -578,14 +578,14 @@ test.describe("inbox stable-conversation regressions", () => {
         });
         push({
           id: coldSibling.id,
-          kind: coldSibling.kind,
+          kind: 46010,
           pubkey: coldSibling.pubkey,
           content: coldSibling.content,
           created_at: coldSibling.created_at + 1,
           channel_id: channelId,
           channel_name: "general",
           tags: coldSibling.tags,
-          category: "mention",
+          category: "needs_action",
         });
         return { coldRoot, coldAnchor, coldSibling };
       },
@@ -789,14 +789,14 @@ test.describe("inbox stable-conversation regressions", () => {
         });
         push({
           id: coldSibling.id,
-          kind: coldSibling.kind,
+          kind: 46010,
           pubkey: coldSibling.pubkey,
           content: coldSibling.content,
           created_at: coldSibling.created_at + 1,
           channel_id: channelId,
           channel_name: "general",
           tags: coldSibling.tags,
-          category: "mention",
+          category: "needs_action",
         });
         return { coldRoot, coldAnchor, coldSibling };
       },
@@ -856,14 +856,14 @@ test.describe("inbox stable-conversation regressions", () => {
         });
         push({
           id: unrelated.id,
-          kind: unrelated.kind,
+          kind: 46010,
           pubkey: unrelated.pubkey,
           content: unrelated.content,
           created_at: unrelated.created_at + 2,
           channel_id: channelId,
           channel_name: "general",
           tags: unrelated.tags,
-          category: "mention",
+          category: "needs_action",
         });
       },
       {
@@ -997,14 +997,14 @@ test.describe("inbox stable-conversation regressions", () => {
 
         push({
           id: fetchNewest.id,
-          kind: fetchNewest.kind,
+          kind: 46010,
           pubkey: fetchNewest.pubkey,
           content: fetchNewest.content,
           created_at: fetchNewest.created_at + 11,
           channel_id: channelId,
           channel_name: "general",
           tags: fetchNewest.tags,
-          category: "mention",
+          category: "needs_action",
         });
 
         return { fetchRoot, fetchNewest };
@@ -1081,14 +1081,14 @@ test.describe("inbox stable-conversation regressions", () => {
         });
         replace(oldId, {
           id: passive.id,
-          kind: passive.kind,
+          kind: 46010,
           pubkey: passive.pubkey,
           content: passive.content,
           created_at: passive.created_at + 12,
           channel_id: channelId,
           channel_name: "general",
           tags: passive.tags,
-          category: "mention",
+          category: "needs_action",
         });
       },
       {
@@ -1188,14 +1188,14 @@ test.describe("inbox stable-conversation regressions", () => {
 
         push({
           id: fetchNewest.id,
-          kind: fetchNewest.kind,
+          kind: 46010,
           pubkey: fetchNewest.pubkey,
           content: fetchNewest.content,
           created_at: fetchNewest.created_at + 11,
           channel_id: channelId,
           channel_name: "general",
           tags: fetchNewest.tags,
-          category: "mention",
+          category: "needs_action",
         });
 
         return { fetchNewest, olderReplyIds };
@@ -1399,14 +1399,14 @@ test.describe("inbox stable-conversation regressions", () => {
 
         push({
           id: fetchNewest.id,
-          kind: fetchNewest.kind,
+          kind: 46010,
           pubkey: fetchNewest.pubkey,
           content: fetchNewest.content,
           created_at: fetchNewest.created_at + 11,
           channel_id: channelId,
           channel_name: "general",
           tags: fetchNewest.tags,
-          category: "mention",
+          category: "needs_action",
         });
 
         return { fetchNewest, olderReplyIds };

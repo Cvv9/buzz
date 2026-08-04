@@ -3,6 +3,7 @@ import * as React from "react";
 import { useAppShell } from "@/app/AppShellContext";
 import { useHomeFeedQuery } from "@/features/home/hooks";
 import { HomeView } from "@/features/home/ui/HomeView";
+import type { InboxFilter } from "@/features/home/lib/inbox";
 import type { HomeFeedResponse } from "@/shared/api/types";
 import {
   isRelayUnreachableError,
@@ -12,7 +13,7 @@ import {
 type HomeScreenProps = {
   availableChannelIds: ReadonlySet<string>;
   currentPubkey?: string;
-  initialFilter?: "alerts" | "all";
+  initialFilter?: InboxFilter;
   onOpenContext: (
     channelId: string,
     messageId: string,

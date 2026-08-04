@@ -125,7 +125,8 @@ export function HomeView({
   const isReminders = filter === "reminders";
   const isDrafts = filter === "drafts";
   const isMessagesMode = !isReminders && !isDrafts;
-  const allowMixedPersonalSelection = filter === "all";
+  const includePersonalItems = initialFilter !== "all";
+  const allowMixedPersonalSelection = includePersonalItems && filter === "all";
   const {
     drafts: {
       activeCount: activeDraftCount,
@@ -690,8 +691,9 @@ export function HomeView({
               doneSet={effectiveDoneSet}
               dueReminderCount={dueReminderCount}
               filter={filter}
+              includePersonalItems={includePersonalItems}
               items={filteredItems}
-              canDismiss={initialFilter !== "alerts"}
+              canDismiss={initialFilter === "all"}
               onDeleteDraft={handleDeleteDraft}
               onDismiss={dismissInboxItem}
               onDismissAll={dismissAllInboxItems}

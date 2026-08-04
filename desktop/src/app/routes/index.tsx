@@ -4,6 +4,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
 import { useChannelsQuery } from "@/features/channels/hooks";
 import { HomeScreen } from "@/features/home/ui/HomeScreen";
+import type { InboxFilter } from "@/features/home/lib/inbox";
 import {
   consumePendingWelcomeChannel,
   WELCOME_CHANNEL_READY_EVENT,
@@ -46,7 +47,7 @@ export const Route = createFileRoute("/")({
 export function HomeRouteComponent({
   initialFilter = "all",
 }: {
-  initialFilter?: "alerts" | "all";
+  initialFilter?: InboxFilter;
 } = {}) {
   const { goChannel } = useAppNavigation();
   const channelsQuery = useChannelsQuery();

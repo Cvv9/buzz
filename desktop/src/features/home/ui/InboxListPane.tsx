@@ -181,6 +181,7 @@ type InboxListPaneProps = {
   draftItems: DraftViewItem[];
   doneSet: ReadonlySet<string>;
   filter: InboxFilter;
+  includePersonalItems: boolean;
   items: InboxItem[];
   onDismiss: (itemId: string) => void;
   onDismissAll: () => void;
@@ -212,6 +213,7 @@ export function InboxListPane({
   draftItems,
   doneSet,
   filter,
+  includePersonalItems,
   items,
   onDismiss,
   onDismissAll,
@@ -242,13 +244,14 @@ export function InboxListPane({
     () =>
       buildInboxListRows({
         items,
-        reminders: unreadOnly
-          ? []
-          : reminders.filter((reminder) =>
-              isDue(reminder, Math.floor(Date.now() / 1_000)),
-            ),
+        reminders:
+          !includePersonalItems || unreadOnly
+            ? []
+            : reminders.filter((reminder) =>
+                isDue(reminder, Math.floor(Date.now() / 1_000)),
+              ),
       }),
-    [items, reminders, unreadOnly],
+    [includePersonalItems, items, reminders, unreadOnly],
   );
   const visibleInboxRows = React.useMemo(
     () =>
@@ -609,6 +612,7 @@ export function InboxListPane({
                 activeDraftCount={activeDraftCount}
                 dueReminderCount={dueReminderCount}
                 filter={filter}
+                includePersonalItems={includePersonalItems}
                 onFilterChange={onFilterChange}
                 reminderCount={reminders.length}
               />

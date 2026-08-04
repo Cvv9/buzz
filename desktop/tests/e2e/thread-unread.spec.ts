@@ -768,7 +768,7 @@ test.describe("thread unread indicator", () => {
     // Emit ONE reply whose parent root is NOT in the window (orphan parent id),
     // so the loaded window is all-replies: no top-level message exists for
     // `latestActiveMessage` to find. The reply mentions the current user so it
-    // clears the notify gate and creates Inbox activity without lighting the
+    // clears the notify gate and creates Alerts activity without lighting the
     // channel sidebar dot.
     await page.getByTestId("channel-general").click();
     await expect(page.getByTestId("chat-title")).toHaveText("general");
