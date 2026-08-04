@@ -105,16 +105,10 @@ async function seedDraftStore(
   );
 }
 
-/** Navigate to `/`, wait for inbox, then select the Drafts filter. */
+/** Navigate directly to the dedicated Drafts surface. */
 async function openDraftsPanel(page: import("@playwright/test").Page) {
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.goto("/#/drafts", { waitUntil: "domcontentloaded" });
   await expect(page.getByTestId("home-inbox")).toBeVisible({ timeout: 10_000 });
-
-  await page.getByTestId("inbox-filter-trigger").click();
-  await page.getByRole("menuitemradio", { name: "Drafts" }).click();
-
-  // Dismiss the dropdown so it doesn't obscure the panel assertions.
-  await page.keyboard.press("Escape");
 
   const panel = page.getByTestId("home-inbox-drafts");
   await expect(panel).toBeVisible({ timeout: 8_000 });
@@ -354,7 +348,7 @@ test.describe("drafts screenshots", () => {
     await patchCommunityPubkey(page);
     await seedDraftStore(page, ACTIVE_DRAFTS);
 
-    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await page.goto("/#/drafts", { waitUntil: "domcontentloaded" });
     await expect(page.getByTestId("home-inbox")).toBeVisible({
       timeout: 10_000,
     });
@@ -362,7 +356,7 @@ test.describe("drafts screenshots", () => {
     await expect(page.getByTestId("inbox-draft-badge")).toHaveCount(0);
     await expect(page.getByTestId("inbox-filter-trigger")).toHaveAttribute(
       "aria-label",
-      "Filter inbox: All. 2 active drafts",
+      "Filter inbox: Drafts. 2 active drafts",
     );
 
     // Open the filter dropdown so the badge-option is visible too.

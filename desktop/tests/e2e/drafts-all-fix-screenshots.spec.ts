@@ -14,7 +14,7 @@ type MockFeedWindow = Window & {
 
 test.use({ viewport: { width: 1280, height: 720 } });
 
-test("Inbox All hides drafts while the Drafts filter keeps them", async ({
+test("decision Inbox hides drafts while the dedicated Drafts view keeps them", async ({
   page,
 }) => {
   const draftKey = `channel:${GENERAL_CHANNEL_ID}`;
@@ -89,10 +89,9 @@ test("Inbox All hides drafts while the Drafts filter keeps them", async ({
     .getByTestId("home-inbox")
     .screenshot({ path: `${SHOTS}/01-all-view-no-drafts.png` });
 
-  // Drafts filter: the draft is still listed.
-  await page.getByTestId("inbox-filter-trigger").click();
-  await page.getByRole("menuitemradio", { name: "Drafts" }).click();
-  await page.keyboard.press("Escape");
+  // Dedicated Drafts view: the draft is still listed without mixing it into
+  // the approval-only Inbox.
+  await page.goto("/#/drafts");
   const panel = page.getByTestId("home-inbox-drafts");
   await expect(panel).toBeVisible();
   await expect(

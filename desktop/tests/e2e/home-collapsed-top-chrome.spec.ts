@@ -9,7 +9,14 @@ test.describe("home inbox chrome", () => {
   test.beforeEach(async ({ page }) => {
     await installMockBridge(page);
     await page.goto("/");
+    // Inbox intentionally contains only decision items. The mock data has no
+    // seeded decision, so exercise the populated Alerts surface instead while
+    // keeping these tests focused on the shared home chrome and layout.
+    await page.getByTestId("open-alerts-view").click();
     await expect(page.getByTestId("home-inbox-list")).toBeVisible();
+    await expect(
+      page.getByTestId("home-inbox-item-mock-feed-mention"),
+    ).toBeVisible();
   });
 
   test("puts the filter on the left and options on the right", async ({
@@ -19,7 +26,7 @@ test.describe("home inbox chrome", () => {
     const options = page.getByTestId("inbox-options-trigger");
 
     await expect(filter).toBeVisible();
-    await expect(filter).toContainText("All");
+    await expect(filter).toContainText("Alerts");
     await expect(options).toBeVisible();
 
     const [filterBox, optionsBox] = await Promise.all([

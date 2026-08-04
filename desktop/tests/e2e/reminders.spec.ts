@@ -5,20 +5,14 @@ import { installMockBridge } from "../helpers/bridge";
 
 const MOCK_PUBKEY = "deadbeef".repeat(8);
 
-// The native reminders surface lives in the home pane, not the chat view. Land
-// on home and wait for its filter trigger before opening that personal surface.
-async function gotoInboxHome(page: import("@playwright/test").Page) {
-  await page.goto("/");
-  await expect(page.getByTestId("home-inbox")).toBeVisible({
+// Reminders has its own route. Tests should open it directly rather than rely
+// on the Inbox filter menu, which is reserved for the decision Inbox.
+async function gotoReminders(page: import("@playwright/test").Page) {
+  await page.goto("/#/reminders");
+  await expect(page).toHaveURL(/#\/reminders$/);
+  await expect(page.getByTestId("home-inbox-reminders")).toBeVisible({
     timeout: 10_000,
   });
-}
-
-// Reminders is reached by opening the home filter dropdown and selecting the
-// "Reminders" option. It is a personal surface, not a decision Inbox item.
-async function openRemindersFilter(page: import("@playwright/test").Page) {
-  await page.getByTestId("inbox-filter-trigger").click();
-  await page.getByRole("menuitemradio", { name: "Reminders" }).click();
 }
 
 // The reminders query mounts (for the badge) before tests seed events, so a
@@ -66,16 +60,14 @@ test.describe("reminders", () => {
     await installMockBridge(page);
   });
 
-  test("01 — home filter dropdown shows the Reminders personal surface", async ({
+  test("01 — dedicated Reminders route shows the personal surface", async ({
     page,
   }) => {
-    await gotoInboxHome(page);
+    await gotoReminders(page);
 
-    await page.getByTestId("inbox-filter-trigger").click();
-    const remindersOption = page.getByRole("menuitemradio", {
-      name: "Reminders",
-    });
-    await expect(remindersOption).toBeVisible();
+    await expect(page.getByTestId("inbox-filter-trigger")).toHaveText(
+      "Reminders",
+    );
     await waitForAnimations(page);
   });
 
@@ -129,9 +121,8 @@ test.describe("reminders", () => {
   });
 
   test("04 — Reminders panel empty state", async ({ page }) => {
-    await gotoInboxHome(page);
+    await gotoReminders(page);
 
-    await openRemindersFilter(page);
     await expect(page.getByText("No reminders")).toBeVisible();
     await waitForAnimations(page);
   });
@@ -139,7 +130,7 @@ test.describe("reminders", () => {
   test("05 — Reminders panel with active pending reminder", async ({
     page,
   }) => {
-    await gotoInboxHome(page);
+    await gotoReminders(page);
 
     // Seed a pending reminder due in the future
     const futureTimestamp = Math.floor(Date.now() / 1000) + 3600;
@@ -163,7 +154,6 @@ test.describe("reminders", () => {
       }),
     ]);
 
-    await openRemindersFilter(page);
     await expect(
       page
         .getByTestId("home-reminder-item-rem-active-01")
@@ -173,7 +163,7 @@ test.describe("reminders", () => {
   });
 
   test("06 — Reminders panel with fired/overdue reminder", async ({ page }) => {
-    await gotoInboxHome(page);
+    await gotoReminders(page);
 
     // Seed a reminder that has already fired (notBefore in the past)
     const pastTimestamp = Math.floor(Date.now() / 1000) - 7200;
@@ -216,7 +206,6 @@ test.describe("reminders", () => {
       }),
     ]);
 
-    await openRemindersFilter(page);
     await expect(
       page
         .getByTestId("home-reminder-item-rem-overdue-01")
@@ -258,11 +247,13 @@ test.describe("reminders personal surface badge", () => {
     await installMockBridge(page);
   });
 
-  test("09 — Reminders option counts a pending reminder", async ({ page }) => {
-    await gotoInboxHome(page);
+  test("09 — pending reminders stay on their surface and do not badge Inbox", async ({
+    page,
+  }) => {
+    await gotoReminders(page);
 
-    // The reminders option owns this count. A reminder must not create an
-    // approval-Inbox badge merely because it is due.
+    // A reminder belongs on the dedicated personal surface. It must not create
+    // an approval-Inbox badge merely because it is due.
     const pastTimestamp = Math.floor(Date.now() / 1000) - 7200;
     await seedReminders(page, [
       mockReminderEvent({
@@ -273,9 +264,12 @@ test.describe("reminders personal surface badge", () => {
       }),
     ]);
 
-    await page.getByTestId("inbox-filter-trigger").click();
-    await expect(page.getByTestId("inbox-reminder-badge-option")).toHaveText(
-      "1",
+    await expect(
+      page.getByTestId("home-reminder-item-rem-navbadge-01"),
+    ).toBeVisible();
+    await expect(page.getByTestId("inbox-filter-trigger")).toHaveAttribute(
+      "aria-label",
+      "Filter inbox: Reminders. 1 due reminder",
     );
     await expect(page.getByTestId("sidebar-home-count")).toHaveCount(0);
     await waitForAnimations(page);
@@ -290,7 +284,7 @@ test.describe("reminders phase 2 — author, source, navigation", () => {
   test("07 — reminder row shows author and source channel", async ({
     page,
   }) => {
-    await gotoInboxHome(page);
+    await gotoReminders(page);
 
     const futureTimestamp = Math.floor(Date.now() / 1000) + 3600;
     await seedReminders(page, [
@@ -302,7 +296,6 @@ test.describe("reminders phase 2 — author, source, navigation", () => {
       }),
     ]);
 
-    await openRemindersFilter(page);
     // Author + source line resolves from the live profile/channel queries.
     // Scope to the reminders panel to avoid matching the "general" entry in
     // the sidebar channel list.
@@ -320,7 +313,7 @@ test.describe("reminders phase 2 — author, source, navigation", () => {
   test("08 — clicking a reminder navigates to the message in context", async ({
     page,
   }) => {
-    await gotoInboxHome(page);
+    await gotoReminders(page);
 
     const futureTimestamp = Math.floor(Date.now() / 1000) + 3600;
     await seedReminders(page, [
@@ -332,7 +325,6 @@ test.describe("reminders phase 2 — author, source, navigation", () => {
       }),
     ]);
 
-    await openRemindersFilter(page);
     // Selecting a reminder keeps the list visible and opens its detail pane.
     // Navigation is an explicit action from that detail.
     await page
