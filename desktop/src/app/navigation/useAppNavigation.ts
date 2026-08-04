@@ -57,6 +57,17 @@ export function useAppNavigation() {
     [commitNavigation],
   );
 
+  const goAlerts = React.useCallback(
+    (behavior?: NavigationBehavior) =>
+      commitNavigation(
+        {
+          to: "/alerts",
+        },
+        behavior,
+      ),
+    [commitNavigation],
+  );
+
   const goAgents = React.useCallback(
     (behavior?: NavigationBehavior) =>
       commitNavigation(
@@ -304,6 +315,7 @@ export function useAppNavigation() {
   );
 
   return {
+    goAlerts,
     closeForumPost,
     closeSettings,
     closeWorkflowDetail,

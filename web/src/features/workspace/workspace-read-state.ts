@@ -57,6 +57,7 @@ export type WorkspaceInboxItem = {
   contextId: string;
   createdAt: number;
   id: string;
+  isRead: boolean;
   pubkey: string;
 };
 
@@ -285,6 +286,14 @@ function categoryForMessage(args: {
   ) {
     return "needs_action";
   }
+  if (
+    isConversationalMessage(event) &&
+    /(?:awaiting|waiting for|requires?|requested?)\s+(?:your\s+)?approval|approval\s+(?:is\s+)?required|\/sylars\s+(?:approve|deny)\b/i.test(
+      event.content,
+    )
+  ) {
+    return "needs_action";
+  }
   if (event.rootEventId && participatedThreadRootIds.has(event.rootEventId)) {
     return "reply";
   }
@@ -346,16 +355,14 @@ export function deriveWorkspaceUnread(args: {
   const unreadChannelIds = new Set<string>();
   const unreadChannelCounts = new Map<string, number>();
   const inboxItems: WorkspaceInboxItem[] = [];
+  const alertItems: WorkspaceInboxItem[] = [];
   for (const [channelId, events] of eventsByChannel) {
     let unreadCount = 0;
     for (const event of events) {
-      if (
-        !isExternalMessage(event, pubkey) ||
-        event.created_at <= readMarkerForEvent(markers, channelId, event)
-      ) {
-        continue;
-      }
-      if (isConversationalMessage(event)) unreadCount += 1;
+      if (!isExternalMessage(event, pubkey)) continue;
+      const isRead =
+        event.created_at <= readMarkerForEvent(markers, channelId, event);
+      if (!isRead && isConversationalMessage(event)) unreadCount += 1;
       const category = categoryForMessage({
         event,
         participatedThreadRootIds,
@@ -363,15 +370,21 @@ export function deriveWorkspaceUnread(args: {
         channel: channelsById.get(channelId),
       });
       if (category) {
-        inboxItems.push({
+        const item = {
           category,
           channelId: channelsById.has(channelId) ? channelId : null,
           content: event.content,
           contextId: channelId,
           createdAt: event.created_at,
           id: event.id,
+          isRead,
           pubkey: event.pubkey,
-        });
+        } satisfies WorkspaceInboxItem;
+        if (category === "mention" || category === "reply") {
+          alertItems.push(item);
+        } else {
+          inboxItems.push(item);
+        }
       }
     }
     if (unreadCount > 0) {
@@ -380,6 +393,10 @@ export function deriveWorkspaceUnread(args: {
     }
   }
   return {
+    alertItems: alertItems.sort(
+      (left, right) =>
+        right.createdAt - left.createdAt || right.id.localeCompare(left.id),
+    ),
     inboxItems: inboxItems.sort(
       (left, right) =>
         right.createdAt - left.createdAt || right.id.localeCompare(left.id),
@@ -651,6 +668,7 @@ export function useWorkspaceReadState({
   );
 
   return {
+    alertItems: unread.alertItems,
     inboxItems: unread.inboxItems,
     markAllRead,
     markInboxItemRead,

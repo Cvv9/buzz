@@ -90,6 +90,7 @@ type HomeViewProps = {
     threadRootId?: string | null,
   ) => void;
   onRefresh: () => void;
+  initialFilter?: InboxFilter;
 };
 
 export function HomeView({
@@ -100,13 +101,14 @@ export function HomeView({
   availableChannelIds,
   onOpenContext,
   onRefresh,
+  initialFilter = "all",
 }: HomeViewProps) {
   const relaySelfPubkey = useRelaySelfQuery().data;
   const [homeInboxRef, homeInboxWidthPx] = useElementWidth<HTMLDivElement>();
   const isNarrowHomeViewport =
     homeInboxWidthPx > 0 &&
     homeInboxWidthPx < INBOX_SINGLE_COLUMN_BREAKPOINT_PX;
-  const [filter, setFilter] = React.useState<InboxFilter>("all");
+  const [filter, setFilter] = React.useState<InboxFilter>(initialFilter);
   const [unreadOnly, setUnreadOnly] = React.useState(false);
   // Explicit selections are mirrored to the URL (`?item=`), so back/forward
   // restores the detail pane each history entry was showing and reloads

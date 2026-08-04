@@ -275,83 +275,129 @@ export function subscribeEvents(
   onEvent: (event: NostrEvent) => void,
   onStatus?: (status: "connecting" | "live" | "closed", error?: Error) => void,
 ): () => void {
-  const ws = new WebSocket(wsUrl);
-  const subId = `live-${crypto.randomUUID()}`;
   let stopped = false;
-  let authEventId: string | null = null;
-  let reqSent = false;
+  let reconnectAttempt = 0;
+  let reconnectTimer: number | null = null;
+  let ws: WebSocket | null = null;
+  let activeSubId: string | null = null;
 
   const close = () => {
     if (stopped) return;
     stopped = true;
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(["CLOSE", subId]));
+    if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+    if (ws?.readyState === WebSocket.OPEN && activeSubId) {
+      ws.send(JSON.stringify(["CLOSE", activeSubId]));
     }
-    ws.close();
+    ws?.close();
   };
 
-  const sendReq = () => {
-    if (stopped || reqSent || ws.readyState !== WebSocket.OPEN) return;
-    reqSent = true;
-    ws.send(JSON.stringify(["REQ", subId, filter]));
+  const scheduleReconnect = (error?: Error) => {
+    if (stopped || reconnectTimer !== null) return;
+    onStatus?.("closed", error);
+    const delay = Math.min(1_000 * 2 ** reconnectAttempt, 15_000);
+    reconnectAttempt += 1;
+    reconnectTimer = window.setTimeout(() => {
+      reconnectTimer = null;
+      connect();
+    }, delay);
   };
 
-  onStatus?.("connecting");
-  ws.addEventListener("message", async (message) => {
-    const data = parseEnvelope(message.data);
-    if (!data || stopped) return;
-    if (data[0] === "AUTH" && typeof data[1] === "string") {
-      try {
-        const auth = await signNostrEvent(makeAuthEvent(wsUrl, data[1]), {
-          requireNip07: true,
-        });
-        authEventId = auth.id;
-        ws.send(JSON.stringify(["AUTH", auth]));
-      } catch (error) {
-        onStatus?.(
-          "closed",
-          error instanceof Error ? error : new Error("Authentication failed."),
-        );
-        close();
+  const connect = () => {
+    if (stopped) return;
+    const socket = new WebSocket(wsUrl);
+    const subId = `live-${crypto.randomUUID()}`;
+    let authEventId: string | null = null;
+    let reqSent = false;
+    let terminalClose = false;
+    ws = socket;
+    activeSubId = subId;
+    onStatus?.("connecting");
+
+    const sendReq = () => {
+      if (
+        stopped ||
+        reqSent ||
+        socket.readyState !== WebSocket.OPEN ||
+        ws !== socket
+      ) {
+        return;
       }
-      return;
-    }
-    if (data[0] === "OK" && data[1] === authEventId) {
-      if (data[2] === true) sendReq();
-      else {
+      reqSent = true;
+      socket.send(JSON.stringify(["REQ", subId, filter]));
+    };
+
+    socket.addEventListener("message", async (message) => {
+      const data = parseEnvelope(message.data);
+      if (!data || stopped || ws !== socket) return;
+      if (data[0] === "AUTH" && typeof data[1] === "string") {
+        try {
+          const auth = await signNostrEvent(makeAuthEvent(wsUrl, data[1]), {
+            requireNip07: true,
+          });
+          authEventId = auth.id;
+          socket.send(JSON.stringify(["AUTH", auth]));
+        } catch (error) {
+          terminalClose = true;
+          onStatus?.(
+            "closed",
+            error instanceof Error
+              ? error
+              : new Error("Authentication failed."),
+          );
+          socket.close();
+        }
+        return;
+      }
+      if (data[0] === "OK" && data[1] === authEventId) {
+        if (data[2] === true) sendReq();
+        else {
+          terminalClose = true;
+          onStatus?.(
+            "closed",
+            new Error(
+              typeof data[3] === "string"
+                ? data[3]
+                : "Relay authentication failed.",
+            ),
+          );
+          socket.close();
+        }
+        return;
+      }
+      if (data[0] === "EVENT" && data[1] === subId && data[2]) {
+        onEvent(data[2] as NostrEvent);
+      } else if (data[0] === "EOSE" && data[1] === subId) {
+        reconnectAttempt = 0;
+        onStatus?.("live");
+      } else if (data[0] === "CLOSED" && data[1] === subId) {
+        terminalClose = true;
         onStatus?.(
           "closed",
           new Error(
-            typeof data[3] === "string"
-              ? data[3]
-              : "Relay authentication failed.",
+            typeof data[2] === "string"
+              ? data[2]
+              : "The relay closed the subscription.",
           ),
         );
-        close();
+        socket.close();
       }
-      return;
-    }
-    if (data[0] === "EVENT" && data[1] === subId && data[2]) {
-      onEvent(data[2] as NostrEvent);
-    } else if (data[0] === "EOSE" && data[1] === subId) {
-      onStatus?.("live");
-    } else if (data[0] === "CLOSED" && data[1] === subId) {
-      onStatus?.(
-        "closed",
-        new Error(
-          typeof data[2] === "string"
-            ? data[2]
-            : "The relay closed the subscription.",
-        ),
-      );
-      close();
-    }
-  });
-  ws.addEventListener("error", () => {
-    onStatus?.("closed", new Error("The realtime connection failed."));
-  });
-  ws.addEventListener("close", () => {
-    if (!stopped) onStatus?.("closed");
-  });
+    });
+    socket.addEventListener("error", () => {
+      if (!stopped && ws === socket) socket.close();
+    });
+    socket.addEventListener("close", () => {
+      if (ws === socket) {
+        ws = null;
+        activeSubId = null;
+      }
+      if (!stopped && !terminalClose) {
+        scheduleReconnect(
+          new Error("The realtime connection was interrupted."),
+        );
+      }
+    });
+  };
+
+  connect();
   return close;
 }

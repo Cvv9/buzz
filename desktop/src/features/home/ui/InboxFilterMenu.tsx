@@ -16,6 +16,7 @@ const INBOX_FILTER_OPTIONS: Array<{
   value: InboxFilter;
 }> = [
   { value: "all", label: "All" },
+  { value: "alerts", label: "Alerts" },
   { value: "project", label: "Projects" },
   { value: "mention", label: "Mentions" },
   { value: "thread", label: "Threads" },

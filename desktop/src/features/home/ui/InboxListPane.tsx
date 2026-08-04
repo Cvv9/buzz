@@ -44,6 +44,7 @@ import { VirtualizedList } from "@/shared/ui/VirtualizedList";
 
 const INBOX_EMPTY_STATE_TITLES: Record<InboxFilter, string> = {
   all: "No activity yet",
+  alerts: "No alerts found",
   project: "No project work found",
   mention: "No mentions found",
   thread: "No threads found",
@@ -55,6 +56,7 @@ const INBOX_EMPTY_STATE_TITLES: Record<InboxFilter, string> = {
 
 const INBOX_UNREAD_EMPTY_STATE_TITLES: Record<InboxFilter, string> = {
   all: "No unread activity",
+  alerts: "No unread alerts",
   project: "No unread project work",
   mention: "No unread mentions",
   thread: "No unread threads",

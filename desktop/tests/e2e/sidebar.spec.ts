@@ -12,6 +12,17 @@ test.beforeEach(async ({ page }) => {
   await installMockBridge(page);
 });
 
+test("Alerts is a first-class sidebar destination", async ({ page }) => {
+  await page.goto("/");
+
+  await page.getByTestId("open-alerts-view").click();
+
+  await expect(page).toHaveURL(/\/alerts$/);
+  await expect(page.getByTestId("inbox-filter-trigger")).toContainText(
+    "Alerts",
+  );
+});
+
 async function sidebarWidth(page: Page) {
   return page.getByTestId("app-sidebar").evaluate((element) => {
     return Math.round(element.getBoundingClientRect().width);

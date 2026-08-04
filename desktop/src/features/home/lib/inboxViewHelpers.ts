@@ -51,6 +51,15 @@ export function matchesInboxFilter(
     return matchesInboxAllView(item);
   }
 
+  if (filter === "alerts") {
+    return (
+      item.categories.includes("mention") ||
+      [item.item, ...(item.groupItems ?? [])].some((groupItem) =>
+        groupItem ? hasThreadReplyTags(groupItem.tags) : false,
+      )
+    );
+  }
+
   if (filter === "thread") {
     return [item.item, ...(item.groupItems ?? [])].some((groupItem) =>
       groupItem ? hasThreadReplyTags(groupItem.tags) : false,

@@ -43,7 +43,11 @@ export const Route = createFileRoute("/")({
   component: HomeRouteComponent,
 });
 
-function HomeRouteComponent() {
+export function HomeRouteComponent({
+  initialFilter = "all",
+}: {
+  initialFilter?: "alerts" | "all";
+} = {}) {
   const { goChannel } = useAppNavigation();
   const channelsQuery = useChannelsQuery();
   const identityQuery = useIdentityQuery();
@@ -94,6 +98,7 @@ function HomeRouteComponent() {
     <HomeScreen
       availableChannelIds={availableChannelIds}
       currentPubkey={identityQuery.data?.pubkey}
+      initialFilter={initialFilter}
       onOpenContext={(channelId, messageId, threadRootId) => {
         void goChannel(channelId, { messageId, threadRootId });
       }}

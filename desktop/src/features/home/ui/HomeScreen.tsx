@@ -12,6 +12,7 @@ import {
 type HomeScreenProps = {
   availableChannelIds: ReadonlySet<string>;
   currentPubkey?: string;
+  initialFilter?: "alerts" | "all";
   onOpenContext: (
     channelId: string,
     messageId: string,
@@ -22,6 +23,7 @@ type HomeScreenProps = {
 export function HomeScreen({
   availableChannelIds,
   currentPubkey,
+  initialFilter,
   onOpenContext,
 }: HomeScreenProps) {
   const homeFeedQuery = useHomeFeedQuery();
@@ -50,6 +52,7 @@ export function HomeScreen({
       <HomeView
         availableChannelIds={availableChannelIds}
         currentPubkey={currentPubkey}
+        initialFilter={initialFilter}
         errorMessage={
           homeFeedQuery.error !== null && homeFeedQuery.error !== undefined
             ? isRelayUnreachableError(homeFeedQuery.error)

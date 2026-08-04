@@ -1,4 +1,4 @@
-import { ChevronLeft, Hash, Lock, Menu, Users, X } from "lucide-react";
+import { ChevronLeft, Hash, Lock, Menu, Star, Users, X } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import * as React from "react";
@@ -9,6 +9,7 @@ import { IdentityGate } from "./IdentityGate";
 import { EmptyMembership } from "./EmptyMembership";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import { WorkspaceInbox } from "./WorkspaceInbox";
+import { WorkspaceAgents } from "./WorkspaceAgents";
 import { WorkspaceGuide } from "./WorkspaceGuide";
 import { WorkspaceSettings } from "./WorkspaceSettings";
 import { WorkspaceComposer } from "./WorkspaceComposer";
@@ -36,6 +37,33 @@ import {
 import { useWorkspaceReactions } from "@/features/workspace/useWorkspaceReactions";
 import { useWorkspaceReadState } from "@/features/workspace/workspace-read-state";
 
+type WorkspaceView = "agents" | "alerts" | "channel" | "inbox";
+
+const STARRED_CHANNELS_STORAGE_PREFIX = "buzz.web.starred-channels.v1";
+
+function starredChannelsStorageKey(pubkey: string) {
+  return `${STARRED_CHANNELS_STORAGE_PREFIX}:${pubkey.toLowerCase()}`;
+}
+
+function readStarredChannels(pubkey: string) {
+  if (!pubkey) return new Set<string>();
+  try {
+    const value = JSON.parse(
+      localStorage.getItem(starredChannelsStorageKey(pubkey)) ?? "[]",
+    );
+    return new Set(
+      Array.isArray(value)
+        ? value.filter(
+            (channelId): channelId is string =>
+              typeof channelId === "string" && channelId.length > 0,
+          )
+        : [],
+    );
+  } catch {
+    return new Set<string>();
+  }
+}
+
 export function WorkspacePage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -50,8 +78,10 @@ export function WorkspacePage() {
   const [activeChannelId, setActiveChannelId] = React.useState<string | null>(
     () => localStorage.getItem("buzz.web.active-channel"),
   );
-  const [workspaceView, setWorkspaceView] = React.useState<"channel" | "inbox">(
-    "channel",
+  const [workspaceView, setWorkspaceView] =
+    React.useState<WorkspaceView>("channel");
+  const [starredChannelIds, setStarredChannelIds] = React.useState<Set<string>>(
+    () => new Set(),
   );
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
   const [threadRootId, setThreadRootId] = React.useState<string | null>(null);
@@ -80,6 +110,9 @@ export function WorkspacePage() {
   });
 
   const channels = channelsQuery.data ?? [];
+  React.useEffect(() => {
+    setStarredChannelIds(readStarredChannels(identity?.pubkey ?? ""));
+  }, [identity?.pubkey]);
   React.useEffect(() => {
     if (
       channels.length &&
@@ -113,6 +146,7 @@ export function WorkspacePage() {
     [messagesQuery.data],
   );
   const {
+    alertItems,
     inboxItems,
     markAllRead,
     markInboxItemRead,
@@ -124,6 +158,24 @@ export function WorkspacePage() {
     currentMessages: materialized,
     identityPubkey: identity?.pubkey,
   });
+  const alertsUnreadCount = alertItems.filter((item) => !item.isRead).length;
+  const inboxUnreadCount = inboxItems.filter((item) => !item.isRead).length;
+  const toggleStarredChannel = React.useCallback(
+    (channelId: string) => {
+      if (!identity) return;
+      setStarredChannelIds((current) => {
+        const next = new Set(current);
+        if (next.has(channelId)) next.delete(channelId);
+        else next.add(channelId);
+        localStorage.setItem(
+          starredChannelsStorageKey(identity.pubkey),
+          JSON.stringify([...next]),
+        );
+        return next;
+      });
+    },
+    [identity],
+  );
   const { reactionActorPubkeys, reactions, toggleReaction } =
     useWorkspaceReactions(materialized, identity?.pubkey ?? "");
   const profilePubkeys = React.useMemo(
@@ -345,9 +397,11 @@ export function WorkspacePage() {
         agents={agentsQuery.data ?? []}
         channels={channels}
         identity={identity}
-        inboxOpen={workspaceView === "inbox"}
-        inboxUnreadCount={inboxItems.length}
+        alertsUnreadCount={alertsUnreadCount}
+        inboxUnreadCount={inboxUnreadCount}
+        selectedView={workspaceView}
         profile={currentProfile}
+        starredChannelIds={starredChannelIds}
         unreadChannelIds={unreadChannelIds}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
@@ -356,6 +410,9 @@ export function WorkspacePage() {
         onOpenSettings={() => setSettingsOpen(true)}
         onOpenGuide={() => setGuideOpen(true)}
         onOpenInbox={() => setWorkspaceView("inbox")}
+        onOpenAlerts={() => setWorkspaceView("alerts")}
+        onOpenAgents={() => setWorkspaceView("agents")}
+        onToggleStar={toggleStarredChannel}
         onSelectChannel={(channelId) => {
           setActiveChannelId(channelId);
           setWorkspaceView("channel");
@@ -383,6 +440,32 @@ export function WorkspacePage() {
               setExpandedThreadIds(new Set());
             }}
             profileFor={profileFor}
+          />
+        ) : workspaceView === "alerts" ? (
+          <WorkspaceInbox
+            channels={channels}
+            items={alertItems}
+            mode="alerts"
+            onMarkAllRead={markAllRead}
+            onMarkItemRead={markInboxItemRead}
+            onSelectItem={(item) => {
+              if (!item.channelId) {
+                markInboxItemRead(item);
+                return;
+              }
+              markInboxItemRead(item);
+              setActiveChannelId(item.channelId);
+              setWorkspaceView("channel");
+              setThreadRootId(null);
+              setExpandedThreadIds(new Set());
+            }}
+            profileFor={profileFor}
+          />
+        ) : workspaceView === "agents" ? (
+          <WorkspaceAgents
+            activeChannel={activeChannel}
+            agents={agentsQuery.data ?? []}
+            onAddAgent={(agent) => addAgentMutation.mutate(agent)}
           />
         ) : (
           <>
@@ -417,6 +500,18 @@ export function WorkspacePage() {
                           </p>
                         ) : null}
                       </div>
+                      {activeChannel.type !== "dm" ? (
+                        <button
+                          aria-label={`${starredChannelIds.has(activeChannel.id) ? "Remove" : "Add"} ${activeChannel.name} ${starredChannelIds.has(activeChannel.id) ? "from" : "to"} favorites`}
+                          className="rounded-lg p-2 text-black/35 hover:bg-black/5 hover:text-black/65 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a5a500] dark:text-white/30 dark:hover:bg-white/5 dark:hover:text-white/65"
+                          type="button"
+                          onClick={() => toggleStarredChannel(activeChannel.id)}
+                        >
+                          <Star
+                            className={`size-4 ${starredChannelIds.has(activeChannel.id) ? "fill-current text-[#8b8c00] dark:text-[#e4e55e]" : ""}`}
+                          />
+                        </button>
+                      ) : null}
                     </div>
                     <div className="flex items-center gap-1 text-black/40 dark:text-white/35">
                       <span className="hidden items-center gap-1 rounded-lg px-2 py-1 text-xs sm:flex">

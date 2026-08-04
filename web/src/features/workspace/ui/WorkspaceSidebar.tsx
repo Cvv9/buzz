@@ -1,4 +1,5 @@
 import {
+  Bell,
   Bot,
   BookOpen,
   Check,
@@ -10,6 +11,7 @@ import {
   Plus,
   Settings,
   Sparkles,
+  Star,
   X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -43,7 +45,7 @@ const PROJECT_CHANNEL_NAMES = new Set([
 
 const SECTION_STORAGE_PREFIX = "buzz-web:channel-sections:v1";
 
-type ChannelSectionId = "workspace" | "projects";
+type ChannelSectionId = "favorites" | "workspace" | "projects";
 type AgentSectionId = "hostedAgents" | "privateAgents" | "sharedAgents";
 type CollapsibleSectionId = ChannelSectionId | AgentSectionId;
 type CollapsedSections = Record<CollapsibleSectionId, boolean>;
@@ -54,6 +56,7 @@ function sectionStorageKey(pubkey: string): string {
 
 function readCollapsedSections(pubkey: string): CollapsedSections {
   const fallback = {
+    favorites: false,
     workspace: false,
     projects: false,
     hostedAgents: false,
@@ -65,6 +68,7 @@ function readCollapsedSections(pubkey: string): CollapsedSections {
     if (!stored) return fallback;
     const parsed = JSON.parse(stored) as Partial<CollapsedSections>;
     return {
+      favorites: parsed.favorites === true,
       workspace: parsed.workspace === true,
       projects: parsed.projects === true,
       hostedAgents: parsed.hostedAgents === true,
@@ -185,7 +189,8 @@ export function WorkspaceSidebar({
   identity,
   profile,
   inboxUnreadCount,
-  inboxOpen,
+  alertsUnreadCount,
+  selectedView,
   unreadChannelIds,
   channels,
   agents,
@@ -197,12 +202,17 @@ export function WorkspaceSidebar({
   onOpenSettings,
   onOpenGuide,
   onOpenInbox,
+  onOpenAlerts,
+  onOpenAgents,
   onAddAgent,
+  starredChannelIds,
+  onToggleStar,
 }: {
   identity: BrowserIdentity;
   profile: WorkspaceProfile;
   inboxUnreadCount: number;
-  inboxOpen: boolean;
+  alertsUnreadCount: number;
+  selectedView: "agents" | "alerts" | "channel" | "inbox";
   unreadChannelIds: ReadonlySet<string>;
   channels: WorkspaceChannel[];
   agents: WorkspaceProfile[];
@@ -214,14 +224,25 @@ export function WorkspaceSidebar({
   onOpenSettings: () => void;
   onOpenGuide: () => void;
   onOpenInbox: () => void;
+  onOpenAlerts: () => void;
+  onOpenAgents: () => void;
   onAddAgent: (agent: WorkspaceProfile) => void;
+  starredChannelIds: ReadonlySet<string>;
+  onToggleStar: (channelId: string) => void;
 }) {
   const streams = channels.filter((channel) => channel.type !== "dm");
   const directMessages = channels.filter((channel) => channel.type === "dm");
-  const workspaceChannels = streams.filter(
-    (channel) => !isProjectChannel(channel),
+  const favoriteChannels = streams.filter((channel) =>
+    starredChannelIds.has(channel.id),
   );
-  const projectChannels = streams.filter(isProjectChannel);
+  const workspaceChannels = streams.filter(
+    (channel) =>
+      !starredChannelIds.has(channel.id) && !isProjectChannel(channel),
+  );
+  const projectChannels = streams.filter(
+    (channel) =>
+      !starredChannelIds.has(channel.id) && isProjectChannel(channel),
+  );
   const privateAgents = agents.filter(
     (agent) => agent.accessTier === "personal" || agent.accessTier === "admin",
   );
@@ -311,33 +332,79 @@ export function WorkspaceSidebar({
           className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-3 py-4"
           data-testid="workspace-sidebar-scroll"
         >
-          <button
-            aria-label={
-              inboxUnreadCount
-                ? `Inbox, ${inboxUnreadCount} unread notifications`
-                : "Inbox"
-            }
-            className={cn(
-              "mb-4 flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
-              inboxOpen
-                ? "bg-[#d7d72e]/35 font-medium text-[#363600] dark:text-[#f1f29e]"
-                : "text-black/65 hover:bg-black/5 dark:text-white/60 dark:hover:bg-white/5",
-            )}
-            data-testid="workspace-inbox-button"
-            type="button"
-            onClick={() => {
-              onOpenInbox();
-              onClose();
-            }}
-          >
-            <Inbox className="size-3.5 shrink-0" />
-            <span className="min-w-0 flex-1 truncate">Inbox</span>
-            {inboxUnreadCount ? (
-              <span className="min-w-5 rounded-full bg-orange-500 px-1.5 py-0.5 text-center text-[0.6875rem] font-semibold tabular-nums text-white">
-                {inboxUnreadCount > 99 ? "99+" : inboxUnreadCount}
-              </span>
-            ) : null}
-          </button>
+          <div className="mb-4 space-y-0.5">
+            <button
+              aria-label={
+                inboxUnreadCount
+                  ? `Inbox, ${inboxUnreadCount} unread notifications`
+                  : "Inbox"
+              }
+              className={cn(
+                "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
+                selectedView === "inbox"
+                  ? "bg-[#d7d72e]/35 font-medium text-[#363600] dark:text-[#f1f29e]"
+                  : "text-black/65 hover:bg-black/5 dark:text-white/60 dark:hover:bg-white/5",
+              )}
+              data-testid="workspace-inbox-button"
+              type="button"
+              onClick={() => {
+                onOpenInbox();
+                onClose();
+              }}
+            >
+              <Inbox className="size-3.5 shrink-0" />
+              <span className="min-w-0 flex-1 truncate">Inbox</span>
+              {inboxUnreadCount ? (
+                <span className="min-w-5 rounded-full bg-orange-500 px-1.5 py-0.5 text-center text-[0.6875rem] font-semibold tabular-nums text-white">
+                  {inboxUnreadCount > 99 ? "99+" : inboxUnreadCount}
+                </span>
+              ) : null}
+            </button>
+            <button
+              aria-label={
+                alertsUnreadCount
+                  ? `Alerts, ${alertsUnreadCount} unread notifications`
+                  : "Alerts"
+              }
+              className={cn(
+                "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
+                selectedView === "alerts"
+                  ? "bg-[#d7d72e]/35 font-medium text-[#363600] dark:text-[#f1f29e]"
+                  : "text-black/65 hover:bg-black/5 dark:text-white/60 dark:hover:bg-white/5",
+              )}
+              data-testid="workspace-alerts-button"
+              type="button"
+              onClick={() => {
+                onOpenAlerts();
+                onClose();
+              }}
+            >
+              <Bell className="size-3.5 shrink-0" />
+              <span className="min-w-0 flex-1 truncate">Alerts</span>
+              {alertsUnreadCount ? (
+                <span className="min-w-5 rounded-full bg-orange-500 px-1.5 py-0.5 text-center text-[0.6875rem] font-semibold tabular-nums text-white">
+                  {alertsUnreadCount > 99 ? "99+" : alertsUnreadCount}
+                </span>
+              ) : null}
+            </button>
+            <button
+              className={cn(
+                "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
+                selectedView === "agents"
+                  ? "bg-[#d7d72e]/35 font-medium text-[#363600] dark:text-[#f1f29e]"
+                  : "text-black/65 hover:bg-black/5 dark:text-white/60 dark:hover:bg-white/5",
+              )}
+              data-testid="workspace-agents-button"
+              type="button"
+              onClick={() => {
+                onOpenAgents();
+                onClose();
+              }}
+            >
+              <Bot className="size-3.5 shrink-0" />
+              <span className="min-w-0 flex-1 truncate">Agents</span>
+            </button>
+          </div>
           <div className="mb-6">
             <div className="mb-2 flex items-center justify-between px-2">
               <p className="text-xs font-semibold text-black/45 dark:text-white/40">
@@ -353,6 +420,20 @@ export function WorkspaceSidebar({
               </button>
             </div>
             <div className="space-y-2">
+              {favoriteChannels.length ? (
+                <ChannelSection
+                  activeChannelId={activeChannelId}
+                  channels={favoriteChannels}
+                  collapsed={collapsedSections.favorites}
+                  id="favorites"
+                  label="Favorites"
+                  onSelectChannel={selectChannel}
+                  onToggle={() => toggleSection("favorites")}
+                  onToggleStar={onToggleStar}
+                  starredChannelIds={starredChannelIds}
+                  unreadChannelIds={unreadChannelIds}
+                />
+              ) : null}
               <ChannelSection
                 activeChannelId={activeChannelId}
                 channels={workspaceChannels}
@@ -361,6 +442,8 @@ export function WorkspaceSidebar({
                 label="Workspace"
                 onSelectChannel={selectChannel}
                 onToggle={() => toggleSection("workspace")}
+                onToggleStar={onToggleStar}
+                starredChannelIds={starredChannelIds}
                 unreadChannelIds={unreadChannelIds}
               />
               {projectChannels.length ? (
@@ -372,6 +455,8 @@ export function WorkspaceSidebar({
                   label="Projects"
                   onSelectChannel={selectChannel}
                   onToggle={() => toggleSection("projects")}
+                  onToggleStar={onToggleStar}
+                  starredChannelIds={starredChannelIds}
                   unreadChannelIds={unreadChannelIds}
                 />
               ) : null}
@@ -390,6 +475,8 @@ export function WorkspaceSidebar({
                     channel={channel}
                     key={channel.id}
                     unread={unreadChannelIds.has(channel.id)}
+                    starred={starredChannelIds.has(channel.id)}
+                    onToggleStar={() => onToggleStar(channel.id)}
                     onSelect={() => {
                       onSelectChannel(channel.id);
                       onClose();
@@ -603,6 +690,8 @@ function ChannelSection({
   onToggle,
   onSelectChannel,
   unreadChannelIds,
+  starredChannelIds,
+  onToggleStar,
 }: {
   id: ChannelSectionId;
   label: string;
@@ -612,6 +701,8 @@ function ChannelSection({
   onToggle: () => void;
   onSelectChannel: (channelId: string) => void;
   unreadChannelIds: ReadonlySet<string>;
+  starredChannelIds: ReadonlySet<string>;
+  onToggleStar: (channelId: string) => void;
 }) {
   const contentId = `channel-section-${id}`;
   return (
@@ -640,6 +731,8 @@ function ChannelSection({
               channel={channel}
               key={channel.id}
               unread={unreadChannelIds.has(channel.id)}
+              starred={starredChannelIds.has(channel.id)}
+              onToggleStar={() => onToggleStar(channel.id)}
               onSelect={() => onSelectChannel(channel.id)}
             />
           ))}
@@ -654,38 +747,61 @@ function ChannelButton({
   active,
   onSelect,
   unread = false,
+  starred = false,
+  onToggleStar,
 }: {
   channel: WorkspaceChannel;
   active: boolean;
   onSelect: () => void;
   unread?: boolean;
+  starred?: boolean;
+  onToggleStar: () => void;
 }) {
   return (
-    <button
-      aria-label={`${channel.name}${unread ? ", unread messages" : ""}`}
+    <div
       className={cn(
-        "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
+        "group/channel flex w-full items-center rounded-lg text-sm transition-colors",
         active
           ? "bg-[#d7d72e]/35 font-medium text-[#363600] dark:text-[#f1f29e]"
           : "text-black/65 hover:bg-black/5 dark:text-white/60 dark:hover:bg-white/5",
       )}
-      type="button"
-      onClick={onSelect}
     >
-      {channel.type === "dm" ? (
-        <MessageCircle className="size-3.5 shrink-0" />
-      ) : channel.visibility === "private" ? (
-        <Lock className="size-3.5 shrink-0" />
-      ) : (
-        <Hash className="size-3.5 shrink-0" />
-      )}
-      <span className="truncate">{channel.name}</span>
-      {unread ? (
-        <span
-          aria-hidden="true"
-          className="ml-auto size-2 shrink-0 rounded-full bg-orange-500"
-        />
+      <button
+        aria-label={`${channel.name}${unread ? ", unread messages" : ""}`}
+        className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-2 text-left"
+        type="button"
+        onClick={onSelect}
+      >
+        {channel.type === "dm" ? (
+          <MessageCircle className="size-3.5 shrink-0" />
+        ) : channel.visibility === "private" ? (
+          <Lock className="size-3.5 shrink-0" />
+        ) : (
+          <Hash className="size-3.5 shrink-0" />
+        )}
+        <span className="truncate">{channel.name}</span>
+        {unread ? (
+          <span
+            aria-hidden="true"
+            className="ml-auto size-2 shrink-0 rounded-full bg-orange-500"
+          />
+        ) : null}
+      </button>
+      {channel.type !== "dm" ? (
+        <button
+          aria-label={`${starred ? "Remove" : "Add"} ${channel.name} ${starred ? "from" : "to"} favorites`}
+          className={cn(
+            "mr-1 rounded-md p-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a5a500]",
+            starred
+              ? "text-[#8b8c00] dark:text-[#e4e55e]"
+              : "text-black/25 opacity-0 hover:text-black/60 group-hover/channel:opacity-100 focus-visible:opacity-100 dark:text-white/20 dark:hover:text-white/60",
+          )}
+          type="button"
+          onClick={onToggleStar}
+        >
+          <Star className={cn("size-3.5", starred && "fill-current")} />
+        </button>
       ) : null}
-    </button>
+    </div>
   );
 }

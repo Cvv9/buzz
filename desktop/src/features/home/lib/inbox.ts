@@ -22,6 +22,7 @@ import { resolveMentionProps } from "@/shared/lib/resolveMentionNames";
 
 export type InboxFilter =
   | "all"
+  | "alerts"
   | "project"
   | "mention"
   | "thread"
