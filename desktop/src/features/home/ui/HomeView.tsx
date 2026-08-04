@@ -378,7 +378,10 @@ export function HomeView({
       getThreadReadAt,
       profiles: effectiveFeedProfiles,
     });
-    return filterInboxItems(items).filter((item) => {
+    const surfaceItems =
+      initialFilter === "alerts" ? items : filterInboxItems(items);
+    return surfaceItems.filter((item) => {
+      if (initialFilter === "alerts") return true;
       const approval = getInboxApprovalRequest(item);
       if (!approval) return false;
       const dismissedAt =
@@ -393,6 +396,7 @@ export function HomeView({
     getChannelReadAt,
     getMessageReadAt,
     getThreadReadAt,
+    initialFilter,
     readStateVersion,
   ]);
   const { effectiveDoneSet, markItemRead, markItemUnread } =
@@ -687,6 +691,7 @@ export function HomeView({
               dueReminderCount={dueReminderCount}
               filter={filter}
               items={filteredItems}
+              canDismiss={initialFilter !== "alerts"}
               onDeleteDraft={handleDeleteDraft}
               onDismiss={dismissInboxItem}
               onDismissAll={dismissAllInboxItems}

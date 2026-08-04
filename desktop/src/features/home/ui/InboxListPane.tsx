@@ -177,6 +177,7 @@ type InboxListPaneProps = {
   activeReminderEventIds?: ReadonlySet<string>;
   agentPubkeys?: ReadonlySet<string>;
   activeDraftCount: number;
+  canDismiss: boolean;
   draftItems: DraftViewItem[];
   doneSet: ReadonlySet<string>;
   filter: InboxFilter;
@@ -207,6 +208,7 @@ export function InboxListPane({
   activeReminderEventIds,
   agentPubkeys,
   activeDraftCount,
+  canDismiss,
   draftItems,
   doneSet,
   filter,
@@ -440,12 +442,14 @@ export function InboxListPane({
               <MailOpen className="!h-4 !w-4" />
             </InboxRowActionButton>
           )}
-          <InboxRowActionButton
-            label="Dismiss from inbox"
-            onClick={() => onDismiss(item.id)}
-          >
-            <X className="!h-4 !w-4" />
-          </InboxRowActionButton>
+          {canDismiss ? (
+            <InboxRowActionButton
+              label="Dismiss from inbox"
+              onClick={() => onDismiss(item.id)}
+            >
+              <X className="!h-4 !w-4" />
+            </InboxRowActionButton>
+          ) : null}
           <InboxRowActionButton
             disabled={!hasChannelTarget}
             label={hasChannelTarget ? "Open in channel" : "No channel link"}
@@ -486,11 +490,15 @@ export function InboxListPane({
               Mark as read
             </ContextMenuItem>
           )}
-          <ContextMenuSeparator />
-          <ContextMenuItem onClick={() => onDismiss(item.id)}>
-            <X className="h-4 w-4" />
-            Dismiss from inbox
-          </ContextMenuItem>
+          {canDismiss ? (
+            <>
+              <ContextMenuSeparator />
+              <ContextMenuItem onClick={() => onDismiss(item.id)}>
+                <X className="h-4 w-4" />
+                Dismiss from inbox
+              </ContextMenuItem>
+            </>
+          ) : null}
           <ContextMenuSeparator />
           <ContextMenuItem
             disabled={!hasChannelTarget}
@@ -577,20 +585,22 @@ export function InboxListPane({
                       </span>
                     ) : null}
                   </button>
-                  <button
-                    className="flex min-h-9 w-full items-center rounded-lg px-2 py-2 text-left text-sm transition-colors hover:bg-muted/50 disabled:pointer-events-none disabled:opacity-50"
-                    data-testid="inbox-dismiss-all"
-                    disabled={items.length === 0}
-                    onClick={onDismissAll}
-                    type="button"
-                  >
-                    <span>Clear inbox</span>
-                    {items.length > 0 ? (
-                      <span className="ml-auto text-xs text-muted-foreground">
-                        {items.length}
-                      </span>
-                    ) : null}
-                  </button>
+                  {canDismiss ? (
+                    <button
+                      className="flex min-h-9 w-full items-center rounded-lg px-2 py-2 text-left text-sm transition-colors hover:bg-muted/50 disabled:pointer-events-none disabled:opacity-50"
+                      data-testid="inbox-dismiss-all"
+                      disabled={items.length === 0}
+                      onClick={onDismissAll}
+                      type="button"
+                    >
+                      <span>Clear inbox</span>
+                      {items.length > 0 ? (
+                        <span className="ml-auto text-xs text-muted-foreground">
+                          {items.length}
+                        </span>
+                      ) : null}
+                    </button>
+                  ) : null}
                 </PopoverContent>
               </Popover>
             </div>
