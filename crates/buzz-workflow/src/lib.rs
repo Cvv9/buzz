@@ -44,7 +44,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
-use buzz_core::kind::{event_kind_u32, is_workflow_execution_kind, KIND_REACTION};
+use buzz_core::kind::{
+    event_kind_u32, is_workflow_execution_kind, KIND_REACTION, KIND_SYSTEM_MESSAGE,
+};
 use buzz_core::tenant::CommunityId;
 use buzz_db::workflow::RunStatus;
 use buzz_db::Db;
@@ -879,6 +881,17 @@ async fn should_fire_workflow(
     trigger_ctx: &executor::TriggerContext,
     workflow_id: uuid::Uuid,
 ) -> bool {
+    if let TriggerDef::MemberJoined { include_bots } = def.trigger {
+        if trigger_ctx.get_field("type") != Some("member_joined")
+            || trigger_ctx.get_field("scope") != Some("community")
+        {
+            return false;
+        }
+        if !include_bots && trigger_ctx.get_field("role") == Some("bot") {
+            return false;
+        }
+    }
+
     if let TriggerDef::ReactionAdded {
         emoji: Some(ref expected),
     } = def.trigger
@@ -1008,6 +1021,22 @@ pub fn build_trigger_context(event: &buzz_core::StoredEvent) -> executor::Trigge
         event.event.id.to_hex()
     };
 
+    let mut event_fields = HashMap::new();
+    if kind_u32 == KIND_SYSTEM_MESSAGE {
+        if let Ok(serde_json::Value::Object(payload)) = serde_json::from_str(&content) {
+            for field in ["type", "target", "actor", "role", "scope"] {
+                if let Some(value) = payload.get(field).and_then(|value| value.as_str()) {
+                    let key = if field == "target" {
+                        "member_pubkey"
+                    } else {
+                        field
+                    };
+                    event_fields.insert(key.to_owned(), value.to_owned());
+                }
+            }
+        }
+    }
+
     executor::TriggerContext {
         text: content,
         author,
@@ -1018,7 +1047,7 @@ pub fn build_trigger_context(event: &buzz_core::StoredEvent) -> executor::Trigge
         timestamp: event.event.created_at.as_secs().to_string(),
         emoji,
         message_id,
-        webhook_fields: HashMap::new(),
+        webhook_fields: event_fields,
     }
 }
 
@@ -1048,6 +1077,7 @@ fn trigger_matches_event(trigger: &TriggerDef, kind_u32: u32) -> bool {
         TriggerDef::MessagePosted { .. } => kind_u32 == KIND_STREAM_MESSAGE,
         TriggerDef::ReactionAdded { .. } => kind_u32 == KIND_REACTION,
         TriggerDef::DiffPosted { .. } => kind_u32 == KIND_STREAM_MESSAGE_DIFF,
+        TriggerDef::MemberJoined { .. } => kind_u32 == KIND_SYSTEM_MESSAGE,
         // Schedule and Webhook triggers are not fired by channel events.
         TriggerDef::Schedule { .. } | TriggerDef::Webhook => false,
     }
@@ -1529,6 +1559,27 @@ steps:
         buzz_core::StoredEvent::new(event, Some(Uuid::new_v4()))
     }
 
+    fn make_member_joined_event(role: &str) -> buzz_core::StoredEvent {
+        use nostr::{EventBuilder, Keys, Kind};
+        use uuid::Uuid;
+        let keys = Keys::generate();
+        let content = serde_json::json!({
+            "type": "member_joined",
+            "actor": keys.public_key().to_hex(),
+            "target": "ab".repeat(32),
+            "role": role,
+            "scope": "community",
+        });
+        let event = EventBuilder::new(
+            Kind::Custom(KIND_SYSTEM_MESSAGE as u16),
+            content.to_string(),
+        )
+        .tags([])
+        .sign_with_keys(&keys)
+        .expect("sign");
+        buzz_core::StoredEvent::new(event, Some(Uuid::new_v4()))
+    }
+
     /// Create a reaction event with an `e` tag pointing to a target message.
     fn make_reaction_event() -> (buzz_core::StoredEvent, String) {
         use nostr::{EventBuilder, Keys, Kind, Tag};
@@ -1566,6 +1617,33 @@ steps:
         // Non-reaction events have empty emoji.
         assert_eq!(ctx.emoji, "");
         assert!(ctx.webhook_fields.is_empty());
+    }
+
+    #[tokio::test]
+    async fn member_joined_trigger_exposes_target_and_skips_bots_by_default() {
+        let human_ctx = build_trigger_context(&make_member_joined_event("member"));
+        let expected_pubkey = "ab".repeat(32);
+        assert_eq!(human_ctx.get_field("type"), Some("member_joined"));
+        assert_eq!(
+            human_ctx.get_field("member_pubkey"),
+            Some(expected_pubkey.as_str())
+        );
+        assert_eq!(human_ctx.get_field("role"), Some("member"));
+        assert_eq!(human_ctx.get_field("scope"), Some("community"));
+
+        let human_only = WorkflowDef {
+            name: "Welcome".to_owned(),
+            description: None,
+            trigger: TriggerDef::MemberJoined {
+                include_bots: false,
+            },
+            steps: vec![],
+            enabled: true,
+        };
+        assert!(should_fire_workflow(&human_only, &human_ctx, Uuid::new_v4()).await);
+
+        let bot_ctx = build_trigger_context(&make_member_joined_event("bot"));
+        assert!(!should_fire_workflow(&human_only, &bot_ctx, Uuid::new_v4()).await);
     }
 
     #[test]

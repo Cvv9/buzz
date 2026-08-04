@@ -2867,7 +2867,7 @@ test("first-run onboarding posts the live Fizz kickoff", async ({ page }) => {
 
   await expectPrivateWelcomeLanding(page);
   // Greeted by the name typed above — the @mention pill also files the opener
-  // into the new user's Inbox mentions feed.
+  // into the new user's Alerts mentions feed.
   await expect(page.getByTestId("message-timeline")).toContainText(
     "Hi @Morty QA, I'm Fizz. Welcome to Buzz.",
   );

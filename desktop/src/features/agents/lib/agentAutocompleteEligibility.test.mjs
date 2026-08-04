@@ -5,8 +5,9 @@ import {
   coalesceAgentAutocompleteCandidates,
   getMentionableAgentPubkeys,
   getSharedChannelIds,
-  isAgentIdentityInManagedList,
+  isAgentIdentityInKnownDirectories,
   relayAgentIsSharedWithUser,
+  resolveAgentMentionDisplayName,
   shouldHideAgentFromMentions,
 } from "./agentAutocompleteEligibility.ts";
 
@@ -47,7 +48,18 @@ test("getSharedChannelIds: includes only active joined channels", () => {
   );
 });
 
-test("relayAgentIsSharedWithUser: accepts shared anyone agents and rejects unshared ones", () => {
+test("resolveAgentMentionDisplayName: current directory name replaces stale channel membership label", () => {
+  assert.equal(
+    resolveAgentMentionDisplayName({
+      directoryName: "Sylar",
+      memberName: "Founder Chief of Staff",
+      profileDisplayName: "Older profile name",
+    }),
+    "Sylar",
+  );
+});
+
+test("relayAgentIsSharedWithUser: accepts anyone agents before their first shared channel", () => {
   const sharedChannelIds = new Set(["general"]);
 
   assert.equal(
@@ -63,8 +75,10 @@ test("relayAgentIsSharedWithUser: accepts shared anyone agents and rejects unsha
         respondTo: "owner-only",
         respondToAllowlist: [],
         channelIds: ["general"],
+        ownerPubkey: OWNER_PUBKEY,
       },
       sharedChannelIds,
+      CURRENT_PUBKEY,
     ),
     false,
   );
@@ -72,6 +86,74 @@ test("relayAgentIsSharedWithUser: accepts shared anyone agents and rejects unsha
     relayAgentIsSharedWithUser(
       { respondTo: "anyone", respondToAllowlist: [], channelIds: ["other"] },
       sharedChannelIds,
+    ),
+    true,
+  );
+});
+
+test("relayAgentIsSharedWithUser: uses hosted visibility even when response policy is stale", () => {
+  assert.equal(
+    relayAgentIsSharedWithUser(
+      {
+        accessTier: "shared",
+        audience: "community",
+        respondTo: "owner-only",
+        respondToAllowlist: [],
+        channelIds: [],
+        ownerPubkey: OTHER_OWNER_PUBKEY,
+      },
+      new Set(),
+      CURRENT_PUBKEY,
+    ),
+    true,
+  );
+
+  assert.equal(
+    relayAgentIsSharedWithUser(
+      {
+        accessTier: "personal",
+        audience: "owner",
+        respondTo: "anyone",
+        respondToAllowlist: [],
+        channelIds: ["general"],
+        ownerPubkey: OTHER_OWNER_PUBKEY,
+      },
+      new Set(["general"]),
+      CURRENT_PUBKEY,
+    ),
+    false,
+  );
+});
+
+test("relayAgentIsSharedWithUser: accepts owner-only hosted agents for their owner", () => {
+  const sharedChannelIds = new Set();
+
+  for (const respondTo of ["owner-only", null]) {
+    assert.equal(
+      relayAgentIsSharedWithUser(
+        {
+          respondTo,
+          respondToAllowlist: [],
+          channelIds: [],
+          ownerPubkey: CURRENT_PUBKEY.toUpperCase(),
+        },
+        sharedChannelIds,
+        CURRENT_PUBKEY,
+      ),
+      true,
+    );
+  }
+
+  assert.equal(
+    relayAgentIsSharedWithUser(
+      {
+        respondTo: "owner-only",
+        respondToAllowlist: [],
+        channelIds: ["general"],
+        ownerPubkey: OTHER_OWNER_PUBKEY,
+      },
+      new Set(["general"]),
+      CURRENT_PUBKEY,
     ),
     false,
   );
@@ -106,7 +188,7 @@ test("relayAgentIsSharedWithUser: accepts allowlist agents for the current user"
   );
 });
 
-test("getMentionableAgentPubkeys: keeps managed agents and shared relay agents", () => {
+test("getMentionableAgentPubkeys: keeps managed and community-wide relay agents", () => {
   const result = getMentionableAgentPubkeys({
     managedAgentPubkeys: [PUB_A],
     currentPubkey: CURRENT_PUBKEY,
@@ -133,30 +215,42 @@ test("getMentionableAgentPubkeys: keeps managed agents and shared relay agents",
     sharedChannelIds: new Set(["general"]),
   });
 
-  assert.deepEqual(result, new Set([PUB_A, PUB_B, PUB_C]));
+  assert.deepEqual(result, new Set([PUB_A, PUB_B, PUB_C, PUB_D]));
 });
 
-test("isAgentIdentityInManagedList: keeps people and only current managed agent identities", () => {
+test("isAgentIdentityInKnownDirectories: keeps people and known managed or relay agent identities", () => {
   const managedAgentPubkeys = new Set([PUB_A]);
+  const relayAgentPubkeys = new Set([PUB_B]);
 
   assert.equal(
-    isAgentIdentityInManagedList(
+    isAgentIdentityInKnownDirectories(
       { isAgent: false, pubkey: PUB_B },
       managedAgentPubkeys,
+      relayAgentPubkeys,
     ),
     true,
   );
   assert.equal(
-    isAgentIdentityInManagedList(
+    isAgentIdentityInKnownDirectories(
       { isAgent: true, pubkey: PUB_A.toUpperCase() },
       managedAgentPubkeys,
+      relayAgentPubkeys,
     ),
     true,
   );
   assert.equal(
-    isAgentIdentityInManagedList(
+    isAgentIdentityInKnownDirectories(
       { isAgent: true, pubkey: PUB_B },
       managedAgentPubkeys,
+      relayAgentPubkeys,
+    ),
+    true,
+  );
+  assert.equal(
+    isAgentIdentityInKnownDirectories(
+      { isAgent: true, pubkey: PUB_C },
+      managedAgentPubkeys,
+      relayAgentPubkeys,
     ),
     false,
   );

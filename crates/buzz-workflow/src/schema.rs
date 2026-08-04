@@ -54,6 +54,12 @@ pub enum TriggerDef {
         #[serde(default)]
         filter: Option<String>,
     },
+    /// Fires once when a human first joins the community.
+    MemberJoined {
+        /// Also fire for members whose role is `bot`. Defaults to false.
+        #[serde(default)]
+        include_bots: bool,
+    },
     /// Fires on a cron schedule.
     Schedule {
         /// Cron expression (UTC). Mutually exclusive with `interval`.
@@ -320,6 +326,18 @@ mod tests {
             }
             other => panic!("unexpected trigger: {other:?}"),
         }
+    }
+
+    #[test]
+    fn parse_member_joined_trigger() {
+        let yaml = "name: Welcome\ntrigger:\n  on: member_joined\nsteps:\n  - id: welcome\n    action: send_message\n    text: 'Welcome {{trigger.member_pubkey}}'\n";
+        let (def, _) = parse_yaml(yaml).expect("parse failed");
+        assert!(matches!(
+            def.trigger,
+            TriggerDef::MemberJoined {
+                include_bots: false
+            }
+        ));
     }
 
     #[test]

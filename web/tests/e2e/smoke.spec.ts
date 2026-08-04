@@ -64,7 +64,7 @@ test("web workspace preserves profiles and applies live-event parity rules", asy
       "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==",
   });
 
-  const randomChannel = page.getByRole("button", { name: "random" });
+  const randomChannel = page.locator('button[aria-label^="random"]');
   await expect(randomChannel).toBeVisible();
   for (const kind of [40003, 40099, 5, 9005]) {
     await page.evaluate(
@@ -123,8 +123,16 @@ test("web workspace preserves profiles and applies live-event parity rules", asy
     "random, unread messages",
   );
 
+  await page.getByRole("button", { name: "Add random to favorites" }).click();
+  await expect(page.getByText("Favorites", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Remove random from favorites" }),
+  ).toBeVisible();
+
   const inboxButton = page.getByTestId("workspace-inbox-button");
+  const alertsButton = page.getByTestId("workspace-alerts-button");
   await expect(inboxButton).toHaveAttribute("aria-label", "Inbox");
+  await expect(alertsButton).toHaveAttribute("aria-label", "Alerts");
   await page.evaluate((pubkey) => {
     const helpers = window as typeof window & {
       __BUZZ_WEB_E2E_EMIT__: (event: unknown) => void;
@@ -149,12 +157,12 @@ test("web workspace preserves profiles and applies live-event parity rules", asy
       ),
     );
   }, viewerPubkey);
-  await expect(inboxButton).toHaveAttribute(
+  await expect(alertsButton).toHaveAttribute(
     "aria-label",
-    "Inbox, 1 unread notifications",
+    "Alerts, 1 unread notifications",
   );
-  await inboxButton.click();
-  await expect(page.getByTestId("workspace-inbox")).toBeVisible();
+  await alertsButton.click();
+  await expect(page.getByTestId("workspace-alerts")).toBeVisible();
   await expect(page.getByText("Please review this")).toBeVisible();
 
   await page.evaluate((pubkey) => {
@@ -180,14 +188,20 @@ test("web workspace preserves profiles and applies live-event parity rules", asy
   }, viewerPubkey);
   await expect(inboxButton).toHaveAttribute(
     "aria-label",
-    "Inbox, 2 unread notifications",
-  );
-  await page.getByRole("button", { name: /Approval required/ }).click();
-  await expect(page.getByTestId("workspace-inbox")).toBeVisible();
-  await expect(inboxButton).toHaveAttribute(
-    "aria-label",
     "Inbox, 1 unread notifications",
   );
+  await inboxButton.click();
+  await page.getByRole("button", { name: /Approval required/ }).click();
+  await expect(page.getByTestId("workspace-inbox")).toBeVisible();
+  await expect(inboxButton).toHaveAttribute("aria-label", "Inbox");
+
+  await page.getByTestId("workspace-agents-button").click();
+  await expect(page.getByTestId("workspace-agents")).toBeVisible();
+  await expect(
+    page.getByTestId("workspace-agents").getByText("Workspace Agent 1", {
+      exact: true,
+    }),
+  ).toBeVisible();
 
   await expect
     .poll(() =>

@@ -20,6 +20,68 @@ use crate::usage::{TurnUsage, UsageTracker};
 /// Lines exceeding this limit are rejected to prevent OOM from rogue agents.
 const MAX_LINE_SIZE: usize = 10_000_000; // 10 MB
 
+/// Build the process invocation for an ACP adapter.
+///
+/// npm installs expose adapters as `.cmd` shims on Windows. `CreateProcess`
+/// cannot execute those files directly (OS error 193), so route only those
+/// shims through the system command processor. Native executables and every
+/// non-Windows platform retain the direct-exec path.
+fn windows_batch_spawn(command: &str, args: &[String]) -> (String, Vec<String>) {
+    #[cfg(windows)]
+    {
+        let is_batch = std::path::Path::new(command)
+            .extension()
+            .map(|extension| {
+                matches!(
+                    extension.to_string_lossy().to_ascii_lowercase().as_str(),
+                    "cmd" | "bat"
+                )
+            })
+            .unwrap_or(false);
+        if is_batch {
+            // npm's PowerShell shim only forwards stdin when PowerShell itself
+            // detects pipeline input. A Rust pipe is not reported that way, so
+            // ACP initialize hangs. Execute the installed JavaScript entrypoint
+            // with Node directly, preserving the harness's stdio handles.
+            let shim_path = std::path::Path::new(command);
+            let package_name = shim_path.file_stem().and_then(|stem| stem.to_str());
+            let npm_root = shim_path.parent();
+            let script = npm_root.zip(package_name).map(|(root, package)| {
+                root.join("node_modules")
+                    .join("@agentclientprotocol")
+                    .join(package)
+                    .join("dist")
+                    .join("index.js")
+            });
+            if let Some(script) = script.filter(|path| path.is_file()) {
+                let sibling_node = npm_root
+                    .map(|root| root.join("node.exe"))
+                    .filter(|path| path.is_file());
+                let node = sibling_node
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "node.exe".to_string());
+                let mut node_args = vec![script.display().to_string()];
+                node_args.extend_from_slice(args);
+                return (node, node_args);
+            }
+
+            // Non-npm batch adapters have no sibling PowerShell shim. Keep the
+            // compatibility fallback for simple batch files; catalogued Buzz
+            // runtimes all take the safer branch above.
+            return (
+                std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string()),
+                std::iter::once("/D".to_string())
+                    .chain(std::iter::once("/C".to_string()))
+                    .chain(std::iter::once(command.to_string()))
+                    .chain(args.iter().cloned())
+                    .collect(),
+            );
+        }
+    }
+
+    (command.to_string(), args.to_vec())
+}
+
 /// An MCP server configuration passed to `session/new`.
 ///
 /// Corresponds to the `McpServerStdio` variant in the ACP schema.
@@ -456,8 +518,9 @@ impl AcpClient {
     ) -> Result<Self, AcpError> {
         use std::process::Stdio;
 
-        let mut cmd = tokio::process::Command::new(command);
-        cmd.args(args)
+        let (spawn_command, spawn_args) = windows_batch_spawn(command, args);
+        let mut cmd = tokio::process::Command::new(spawn_command);
+        cmd.args(spawn_args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             // Inherit stderr so agent logs are visible in the harness terminal.
@@ -2255,6 +2318,39 @@ fn configure_no_window(cmd: &mut tokio::process::Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_adapter_spawn_stays_direct() {
+        let args = vec!["acp".to_string()];
+        let (command, actual_args) = windows_batch_spawn("adapter.exe", &args);
+        assert_eq!(command, "adapter.exe");
+        assert_eq!(actual_args, args);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_npm_adapter_uses_node_entrypoint() {
+        let temp =
+            std::env::temp_dir().join(format!("buzz-acp-shim-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp).expect("tempdir");
+        let cmd_shim = temp.join("codex-acp.cmd");
+        let script = temp
+            .join("node_modules")
+            .join("@agentclientprotocol")
+            .join("codex-acp")
+            .join("dist")
+            .join("index.js");
+        std::fs::create_dir_all(script.parent().expect("script parent")).expect("package dirs");
+        std::fs::write(&cmd_shim, "@echo off\r\n").expect("cmd shim");
+        std::fs::write(&script, "").expect("Node entrypoint");
+        let args = vec!["acp".to_string(), "--flag=value with spaces".to_string()];
+        let (command, actual_args) =
+            windows_batch_spawn(cmd_shim.to_str().expect("utf8 path"), &args);
+        assert_eq!(command, "node.exe");
+        assert_eq!(actual_args[0], script.display().to_string());
+        assert_eq!(&actual_args[1..], args);
+        std::fs::remove_dir_all(temp).expect("remove tempdir");
+    }
 
     #[test]
     fn stop_reason_parses_all_known_values() {

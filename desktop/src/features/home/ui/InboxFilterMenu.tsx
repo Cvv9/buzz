@@ -16,6 +16,7 @@ const INBOX_FILTER_OPTIONS: Array<{
   value: InboxFilter;
 }> = [
   { value: "all", label: "All" },
+  { value: "alerts", label: "Alerts" },
   { value: "project", label: "Projects" },
   { value: "mention", label: "Mentions" },
   { value: "thread", label: "Threads" },
@@ -32,6 +33,7 @@ type InboxFilterMenuProps = {
   activeDraftCount: number;
   dueReminderCount: number;
   filter: InboxFilter;
+  includePersonalItems: boolean;
   onFilterChange: (value: InboxFilter) => void;
   reminderCount: number;
 };
@@ -40,12 +42,16 @@ export function InboxFilterMenu({
   activeDraftCount,
   dueReminderCount,
   filter,
+  includePersonalItems,
   onFilterChange,
   reminderCount,
 }: InboxFilterMenuProps) {
-  const activeFilter = INBOX_FILTER_OPTIONS.find(
-    (option) => option.value === filter,
-  );
+  const filterOptions = includePersonalItems
+    ? INBOX_FILTER_OPTIONS
+    : INBOX_FILTER_OPTIONS.filter(
+        (option) => option.value !== "reminders" && option.value !== "drafts",
+      );
+  const activeFilter = filterOptions.find((option) => option.value === filter);
   const statusLabel =
     dueReminderCount > 0
       ? `${dueReminderCount} due reminder${dueReminderCount === 1 ? "" : "s"}`
@@ -71,7 +77,7 @@ export function InboxFilterMenu({
           onValueChange={(value) => onFilterChange(value as InboxFilter)}
           value={filter}
         >
-          {INBOX_FILTER_OPTIONS.map((option) => (
+          {filterOptions.map((option) => (
             <div key={option.value}>
               {option.value === "reminders" ? (
                 <DropdownMenuSeparator className="my-2 bg-border/60" />

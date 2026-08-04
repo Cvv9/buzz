@@ -136,6 +136,18 @@ buzz-sdk = { path = "crates/buzz-sdk" }
 buzz-ws-client = { path = "crates/buzz-ws-client" }
 buzz-relay-mesh = { path = "crates/buzz-relay-mesh" }
 
+# Dev profile — workspace crates keep full debug info; dependencies carry none.
+# Rust's default `debug = true` emits DWARF/PDB for all ~800 dependency crates,
+# and that debug info is the majority of a debug `target/` by size. We almost
+# never step into a dependency, so dropping it costs nothing we use while
+# keeping our own crates fully debuggable. Recompiling deps is unaffected —
+# this changes what is emitted, not what is built.
+[profile.dev]
+debug = true
+
+[profile.dev.package."*"]
+debug = false
+
 # CI profile — builds the relay for desktop e2e. Dependencies keep full
 # release optimization (warm from main's cache; they carry the runtime hot
 # path: tokio/sqlx/axum). Workspace crates build at opt-level 1 — enough for

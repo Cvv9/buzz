@@ -3,6 +3,7 @@ import * as React from "react";
 import { useAppShell } from "@/app/AppShellContext";
 import { useHomeFeedQuery } from "@/features/home/hooks";
 import { HomeView } from "@/features/home/ui/HomeView";
+import type { InboxFilter } from "@/features/home/lib/inbox";
 import type { HomeFeedResponse } from "@/shared/api/types";
 import {
   isRelayUnreachableError,
@@ -12,6 +13,7 @@ import {
 type HomeScreenProps = {
   availableChannelIds: ReadonlySet<string>;
   currentPubkey?: string;
+  initialFilter?: InboxFilter;
   onOpenContext: (
     channelId: string,
     messageId: string,
@@ -22,6 +24,7 @@ type HomeScreenProps = {
 export function HomeScreen({
   availableChannelIds,
   currentPubkey,
+  initialFilter,
   onOpenContext,
 }: HomeScreenProps) {
   const homeFeedQuery = useHomeFeedQuery();
@@ -50,6 +53,7 @@ export function HomeScreen({
       <HomeView
         availableChannelIds={availableChannelIds}
         currentPubkey={currentPubkey}
+        initialFilter={initialFilter}
         errorMessage={
           homeFeedQuery.error !== null && homeFeedQuery.error !== undefined
             ? isRelayUnreachableError(homeFeedQuery.error)

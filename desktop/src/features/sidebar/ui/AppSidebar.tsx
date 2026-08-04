@@ -24,6 +24,10 @@ import { useSidebarScrollLock } from "@/features/sidebar/lib/useSidebarScrollLoc
 import { isSidebarBackgroundTarget } from "@/features/sidebar/lib/sidebarBackgroundTarget";
 import { useUnreadOverflow } from "@/features/sidebar/lib/useUnreadOverflow";
 import {
+  isProjectChannel,
+  partitionDefaultChannelGroups,
+} from "@/features/sidebar/lib/defaultChannelGroups";
+import {
   CreateSectionDialog,
   DeleteSectionAlertDialog,
   RenameSectionDialog,
@@ -75,10 +79,46 @@ import {
 } from "@/shared/ui/sidebar";
 
 type CollapsibleSidebarGroup =
-  | "starred"
-  | "channels"
+  | "favorites"
+  | "workspace"
+  | "projects"
   | "forums"
   | "directMessages";
+
+const DEFAULT_COLLAPSED_GROUPS: Record<CollapsibleSidebarGroup, boolean> = {
+  favorites: false,
+  workspace: false,
+  projects: false,
+  forums: false,
+  directMessages: false,
+};
+
+const COLLAPSED_GROUPS_STORAGE_PREFIX = "buzz-sidebar-groups.v1";
+
+function collapsedGroupsStorageKey(pubkey?: string, relayUrl?: string) {
+  return `${COLLAPSED_GROUPS_STORAGE_PREFIX}:${pubkey ?? "anonymous"}:${encodeURIComponent(relayUrl ?? "default")}`;
+}
+
+function readCollapsedGroups(pubkey?: string, relayUrl?: string) {
+  try {
+    const raw = window.localStorage.getItem(
+      collapsedGroupsStorageKey(pubkey, relayUrl),
+    );
+    if (!raw) return DEFAULT_COLLAPSED_GROUPS;
+    const parsed = JSON.parse(raw) as Partial<
+      Record<CollapsibleSidebarGroup, boolean>
+    >;
+    return {
+      favorites: parsed.favorites === true,
+      workspace: parsed.workspace === true,
+      projects: parsed.projects === true,
+      forums: parsed.forums === true,
+      directMessages: parsed.directMessages === true,
+    };
+  } catch {
+    return DEFAULT_COLLAPSED_GROUPS;
+  }
+}
 
 type CreateChannelKind = "stream" | "forum";
 
@@ -100,6 +140,7 @@ type AppSidebarProps = {
   selectedChannelId: string | null;
   selectedView:
     | "home"
+    | "alerts"
     | "channel"
     | "messages"
     | "agents"
@@ -143,6 +184,7 @@ type AppSidebarProps = {
   onRemoveCommunity: (id: string) => void;
   onCreateAgent: () => void;
   onSelectAgents: () => void;
+  onSelectAlerts: () => void;
   onSelectProjects: () => void;
   onSelectPulse: () => void;
   onSelectWorkflows: () => void;
@@ -212,6 +254,7 @@ export function AppSidebar({
   onRemoveCommunity,
   onCreateAgent,
   onSelectAgents,
+  onSelectAlerts,
   onSelectProjects,
   onSelectPulse,
   onSelectWorkflows,
@@ -315,14 +358,37 @@ export function AppSidebar({
       openCreateDialog("stream");
     }
   }, [isCreateChannelOpenProp, openCreateDialog]);
+  const collapsedGroupsScope = collapsedGroupsStorageKey(
+    currentPubkey,
+    activeCommunity?.relayUrl,
+  );
   const [collapsedGroups, setCollapsedGroups] = React.useState<
     Record<CollapsibleSidebarGroup, boolean>
-  >({
-    starred: false,
-    channels: false,
-    forums: false,
-    directMessages: false,
-  });
+  >(() => readCollapsedGroups(currentPubkey, activeCommunity?.relayUrl));
+  const loadedCollapsedGroupsScopeRef = React.useRef(collapsedGroupsScope);
+
+  React.useEffect(() => {
+    if (loadedCollapsedGroupsScopeRef.current !== collapsedGroupsScope) {
+      loadedCollapsedGroupsScopeRef.current = collapsedGroupsScope;
+      setCollapsedGroups(
+        readCollapsedGroups(currentPubkey, activeCommunity?.relayUrl),
+      );
+      return;
+    }
+    try {
+      window.localStorage.setItem(
+        collapsedGroupsScope,
+        JSON.stringify(collapsedGroups),
+      );
+    } catch {
+      // Collapsing still works for the current session when storage is blocked.
+    }
+  }, [
+    activeCommunity?.relayUrl,
+    collapsedGroups,
+    collapsedGroupsScope,
+    currentPubkey,
+  ]);
 
   const toggleCollapsedGroup = React.useCallback(
     (group: CollapsibleSidebarGroup) => {
@@ -413,9 +479,17 @@ export function AppSidebar({
         sortModeFor(sectionSortGroupKey(sectionId)),
       );
     }
+    const defaultGroups = partitionDefaultChannelGroups(unassigned);
     return {
       bySection,
-      unassigned: sortChannelsForSidebar(unassigned, sortModeFor("channels")),
+      workspace: sortChannelsForSidebar(
+        defaultGroups.workspace,
+        sortModeFor("channels"),
+      ),
+      projects: sortChannelsForSidebar(
+        defaultGroups.projects,
+        sortModeFor("channels"),
+      ),
     };
   }, [
     streamChannels,
@@ -432,6 +506,44 @@ export function AppSidebar({
       sortModeFor("starred"),
     );
   }, [streamChannels, starredChannelIds, sortModeFor]);
+
+  React.useEffect(() => {
+    if (selectedView !== "channel" || !selectedChannelId) return;
+
+    if (starredChannelIds?.has(selectedChannelId)) {
+      setCollapsedGroups((current) =>
+        current.favorites ? { ...current, favorites: false } : current,
+      );
+      return;
+    }
+
+    const customSectionId = channelAssignments[selectedChannelId];
+    if (customSectionId) {
+      setCollapsedSections((current) =>
+        current[customSectionId]
+          ? { ...current, [customSectionId]: false }
+          : current,
+      );
+      return;
+    }
+
+    const channel = streamChannels.find(
+      (candidate) => candidate.id === selectedChannelId,
+    );
+    if (!channel) return;
+    const group: CollapsibleSidebarGroup = isProjectChannel(channel)
+      ? "projects"
+      : "workspace";
+    setCollapsedGroups((current) =>
+      current[group] ? { ...current, [group]: false } : current,
+    );
+  }, [
+    channelAssignments,
+    selectedChannelId,
+    selectedView,
+    starredChannelIds,
+    streamChannels,
+  ]);
 
   const handleCreateSectionForChannel = React.useCallback(
     (channelId: string) => {
@@ -608,6 +720,7 @@ export function AppSidebar({
             >
               <AppSidebarPrimaryMenu
                 homeBadgeCount={homeBadgeCount}
+                onSelectAlerts={onSelectAlerts}
                 onSelectAgents={onSelectAgents}
                 onSelectHome={onSelectHome}
                 onSelectProjects={onSelectProjects}
@@ -627,7 +740,7 @@ export function AppSidebar({
                       hasUnread={starredChannels.some((c) =>
                         unreadChannelIds.has(c.id),
                       )}
-                      isCollapsed={collapsedGroups.starred}
+                      isCollapsed={collapsedGroups.favorites}
                       isActiveChannel={selectedView === "channel"}
                       activeWorkingByChannelId={activeWorkingByChannelId}
                       items={starredChannels}
@@ -645,9 +758,11 @@ export function AppSidebar({
                       onMarkChannelRead={onMarkChannelRead}
                       onMarkChannelUnread={onMarkChannelUnread}
                       onSelectChannel={onSelectChannel}
-                      onToggleCollapsed={() => toggleCollapsedGroup("starred")}
+                      onToggleCollapsed={() =>
+                        toggleCollapsedGroup("favorites")
+                      }
                       selectedChannelId={selectedChannelId}
-                      title="Starred"
+                      title="Favorites"
                       unreadChannelCounts={unreadChannelCounts}
                       unreadChannelIds={unreadChannelIds}
                       mutedChannelIds={mutedChannelIds}
@@ -732,11 +847,14 @@ export function AppSidebar({
                     ))}
                     <ChannelGroupSection
                       draggable
-                      hasUnread={unreadChannelIds.size > 0}
-                      isCollapsed={collapsedGroups.channels}
+                      dropId="ungrouped-workspace"
+                      hasUnread={sectionBuckets.workspace.some((channel) =>
+                        unreadChannelIds.has(channel.id),
+                      )}
+                      isCollapsed={collapsedGroups.workspace}
                       isActiveChannel={selectedView === "channel"}
                       activeWorkingByChannelId={activeWorkingByChannelId}
-                      items={sectionBuckets.unassigned}
+                      items={sectionBuckets.workspace}
                       sortMode={sortModeFor("channels")}
                       onSortModeChange={(mode) =>
                         setSortModeFor("channels", mode)
@@ -750,9 +868,11 @@ export function AppSidebar({
                       onMarkChannelRead={onMarkChannelRead}
                       onMarkChannelUnread={onMarkChannelUnread}
                       onSelectChannel={onSelectChannel}
-                      onToggleCollapsed={() => toggleCollapsedGroup("channels")}
+                      onToggleCollapsed={() =>
+                        toggleCollapsedGroup("workspace")
+                      }
                       selectedChannelId={selectedChannelId}
-                      title="Channels"
+                      title="Workspace"
                       unreadChannelCounts={unreadChannelCounts}
                       unreadChannelIds={unreadChannelIds}
                       sections={channelSections}
@@ -769,6 +889,58 @@ export function AppSidebar({
                       onDeleteChannel={requestDeleteChannel}
                       onLeaveChannel={requestLeaveChannel}
                     />
+                    {sectionBuckets.projects.length > 0 ? (
+                      <ChannelGroupSection
+                        draggable
+                        dropId="ungrouped-projects"
+                        hasUnread={sectionBuckets.projects.some((channel) =>
+                          unreadChannelIds.has(channel.id),
+                        )}
+                        isCollapsed={collapsedGroups.projects}
+                        isActiveChannel={selectedView === "channel"}
+                        activeWorkingByChannelId={activeWorkingByChannelId}
+                        items={sectionBuckets.projects}
+                        sortMode={sortModeFor("channels")}
+                        onSortModeChange={(mode) =>
+                          setSortModeFor("channels", mode)
+                        }
+                        actionsTestId="section-actions-projects"
+                        listTestId="project-list"
+                        onMarkAllRead={() => {
+                          for (const channel of sectionBuckets.projects) {
+                            onMarkChannelRead(
+                              channel.id,
+                              channel.lastMessageAt,
+                            );
+                          }
+                        }}
+                        onMarkChannelRead={onMarkChannelRead}
+                        onMarkChannelUnread={onMarkChannelUnread}
+                        onSelectChannel={onSelectChannel}
+                        onToggleCollapsed={() =>
+                          toggleCollapsedGroup("projects")
+                        }
+                        selectedChannelId={selectedChannelId}
+                        title="Projects"
+                        unreadChannelCounts={unreadChannelCounts}
+                        unreadChannelIds={unreadChannelIds}
+                        sections={channelSections}
+                        assignments={channelAssignments}
+                        onAssignChannel={assignChannel}
+                        onUnassignChannel={unassignChannel}
+                        onCreateSectionForChannel={
+                          handleCreateSectionForChannel
+                        }
+                        mutedChannelIds={mutedChannelIds}
+                        onMuteChannel={onMuteChannel}
+                        onUnmuteChannel={onUnmuteChannel}
+                        starredChannelIds={starredChannelIds}
+                        onStarChannel={onStarChannel}
+                        onUnstarChannel={onUnstarChannel}
+                        onDeleteChannel={requestDeleteChannel}
+                        onLeaveChannel={requestLeaveChannel}
+                      />
+                    ) : null}
                   </SidebarDndContext>
                   <FeatureGate feature="forum">
                     <ChannelGroupSection

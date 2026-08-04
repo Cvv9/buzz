@@ -13,6 +13,10 @@ x-varvik-agent-environment: &varvik-agent-environment
   BUZZ_ACP_ALLOWED_RESPOND_TO: owner-only,anyone
   BUZZ_ACP_SUBSCRIBE: mentions
   BUZZ_ACP_LAZY_POOL: "true"
+  # Enables authenticated owner control frames for per-agent model changes.
+  BUZZ_ACP_RELAY_OBSERVER: "true"
+  BUZZ_ACP_AGENT_OWNER: ${RELAY_OWNER_PUBKEY:-}
+  BUZZ_ACP_PROFILE_OWNER_PUBKEY: ${RELAY_OWNER_PUBKEY:-}
   # Reject any tool action that asks to escape the runtime's normal sandbox.
   # Safe read/edit operations can still run inside the isolated container.
   BUZZ_ACP_PERMISSION_MODE: dont-ask

@@ -37,11 +37,15 @@ const homeFeed = (feed) => ({
   meta: { since: 0, total: 0, generatedAt: 0 },
 });
 
-test("home badge items include locally unread activity and agent rows", () => {
+test("home badge items include only explicit approval requests", () => {
+  const approval = (id) => ({ ...feedItem(id, "needs_action"), kind: 46010 });
   const items = buildHomeBadgeFeedItems(
     homeFeed({
       mentions: [feedItem("mention", "mention")],
-      needsAction: [feedItem("needs-action", "needs_action")],
+      needsAction: [
+        approval("approval"),
+        feedItem("other-needs-action", "needs_action"),
+      ],
       activity: [
         feedItem("locally-unread-activity"),
         feedItem("read-activity"),
@@ -51,19 +55,12 @@ test("home badge items include locally unread activity and agent rows", () => {
         feedItem("read-agent", "agent_activity"),
       ],
     }),
-    [feedItem("thread-activity")],
-    new Set(["locally-unread-activity", "locally-unread-agent"]),
+    [feedItem("thread-activity"), approval("extra-approval")],
   );
 
   assert.deepEqual(
     items.map((item) => item.id),
-    [
-      "mention",
-      "needs-action",
-      "thread-activity",
-      "locally-unread-activity",
-      "locally-unread-agent",
-    ],
+    ["approval", "extra-approval"],
   );
 });
 

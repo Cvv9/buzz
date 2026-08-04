@@ -121,6 +121,8 @@ type RawRelayAgent = {
   audience?: string;
   owner_pubkey?: string | null;
   access_tier?: string;
+  model?: string | null;
+  models?: Array<{ id: string; name?: string | null }>;
 };
 export type RawManagedAgent = {
   pubkey: string;
@@ -699,6 +701,12 @@ function fromRawRelayAgent(agent: RawRelayAgent): RelayAgent {
       agent.access_tier === "admin"
         ? agent.access_tier
         : undefined,
+    model: agent.model ?? null,
+    models: (agent.models ?? []).map((model) => ({
+      id: model.id,
+      name: model.name ?? null,
+      description: null,
+    })),
   };
 }
 

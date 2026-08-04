@@ -305,6 +305,33 @@ test("trimContextsToBudget_msgEvictedBeforeThread", () => {
   assert.ok(`thread:${THREAD_ID}` in contexts, "thread entry should survive");
 });
 
+test("trimContextsToBudget_evictsInboxDismissalsBeforeChannelState", () => {
+  const dismissKey = `inbox-dismiss:${MSG_ID}`;
+  const contexts = {
+    [dismissKey]: 1,
+    "channel:some-channel-id": 2,
+  };
+  const encoder = new TextEncoder();
+  const budget = encoder.encode(
+    JSON.stringify({
+      v: 1,
+      client_id: CLIENT_ID,
+      contexts: { "channel:some-channel-id": 2 },
+    }),
+  ).length;
+
+  const { evicted, fitsAfterTrim } = trimContextsToBudget(
+    contexts,
+    CLIENT_ID,
+    budget,
+  );
+
+  assert.equal(evicted, 1);
+  assert.equal(fitsAfterTrim, true);
+  assert.equal(dismissKey in contexts, false);
+  assert.equal("channel:some-channel-id" in contexts, true);
+});
+
 test("trimContextsToBudget_emptyContexts_returnsZeroAndFits", () => {
   // Empty contexts: blob is just the skeleton — fits any reasonable budget.
   const contexts = {};

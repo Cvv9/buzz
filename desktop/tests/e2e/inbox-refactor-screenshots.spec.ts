@@ -201,7 +201,7 @@ test.describe("inbox refactor screenshots", () => {
     await page.screenshot({ path: `${SHOTS}/02-current-controls.png` });
   });
 
-  test("03 — consecutive DMs group into one conversation row", async ({
+  test("03 — private DMs stay out of the decision-only Inbox", async ({
     page,
   }) => {
     await installMockBridge(page, { mode: "mock" });
@@ -235,7 +235,7 @@ test.describe("inbox refactor screenshots", () => {
             category: "activity",
             channel_id: channelId,
             channel_name: "alice-tyler",
-            channel_type: null,
+            channel_type: "dm",
             content: event.content,
             created_at: event.created_at,
             id: event.id,
@@ -253,9 +253,11 @@ test.describe("inbox refactor screenshots", () => {
       },
     );
 
-    const firstDmRow = page.getByTestId(`home-inbox-item-${dmIds[0]}`);
-    await expect(firstDmRow).toBeVisible();
-    // The grouping claim: three DMs, one row.
+    // Private DMs are not decisions, so neither their message activity nor
+    // their shared conversation should create an Inbox row.
+    await expect(page.getByTestId(`home-inbox-item-${dmIds[0]}`)).toHaveCount(
+      0,
+    );
     await expect(page.getByTestId(`home-inbox-item-${dmIds[1]}`)).toHaveCount(
       0,
     );
@@ -263,19 +265,16 @@ test.describe("inbox refactor screenshots", () => {
       0,
     );
 
-    await firstDmRow.click();
-    const detail = page.getByTestId("home-inbox-detail");
-    await expect(detail.getByRole("heading")).toHaveText("DM with alice");
-    await expect(detail.getByTestId("message-unread-divider")).toBeVisible();
     await waitForAnimations(page);
 
-    await page.screenshot({ path: `${SHOTS}/03-grouped-dms.png` });
+    await page.screenshot({ path: `${SHOTS}/03-private-dms-excluded.png` });
   });
 
   test("04 — thread opens at the oldest unread reply", async ({ page }) => {
     await installMockBridge(page, { mode: "mock" });
 
     await page.goto("/", { waitUntil: "domcontentloaded" });
+    await page.getByTestId("open-alerts-view").click();
     await waitForMockFeedHelpers(page);
 
     const replyIds = [

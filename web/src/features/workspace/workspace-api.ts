@@ -13,6 +13,7 @@ export const KIND_DELETION = 5;
 export const KIND_REACTION = 7;
 export const KIND_STREAM_MESSAGE = 9;
 export const KIND_AGENT_PROFILE = 10100;
+export const KIND_COMMUNITY_MEMBERS = 13534;
 export const KIND_ARCHIVED_IDENTITIES = 13535;
 export const KIND_READ_STATE = 30078;
 export const KIND_CHANNEL_METADATA = 39000;
@@ -21,7 +22,10 @@ export const KIND_STREAM_MESSAGE_V2 = 40002;
 export const KIND_STREAM_MESSAGE_EDIT = 40003;
 export const KIND_SYSTEM_MESSAGE = 40099;
 export const KIND_MANAGED_AGENT = 30177;
+export const KIND_HOSTED_AGENT_CONFIG = 30179;
 export const KIND_NIP29_DELETE = 9005;
+
+const HOSTED_AGENT_CONFIG_SCHEMA = "buzz.hosted-agent-config.v1";
 
 const MESSAGE_KINDS = [
   KIND_STREAM_MESSAGE,
@@ -61,6 +65,7 @@ export type WorkspaceProfile = {
   audience?: "community" | "owner";
   ownerPubkey?: string;
   accessTier?: "shared" | "personal" | "admin";
+  model?: string;
 };
 
 export type WorkspaceMessage = NostrEvent & {
@@ -108,6 +113,110 @@ function dedupeReplaceable(events: NostrEvent[]): NostrEvent[] {
     }
   }
   return [...latest.values()];
+}
+
+function parsedContent(event: NostrEvent): Record<string, unknown> {
+  try {
+    return JSON.parse(event.content) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+function isHostedAgentConfigEvent(event: NostrEvent): boolean {
+  if (event.kind === KIND_HOSTED_AGENT_CONFIG) return true;
+  if (event.kind !== KIND_MANAGED_AGENT) return false;
+  const content = parsedContent(event);
+  return (
+    content.schema === HOSTED_AGENT_CONFIG_SCHEMA &&
+    (firstTag(event, "d") ?? "").startsWith("hosted-agent:")
+  );
+}
+
+function hostedAgentConfigTarget(event: NostrEvent): string | null {
+  if (!isHostedAgentConfigEvent(event)) return null;
+  const content = parsedContent(event);
+  const declared = content.agent_pubkey;
+  if (typeof declared === "string" && declared.trim()) {
+    return declared.trim().toLowerCase();
+  }
+  const dTag = firstTag(event, "d") ?? "";
+  const target = dTag.startsWith("hosted-agent:")
+    ? dTag.slice("hosted-agent:".length)
+    : dTag;
+  return target.trim().toLowerCase() || null;
+}
+
+function communityAdminPubkeys(events: NostrEvent[]): Set<string> {
+  const latest = [...events].sort(
+    (left, right) =>
+      right.created_at - left.created_at || right.id.localeCompare(left.id),
+  )[0];
+  if (!latest) return new Set();
+  return new Set(
+    latest.tags
+      .filter(
+        (tag) =>
+          tag[0] === "member" &&
+          (tag[2] === "owner" || tag[2] === "admin") &&
+          typeof tag[1] === "string",
+      )
+      .map((tag) => tag[1].toLowerCase()),
+  );
+}
+
+function applyHostedAgentConfigs(
+  profiles: Map<string, WorkspaceProfile>,
+  configEvents: NostrEvent[],
+  adminPubkeys: ReadonlySet<string>,
+) {
+  const latestByTarget = new Map<string, NostrEvent>();
+  for (const event of configEvents) {
+    const target = hostedAgentConfigTarget(event);
+    const profile = target ? profiles.get(target) : undefined;
+    if (!target || !profile) continue;
+    const author = event.pubkey.toLowerCase();
+    if (
+      !adminPubkeys.has(author) &&
+      profile.ownerPubkey?.toLowerCase() !== author
+    ) {
+      continue;
+    }
+    const current = latestByTarget.get(target);
+    if (
+      !current ||
+      event.created_at > current.created_at ||
+      (event.created_at === current.created_at && event.id > current.id)
+    ) {
+      latestByTarget.set(target, event);
+    }
+  }
+
+  for (const [target, event] of latestByTarget) {
+    const profile = profiles.get(target);
+    if (!profile) continue;
+    const content = parsedContent(event);
+    const configuredName =
+      typeof content.name === "string" ? content.name.trim() : "";
+    const avatarUrl = content.avatar_url;
+    const model = content.model;
+    profiles.set(target, {
+      ...profile,
+      name: configuredName || profile.name,
+      picture:
+        typeof avatarUrl === "string"
+          ? avatarUrl.trim() || undefined
+          : avatarUrl === null
+            ? undefined
+            : profile.picture,
+      model:
+        typeof model === "string"
+          ? model.trim() || undefined
+          : model === null
+            ? undefined
+            : profile.model,
+    });
+  }
 }
 
 function parseThread(event: NostrEvent): {
@@ -213,7 +322,7 @@ export async function listProfiles(
       authors: unique,
       limit: Math.min(500, unique.length * 3),
     }),
-  );
+  ).filter((event) => !isHostedAgentConfigEvent(event));
   const profiles = new Map<string, WorkspaceProfile>();
   for (const event of events) {
     let content: Record<string, unknown> = {};
@@ -255,14 +364,25 @@ export async function listProfiles(
 export async function listAgents(
   viewerPubkey: string,
 ): Promise<WorkspaceProfile[]> {
-  const [agentEvents, archivedPubkeys] = await Promise.all([
-    queryEvents(relayWsUrl(), {
-      kinds: [KIND_AGENT_PROFILE, KIND_MANAGED_AGENT],
-      limit: 200,
-    }),
-    listArchivedIdentities(),
-  ]);
-  const events = dedupeReplaceable(agentEvents);
+  const [agentEvents, configEvents, membershipEvents, archivedPubkeys] =
+    await Promise.all([
+      queryEvents(relayWsUrl(), {
+        kinds: [KIND_AGENT_PROFILE, KIND_MANAGED_AGENT],
+        limit: 200,
+      }),
+      queryEvents(relayWsUrl(), {
+        kinds: [KIND_HOSTED_AGENT_CONFIG, KIND_MANAGED_AGENT],
+        limit: 500,
+      }),
+      queryEvents(relayWsUrl(), {
+        kinds: [KIND_COMMUNITY_MEMBERS],
+        limit: 50,
+      }),
+      listArchivedIdentities(),
+    ]);
+  const events = dedupeReplaceable(agentEvents).filter(
+    (event) => !isHostedAgentConfigEvent(event),
+  );
   const agentPubkeys = events.map(
     (event) =>
       (event.kind === KIND_MANAGED_AGENT && firstTag(event, "d")) ||
@@ -308,8 +428,14 @@ export async function listAgents(
         content.access_tier === "personal" || content.access_tier === "admin"
           ? content.access_tier
           : "shared",
+      model: typeof content.model === "string" ? content.model : undefined,
     });
   }
+  applyHostedAgentConfigs(
+    profiles,
+    configEvents.filter(isHostedAgentConfigEvent),
+    communityAdminPubkeys(membershipEvents),
+  );
   return [...profiles.values()]
     .filter(
       (profile) =>

@@ -10,6 +10,7 @@ import {
 import { resetActiveAgentTurnsStore } from "../../agents/activeAgentTurnsStore.ts";
 import {
   channelScopedBotTypingPubkeyKey,
+  mergeAgentNamesIntoProfiles,
   mergeMemberAgentFlagsIntoProfiles,
 } from "./useChannelActivityTyping.ts";
 
@@ -17,6 +18,29 @@ const AGENT =
   "abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234abcd1234";
 const AGENT_2 =
   "dcba4321dcba4321dcba4321dcba4321dcba4321dcba4321dcba4321dcba4321";
+
+it("uses hosted admin presentation over stale profile metadata", () => {
+  const profiles = mergeAgentNamesIntoProfiles(
+    {
+      [AGENT]: {
+        displayName: "Varun Personal Assistant",
+        avatarUrl: "https://relay.example/old.png",
+        nip05Handle: null,
+      },
+    },
+    [],
+    [
+      {
+        pubkey: AGENT,
+        name: "Lanaya",
+        avatarUrl: "https://relay.example/lanaya.png",
+      },
+    ],
+  );
+
+  assert.equal(profiles[AGENT].displayName, "Lanaya");
+  assert.equal(profiles[AGENT].avatarUrl, "https://relay.example/lanaya.png");
+});
 
 describe("channelScopedBotTypingPubkeyKey", () => {
   it("excludes thread-scoped typing entries", () => {

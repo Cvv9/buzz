@@ -658,31 +658,28 @@ test("sends the first message from the new direct message composer", async ({
   await page.goto("/");
   await openNewMessagePage(page);
 
-  await page.getByTestId("new-dm-search").fill("charlie");
-  await page
-    .getByTestId(`new-dm-result-${TEST_IDENTITIES.charlie.pubkey}`)
-    .click();
+  await page.getByTestId("new-dm-search").fill("bob");
+  await page.getByTestId(`new-dm-result-${TEST_IDENTITIES.bob.pubkey}`).click();
 
   const message = "First message from the new conversation";
   await page.getByTestId("message-input").fill(message);
   await page.getByTestId("send-message").click();
 
-  await expect(page.getByTestId("chat-title")).toHaveText("charlie");
+  await expect(page.getByTestId("chat-title")).toHaveText("bob-tyler");
   await expect(page.getByTestId("message-timeline")).toContainText(message);
 });
 
 test("creates the DM before preparing a persona mention", async ({ page }) => {
   await installMockBridge(page, {
     activePersonaIds: ["builtin:fizz"],
+    relayAgents: [],
     createManagedAgentDelayMs: 1_000,
   });
   await page.goto("/");
   await openNewMessagePage(page);
 
-  await page.getByTestId("new-dm-search").fill("charlie");
-  await page
-    .getByTestId(`new-dm-result-${TEST_IDENTITIES.charlie.pubkey}`)
-    .click();
+  await page.getByTestId("new-dm-search").fill("bob");
+  await page.getByTestId(`new-dm-result-${TEST_IDENTITIES.bob.pubkey}`).click();
 
   const input = page.getByTestId("message-input");
   await input.fill("Ask @fi");
@@ -709,7 +706,7 @@ test("creates the DM before preparing a persona mention", async ({ page }) => {
     .poll(async () => commandCount(await readCommandLog(page), "open_dm"))
     .toBeGreaterThan(baselineOpenDmCount);
   await expect(
-    page.getByTestId(`new-dm-selected-${TEST_IDENTITIES.charlie.pubkey}`),
+    page.getByTestId(`new-dm-selected-${TEST_IDENTITIES.bob.pubkey}`),
   ).toBeDisabled();
   await expect(page.getByTestId("new-dm-search")).toBeDisabled();
   await expect
@@ -717,7 +714,7 @@ test("creates the DM before preparing a persona mention", async ({ page }) => {
       commandCount(await readCommandLog(page), "create_managed_agent"),
     )
     .toBeGreaterThan(baselineCreateCount);
-  await expect(page.getByTestId("chat-title")).toContainText("charlie");
+  await expect(page.getByTestId("chat-title")).toContainText("bob");
   await expect(page.getByTestId("chat-title")).toContainText("Fizz");
   // Assert popover hidden after chat-title settles — by this point the send
   // flow has completed and the UI has fully transitioned away from the popover.
@@ -788,6 +785,7 @@ test("routes an agent mention from an existing DM to the expanded conversation",
   // cannot collapse into the same fast CI tick before assertions observe it.
   await installMockBridge(page, {
     activePersonaIds: ["builtin:fizz"],
+    relayAgents: [],
     createManagedAgentDelayMs: 100,
   });
   await page.goto("/");
@@ -912,6 +910,7 @@ test("does not reroute an expanded DM after the user navigates away", async ({
 }) => {
   await installMockBridge(page, {
     activePersonaIds: ["builtin:fizz"],
+    relayAgents: [],
     sendMessageDelayMs: 1_000,
   });
   await page.goto("/");
@@ -944,6 +943,7 @@ test("does not reroute an expanded DM after the channel pane unmounts", async ({
 }) => {
   await installMockBridge(page, {
     activePersonaIds: ["builtin:fizz"],
+    relayAgents: [],
     openDmDelayMs: 1_000,
   });
   await page.goto("/");
@@ -979,16 +979,15 @@ test("drops an expanded DM after the first message fails", async ({ page }) => {
   // cannot collapse into the same fast CI tick before assertions observe it.
   await installMockBridge(page, {
     activePersonaIds: ["builtin:fizz"],
+    relayAgents: [],
     createManagedAgentDelayMs: 100,
     sendMessageErrors: [sendError],
   });
   await page.goto("/");
   await openNewMessagePage(page);
 
-  await page.getByTestId("new-dm-search").fill("charlie");
-  await page
-    .getByTestId(`new-dm-result-${TEST_IDENTITIES.charlie.pubkey}`)
-    .click();
+  await page.getByTestId("new-dm-search").fill("bob");
+  await page.getByTestId(`new-dm-result-${TEST_IDENTITIES.bob.pubkey}`).click();
 
   const input = page.getByTestId("message-input");
   await input.fill("Ask @fi");
@@ -1020,7 +1019,7 @@ test("drops an expanded DM after the first message fails", async ({ page }) => {
   const retryBaseline = commandsAfterFailure.length;
   await page.getByTestId("send-message").click();
 
-  await expect(page.getByTestId("chat-title")).toHaveText("charlie");
+  await expect(page.getByTestId("chat-title")).toContainText("bob");
   await expect(page.getByTestId("message-timeline")).toContainText(
     retryMessage,
   );
@@ -1068,15 +1067,14 @@ test("drops an expanded DM after agent startup fails", async ({ page }) => {
   const startError = "Mock agent startup failed.";
   await installMockBridge(page, {
     activePersonaIds: ["builtin:fizz"],
+    relayAgents: [],
     startManagedAgentErrors: [startError],
   });
   await page.goto("/");
   await openNewMessagePage(page);
 
-  await page.getByTestId("new-dm-search").fill("charlie");
-  await page
-    .getByTestId(`new-dm-result-${TEST_IDENTITIES.charlie.pubkey}`)
-    .click();
+  await page.getByTestId("new-dm-search").fill("bob");
+  await page.getByTestId(`new-dm-result-${TEST_IDENTITIES.bob.pubkey}`).click();
 
   const input = page.getByTestId("message-input");
   await input.fill("Ask @fi");
@@ -1103,7 +1101,7 @@ test("drops an expanded DM after agent startup fails", async ({ page }) => {
   expect(
     (openDmCallsAfterFailure.at(-1)?.payload as { pubkeys?: string[] })
       ?.pubkeys,
-  ).toEqual(expect.arrayContaining([TEST_IDENTITIES.charlie.pubkey]));
+  ).toEqual(expect.arrayContaining([TEST_IDENTITIES.bob.pubkey]));
   expect(
     (openDmCallsAfterFailure.at(-1)?.payload as { pubkeys?: string[] })
       ?.pubkeys,
@@ -1113,7 +1111,7 @@ test("drops an expanded DM after agent startup fails", async ({ page }) => {
   const retryBaseline = commandsAfterFailure.length;
   await page.getByTestId("send-message").click();
 
-  await expect(page.getByTestId("chat-title")).toHaveText("charlie");
+  await expect(page.getByTestId("chat-title")).toContainText("bob");
   await expect(page.getByTestId("message-timeline")).toContainText(
     retryMessage,
   );
@@ -1126,7 +1124,7 @@ test("drops an expanded DM after agent startup fails", async ({ page }) => {
   );
   expect(
     (retryOpenDm?.payload as { pubkeys?: string[] } | undefined)?.pubkeys,
-  ).toEqual([TEST_IDENTITIES.charlie.pubkey]);
+  ).toEqual([TEST_IDENTITIES.bob.pubkey]);
   await expect(page.getByTestId("chat-title")).not.toContainText("Fizz");
 });
 
@@ -2531,7 +2529,7 @@ test("manage channel keeps canvas near the top of the sheet", async ({
   expect(canvasBox?.y).toBeLessThan(nameBox?.y);
 });
 
-async function seedHomeInboxMention(
+async function seedHomeInboxApproval(
   page: import("@playwright/test").Page,
   itemId: string,
   tags?: string[][],
@@ -2561,23 +2559,20 @@ async function seedHomeInboxMention(
 
       pushFeedItem({
         id,
-        kind: 9,
+        kind: 46010,
         pubkey: senderPubkey,
         content: "Please review the home panel routing.",
         created_at: createdAt,
         channel_id: channelId,
         channel_name: "general",
-        tags: seededTags ?? [
-          ["e", channelId],
-          ["p", currentPubkey],
-        ],
-        category: "mention",
+        tags: [["h", channelId], ["p", currentPubkey], ...(seededTags ?? [])],
+        category: "needs_action",
       });
     },
     {
       channelId: GENERAL_CHANNEL_ID,
       createdAt: Math.floor(Date.now() / 1000),
-      currentPubkey: TEST_IDENTITIES.tyler.pubkey,
+      currentPubkey: MOCK_IDENTITY_PUBKEY,
       itemId,
       senderPubkey: TEST_IDENTITIES.alice.pubkey,
       tags,
@@ -2587,7 +2582,9 @@ async function seedHomeInboxMention(
   await page.getByTestId(`home-inbox-item-${itemId}`).click();
 }
 
-test("Inbox All excludes generic channel traffic", async ({ page }) => {
+test("Inbox accepts approvals and excludes ordinary channel traffic", async ({
+  page,
+}) => {
   await page.goto("/");
   await page.waitForFunction(() => {
     const win = window as MockFeedWindow;
@@ -2627,23 +2624,46 @@ test("Inbox All excludes generic channel traffic", async ({ page }) => {
           ["p", currentPubkey],
         ],
       });
+      pushFeedItem({
+        category: "needs_action",
+        channel_id: channelId,
+        channel_name: "general",
+        channel_type: "stream",
+        content: "Approval request for the release plan",
+        created_at: now + 2,
+        id: "inbox-approval-request",
+        kind: 46010,
+        pubkey: senderPubkey,
+        tags: [
+          ["h", channelId],
+          ["p", currentPubkey],
+        ],
+      });
     },
     {
       channelId: GENERAL_CHANNEL_ID,
-      currentPubkey: TEST_IDENTITIES.tyler.pubkey,
+      currentPubkey: MOCK_IDENTITY_PUBKEY,
       senderPubkey: TEST_IDENTITIES.alice.pubkey,
     },
   );
 
   await expect(
-    page.getByTestId("home-inbox-item-inbox-personal-mention"),
+    page.getByTestId("home-inbox-item-inbox-approval-request"),
   ).toBeVisible();
   await expect(
     page.getByTestId("home-inbox-item-inbox-generic-channel-message"),
   ).toHaveCount(0);
+  await expect(
+    page.getByTestId("home-inbox-item-inbox-personal-mention"),
+  ).toHaveCount(0);
+
+  await page.getByTestId("open-alerts-view").click();
+  await expect(
+    page.getByTestId("home-inbox-item-inbox-personal-mention"),
+  ).toBeVisible();
 });
 
-test("Inbox All never lists drafts and unread-only hides reminders", async ({
+test("Approval Inbox keeps personal drafts and reminders out", async ({
   page,
 }) => {
   const draftKey = `channel:${GENERAL_CHANNEL_ID}`;
@@ -2679,12 +2699,12 @@ test("Inbox All never lists drafts and unread-only hides reminders", async ({
   });
 
   const reminderId = "inbox-unread-only-reminder";
-  const messageId = "inbox-unread-only-message";
+  const approvalId = "inbox-unread-only-approval";
   await page.evaluate(
     async ({
       channelId,
       currentPubkey,
-      messageId,
+      approvalId,
       reminderId,
       senderPubkey,
     }) => {
@@ -2703,7 +2723,7 @@ test("Inbox All never lists drafts and unread-only hides reminders", async ({
             target: {
               eventId: "mock-general-alice",
               channelId,
-              preview: "Due reminder in mixed Inbox",
+              preview: "Due reminder outside the approval Inbox",
               authorPubkey: senderPubkey,
             },
             status: "pending",
@@ -2719,14 +2739,14 @@ test("Inbox All never lists drafts and unread-only hides reminders", async ({
         .__BUZZ_E2E_PUSH_MOCK_FEED_ITEM__;
       if (!pushFeedItem) throw new Error("Mock feed helper is not installed.");
       pushFeedItem({
-        category: "mention",
+        category: "needs_action",
         channel_id: channelId,
         channel_name: "general",
         channel_type: "stream",
-        content: "Unread message in mixed Inbox",
+        content: "Unread approval in the decision Inbox",
         created_at: now,
-        id: messageId,
-        kind: 9,
+        id: approvalId,
+        kind: 46010,
         pubkey: senderPubkey,
         tags: [
           ["h", channelId],
@@ -2737,40 +2757,35 @@ test("Inbox All never lists drafts and unread-only hides reminders", async ({
     {
       channelId: GENERAL_CHANNEL_ID,
       currentPubkey: MOCK_IDENTITY_PUBKEY,
-      messageId,
+      approvalId,
       reminderId,
       senderPubkey: TEST_IDENTITIES.alice.pubkey,
     },
   );
 
-  const messageRow = page.getByTestId(`home-inbox-item-${messageId}`);
+  const approvalRow = page.getByTestId(`home-inbox-item-${approvalId}`);
   const reminderRow = page.getByTestId(`home-all-reminders-${reminderId}`);
   const draftRow = page.getByTestId(`home-all-drafts-${draftKey}`);
-  await expect(messageRow).toBeVisible();
-  await expect(reminderRow).toBeVisible();
-  // Drafts belong to the dedicated Drafts filter — never the mixed All view.
+  await expect(approvalRow).toBeVisible();
+  // Reminders and drafts have their own surfaces — neither enters the
+  // approval-only Inbox.
+  await expect(reminderRow).toHaveCount(0);
   await expect(draftRow).toHaveCount(0);
 
   await page.getByTestId("inbox-options-trigger").click();
   await page.getByRole("switch", { name: "Show unread only" }).click();
 
-  await expect(messageRow).toBeVisible();
+  await expect(approvalRow).toBeVisible();
   await expect(reminderRow).toHaveCount(0);
   await expect(draftRow).toHaveCount(0);
-
-  // The draft is still reachable under the Drafts filter.
-  await page.keyboard.press("Escape");
-  await page.getByTestId("inbox-filter-trigger").click();
-  await page.getByRole("menuitemradio", { name: "Drafts" }).click();
-  await expect(page.getByTestId("home-inbox-drafts")).toBeVisible();
 });
 
-test("Inbox merges a due reminder into its represented conversation", async ({
+test("Reminders stay separate from their represented approval", async ({
   page,
 }) => {
   const messageId = "inbox-reminder-merge-message";
   const reminderId = "inbox-reminder-merge";
-  await seedHomeInboxMention(page, messageId);
+  await seedHomeInboxApproval(page, messageId);
 
   await page.evaluate(
     async ({
@@ -2817,20 +2832,27 @@ test("Inbox merges a due reminder into its represented conversation", async ({
   );
 
   const conversationRow = page.getByTestId(`home-inbox-item-${messageId}`);
-  await expect(conversationRow.getByText("Reminder due")).toBeVisible();
+  await expect(conversationRow).toBeVisible();
+  await expect(conversationRow.getByText("Reminder due")).toHaveCount(0);
   await expect(
     page.getByTestId(`home-all-reminders-${reminderId}`),
   ).toHaveCount(0);
 
-  await page.getByTestId("inbox-filter-trigger").click();
-  await page.getByRole("menuitemradio", { name: "Mentions" }).click();
-  await expect(conversationRow.getByText("Reminder due")).toBeVisible();
+  await page.evaluate(() => {
+    window.location.hash = "/reminders";
+  });
+  await expect(page.getByTestId("inbox-filter-trigger")).toContainText(
+    "Reminders",
+  );
+  await expect(
+    page.getByTestId(`home-reminder-item-${reminderId}`),
+  ).toBeVisible();
 });
 
-test("Inbox All keeps its filter when opening a due reminder", async ({
+test("Reminders keeps its filter when opening a due reminder", async ({
   page,
 }) => {
-  await page.goto("/");
+  await page.goto("/#/reminders");
   await expect(page.getByTestId("home-inbox")).toBeVisible();
 
   const reminderId = "inbox-stable-reminder";
@@ -2870,17 +2892,18 @@ test("Inbox All keeps its filter when opening a due reminder", async ({
     },
   );
 
-  const reminderRow = page.getByTestId(`home-all-reminders-${reminderId}`);
+  const reminderRow = page.getByTestId(`home-reminder-item-${reminderId}`);
   await expect(reminderRow).toBeVisible();
   await reminderRow.click();
 
-  await expect(page.getByTestId("inbox-filter-trigger")).toContainText("All");
+  await expect(page.getByTestId("inbox-filter-trigger")).toContainText(
+    "Reminders",
+  );
   await expect(page.getByTestId("home-reminder-detail")).toBeVisible();
-  await expect(page.getByTestId("home-inbox-list")).toBeVisible();
 });
 
-test("Inbox reminder rows and detail identify DM context", async ({ page }) => {
-  await page.goto("/");
+test("Reminder rows and detail identify DM context", async ({ page }) => {
+  await page.goto("/#/reminders");
   await expect(page.getByTestId("home-inbox")).toBeVisible();
 
   const reminderId = "inbox-dm-reminder";
@@ -2922,8 +2945,6 @@ test("Inbox reminder rows and detail identify DM context", async ({ page }) => {
     },
   );
 
-  await page.getByTestId("inbox-filter-trigger").click();
-  await page.getByRole("menuitemradio", { name: "Reminders" }).click();
   const reminderRow = page.getByTestId(`home-reminder-item-${reminderId}`);
   await expect(
     reminderRow.getByText("DM with alice-tyler", { exact: true }),
@@ -2939,10 +2960,10 @@ test("Inbox reminder rows and detail identify DM context", async ({ page }) => {
   );
 });
 
-test("Inbox detail title and source action navigate to the conversation", async ({
+test("approval Inbox detail title and source action navigate to the conversation", async ({
   page,
 }) => {
-  await seedHomeInboxMention(page, "mock-feed-home-channel-navigate");
+  await seedHomeInboxApproval(page, "mock-feed-home-channel-navigate");
 
   const detail = page.getByTestId("home-inbox-detail");
   await expect(detail.getByRole("heading")).toHaveText("Message in #general");
@@ -2960,14 +2981,13 @@ test("Inbox detail title and source action navigate to the conversation", async 
   await expect(page.getByTestId("home-inbox-list")).toHaveCount(0);
 });
 
-test("home inbox thread reply mention carries threadRootId to the channel", async ({
+test("approval Inbox thread carries threadRootId to the channel", async ({
   page,
 }) => {
   const rootEventId = "mock-feed-home-thread-root";
-  await seedHomeInboxMention(page, "mock-feed-home-thread-navigate", [
+  await seedHomeInboxApproval(page, "mock-feed-home-thread-navigate", [
     ["e", rootEventId, "", "root"],
     ["e", "mock-feed-home-thread-parent", "", "reply"],
-    ["p", TEST_IDENTITIES.tyler.pubkey],
   ]);
 
   const detail = page.getByTestId("home-inbox-detail");
@@ -2984,41 +3004,14 @@ test("home inbox thread reply mention carries threadRootId to the channel", asyn
   await expect(page.getByTestId("home-inbox-list")).toHaveCount(0);
 });
 
-test("Inbox filter changes preserve valid detail and directly select a replacement", async ({
+test("Inbox filter changes preserve a selected approval that remains visible", async ({
   page,
 }) => {
   const threadItemId = "inbox-filter-thread";
-  const actionItemId = "inbox-filter-action";
-  await seedHomeInboxMention(page, threadItemId, [
+  await seedHomeInboxApproval(page, threadItemId, [
     ["e", "inbox-filter-root", "", "root"],
     ["e", "inbox-filter-parent", "", "reply"],
-    ["p", TEST_IDENTITIES.tyler.pubkey],
   ]);
-
-  await page.evaluate(
-    ({ actionId, channelId, senderPubkey }) => {
-      const pushFeedItem = (window as MockFeedWindow)
-        .__BUZZ_E2E_PUSH_MOCK_FEED_ITEM__;
-      if (!pushFeedItem) throw new Error("Mock feed helper is not installed.");
-      pushFeedItem({
-        category: "needs_action",
-        channel_id: channelId,
-        channel_name: "general",
-        channel_type: "stream",
-        content: "Approve the replacement selection",
-        created_at: Math.floor(Date.now() / 1_000) + 120,
-        id: actionId,
-        kind: 46010,
-        pubkey: senderPubkey,
-        tags: [["h", channelId]],
-      });
-    },
-    {
-      actionId: actionItemId,
-      channelId: GENERAL_CHANNEL_ID,
-      senderPubkey: TEST_IDENTITIES.alice.pubkey,
-    },
-  );
 
   await page.getByTestId("inbox-filter-trigger").click();
   await page.getByRole("menuitemradio", { name: "Threads" }).click();
@@ -3035,17 +3028,18 @@ test("Inbox filter changes preserve valid detail and directly select a replaceme
   await page.getByTestId("inbox-filter-trigger").click();
   await page.getByRole("menuitemradio", { name: "Needs action" }).click();
   await expect(
-    page.getByTestId(`home-inbox-item-${actionItemId}`),
+    page.getByTestId(`home-inbox-item-${threadItemId}`),
   ).toHaveAttribute("aria-current", "true");
   await expect(page.getByTestId("home-inbox-detail")).toContainText(
-    "Approve the replacement selection",
+    "Please review the home panel routing.",
   );
 });
 
-test("Inbox keeps the unread boundary for replies from multiple agents", async ({
+test("Alerts keeps the unread boundary for replies from multiple agents", async ({
   page,
 }) => {
   await page.goto("/");
+  await page.getByTestId("open-alerts-view").click();
   await expect(page.getByTestId("home-inbox-list")).toBeVisible();
   await page.waitForFunction(() => {
     const win = window as MockFeedWindow;
@@ -3132,92 +3126,56 @@ test("Inbox keeps the unread boundary for replies from multiple agents", async (
   );
 });
 
-test("home inbox groups consecutive DMs and opens the full conversation", async ({
-  page,
-}) => {
-  const dmChannelId = "f48efb06-0c93-5025-aac9-2e646bb6bfa8";
+test("DMs stay in their native conversation", async ({ page }) => {
   const dmIds = ["inbox-dm-first", "inbox-dm-second", "inbox-dm-third"];
 
   await page.goto("/");
   await expect(page.getByTestId("home-inbox-list")).toBeVisible();
   await page.waitForFunction(() => {
     const win = window as MockFeedWindow;
-    return (
-      typeof win.__BUZZ_E2E_EMIT_MOCK_MESSAGE__ === "function" &&
-      typeof win.__BUZZ_E2E_PUSH_MOCK_FEED_ITEM__ === "function"
-    );
+    return typeof win.__BUZZ_E2E_EMIT_MOCK_MESSAGE__ === "function";
   });
 
   await page.evaluate(
-    ({ channelId, createdAt, ids, senderPubkey }) => {
+    ({ createdAt, ids, senderPubkey }) => {
       const win = window as MockFeedWindow;
       const emitMessage = win.__BUZZ_E2E_EMIT_MOCK_MESSAGE__;
-      const pushFeedItem = win.__BUZZ_E2E_PUSH_MOCK_FEED_ITEM__;
-      if (!emitMessage || !pushFeedItem) {
+      if (!emitMessage) {
         throw new Error("Mock bridge helpers are not installed.");
       }
 
       ["First unread DM", "Second unread DM", "Third unread DM"].forEach(
         (content, index) => {
-          const event = emitMessage({
+          emitMessage({
             channelName: "alice-tyler",
             content,
             createdAt: createdAt + index,
             id: ids[index],
             pubkey: senderPubkey,
           });
-          pushFeedItem({
-            category: "activity",
-            channel_id: channelId,
-            channel_name: "alice-tyler",
-            channel_type: null,
-            content: event.content,
-            created_at: event.created_at,
-            id: event.id,
-            kind: event.kind,
-            pubkey: event.pubkey,
-            tags: event.tags,
-          });
         },
       );
     },
     {
-      channelId: dmChannelId,
       createdAt: Math.floor(Date.now() / 1000),
       ids: dmIds,
       senderPubkey: TEST_IDENTITIES.alice.pubkey,
     },
   );
 
-  const firstDmRow = page.getByTestId(`home-inbox-item-${dmIds[0]}`);
-  await expect(firstDmRow).toBeVisible();
-  await expect(page.getByTestId(`home-inbox-item-${dmIds[1]}`)).toHaveCount(0);
-  await expect(page.getByTestId(`home-inbox-item-${dmIds[2]}`)).toHaveCount(0);
-  await expect(firstDmRow.getByTestId("home-inbox-unread-count")).toHaveText(
-    "3 unread",
-  );
-
-  await firstDmRow.click();
-  const detail = page.getByTestId("home-inbox-detail");
-  await expect(detail.getByRole("heading")).toHaveText("DM with alice");
-  await expect(detail).toContainText("First unread DM");
-  await expect(detail).toContainText("Second unread DM");
-  await expect(detail).toContainText("Third unread DM");
-  await expect(page.getByTestId("home-inbox-selected-message")).toContainText(
-    "First unread DM",
-  );
-  const unreadBoundary = page.getByTestId("message-unread-divider");
-  await expect(unreadBoundary).toBeVisible();
-  await expect(unreadBoundary).toContainText("New");
-  await expect(
-    detail.getByRole("button", { name: "Open conversation" }),
-  ).toBeVisible();
+  await expect(page.getByTestId(`home-inbox-item-${dmIds[0]}`)).toHaveCount(0);
+  await page.getByTestId("channel-alice-tyler").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("alice-tyler");
+  const timeline = page.getByTestId("message-timeline");
+  await expect(timeline).toContainText("First unread DM");
+  await expect(timeline).toContainText("Second unread DM");
+  await expect(timeline).toContainText("Third unread DM");
 });
 
-test("home inbox manage affordance opens management without leaving home", async ({
+test("approval Inbox manage affordance opens management without leaving home", async ({
   page,
 }) => {
-  await seedHomeInboxMention(page, "mock-feed-home-channel-panel");
+  await seedHomeInboxApproval(page, "mock-feed-home-channel-panel");
 
   await page
     .getByTestId("home-inbox-detail")

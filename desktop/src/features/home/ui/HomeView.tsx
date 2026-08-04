@@ -3,7 +3,11 @@ import { RefreshCcw } from "lucide-react";
 
 import { useAppShell } from "@/app/AppShellContext";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
-import { useKnownAgentPubkeys } from "@/features/agents/useKnownAgentPubkeys";
+import { overlayHostedAgentProfiles } from "@/features/agents/lib/hostedAgentPresentation";
+import {
+  useKnownAgentPubkeys,
+  useRelayAgentDirectory,
+} from "@/features/agents/useKnownAgentPubkeys";
 import { useChannelsQuery, useOpenDmMutation } from "@/features/channels/hooks";
 import { RightAuxiliaryPane } from "@/features/channels/ui/RightAuxiliaryPane";
 import { ChannelManagementSheet } from "@/features/channels/ui/ChannelManagementSheet";
@@ -13,12 +17,14 @@ import {
   buildInboxItems,
   findInboxItemByEventId,
   formatInboxFullTimestamp,
+  getInboxDismissContextId,
   getInboxItemConversationId,
 } from "@/features/home/lib/inbox";
 import { useInboxSelectionAnchor } from "@/features/home/useInboxSelectionAnchor";
 import { useOwnedAgentPubkeys } from "@/features/home/useOwnedAgentPubkeys";
 import {
   filterInboxItems,
+  getInboxApprovalRequest,
   matchesInboxFilter,
 } from "@/features/home/lib/inboxViewHelpers";
 import { resolveInboxFilterSelection } from "@/features/home/lib/inboxSelection";
@@ -90,6 +96,7 @@ type HomeViewProps = {
     threadRootId?: string | null,
   ) => void;
   onRefresh: () => void;
+  initialFilter?: InboxFilter;
 };
 
 export function HomeView({
@@ -100,13 +107,14 @@ export function HomeView({
   availableChannelIds,
   onOpenContext,
   onRefresh,
+  initialFilter = "all",
 }: HomeViewProps) {
   const relaySelfPubkey = useRelaySelfQuery().data;
   const [homeInboxRef, homeInboxWidthPx] = useElementWidth<HTMLDivElement>();
   const isNarrowHomeViewport =
     homeInboxWidthPx > 0 &&
     homeInboxWidthPx < INBOX_SINGLE_COLUMN_BREAKPOINT_PX;
-  const [filter, setFilter] = React.useState<InboxFilter>("all");
+  const [filter, setFilter] = React.useState<InboxFilter>(initialFilter);
   const [unreadOnly, setUnreadOnly] = React.useState(false);
   // Explicit selections are mirrored to the URL (`?item=`), so back/forward
   // restores the detail pane each history entry was showing and reloads
@@ -117,7 +125,8 @@ export function HomeView({
   const isReminders = filter === "reminders";
   const isDrafts = filter === "drafts";
   const isMessagesMode = !isReminders && !isDrafts;
-  const allowMixedPersonalSelection = filter === "all";
+  const includePersonalItems = initialFilter !== "all";
+  const allowMixedPersonalSelection = includePersonalItems && filter === "all";
   const {
     drafts: {
       activeCount: activeDraftCount,
@@ -321,20 +330,25 @@ export function HomeView({
     enabled: feedProfilePubkeys.length > 0,
   });
   const feedProfiles = feedProfilesQuery.data?.profiles;
+  const relayAgentDirectory = useRelayAgentDirectory();
+  const effectiveFeedProfiles = React.useMemo(
+    () => overlayHostedAgentProfiles(feedProfiles, relayAgentDirectory),
+    [feedProfiles, relayAgentDirectory],
+  );
   const ownedAgentPubkeys = useOwnedAgentPubkeys(
     true,
-    feedProfiles,
+    effectiveFeedProfiles,
     currentPubkey,
   );
   const feedOwnerPubkeys = React.useMemo(
     () => [
       ...new Set(
-        Object.values(feedProfiles ?? {})
+        Object.values(effectiveFeedProfiles ?? {})
           .map((profile) => profile.ownerPubkey)
           .filter((pubkey): pubkey is string => Boolean(pubkey)),
       ),
     ],
-    [feedProfiles],
+    [effectiveFeedProfiles],
   );
   const feedOwnerProfilesQuery = useUsersBatchQuery(feedOwnerPubkeys, {
     enabled: feedOwnerPubkeys.length > 0,
@@ -344,14 +358,16 @@ export function HomeView({
   const inboxAgentPubkeys = React.useMemo(() => {
     const pubkeys = new Set(communityAgentPubkeys);
 
-    for (const [pubkey, profile] of Object.entries(feedProfiles ?? {})) {
+    for (const [pubkey, profile] of Object.entries(
+      effectiveFeedProfiles ?? {},
+    )) {
       if (profile.isAgent) {
         pubkeys.add(normalizePubkey(pubkey));
       }
     }
 
     return pubkeys;
-  }, [feedProfiles, communityAgentPubkeys]);
+  }, [effectiveFeedProfiles, communityAgentPubkeys]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: readStateVersion invalidates the stable getChannelReadAt callback
   const inboxItems = React.useMemo(() => {
     const items = buildInboxItems({
@@ -361,17 +377,27 @@ export function HomeView({
       getChannelReadAt,
       getMessageReadAt,
       getThreadReadAt,
-      profiles: feedProfiles,
+      profiles: effectiveFeedProfiles,
     });
-    return filterInboxItems(items);
+    const surfaceItems =
+      initialFilter === "alerts" ? items : filterInboxItems(items);
+    return surfaceItems.filter((item) => {
+      if (initialFilter === "alerts") return true;
+      const approval = getInboxApprovalRequest(item);
+      if (!approval) return false;
+      const dismissedAt =
+        getChannelReadAt(getInboxDismissContextId(approval.id)) ?? 0;
+      return dismissedAt < approval.createdAt;
+    });
   }, [
     channels,
     currentPubkey,
     feed,
-    feedProfiles,
+    effectiveFeedProfiles,
     getChannelReadAt,
     getMessageReadAt,
     getThreadReadAt,
+    initialFilter,
     readStateVersion,
   ]);
   const { effectiveDoneSet, markItemRead, markItemUnread } =
@@ -391,6 +417,29 @@ export function HomeView({
       undoDoneLocal: undoDone,
       undoUnreadLocal: undoUnread,
     });
+  const dismissInboxItem = React.useCallback(
+    (itemId: string) => {
+      const item = findInboxItemByEventId(inboxItems, itemId);
+      if (!item) return;
+      const approval = getInboxApprovalRequest(item);
+      if (!approval) return;
+      markChannelRead(
+        getInboxDismissContextId(approval.id),
+        new Date(approval.createdAt * 1_000).toISOString(),
+      );
+    },
+    [inboxItems, markChannelRead],
+  );
+  const dismissAllInboxItems = React.useCallback(() => {
+    for (const item of inboxItems) {
+      const approval = getInboxApprovalRequest(item);
+      if (!approval) continue;
+      markChannelRead(
+        getInboxDismissContextId(approval.id),
+        new Date(approval.createdAt * 1_000).toISOString(),
+      );
+    }
+  }, [inboxItems, markChannelRead]);
   // Resolve selection before filtering so unread-only can retain its active row.
   const selectedItemFromAll = React.useMemo(
     () =>
@@ -454,7 +503,7 @@ export function HomeView({
     currentPubkey,
     events: threadContext.events,
     ownerProfiles: feedOwnerProfiles,
-    profiles: feedProfiles,
+    profiles: effectiveFeedProfiles,
     reactionEvents: threadContext.reactionEvents,
     relaySelfPubkey,
     selectedChannel,
@@ -642,8 +691,12 @@ export function HomeView({
               doneSet={effectiveDoneSet}
               dueReminderCount={dueReminderCount}
               filter={filter}
+              includePersonalItems={includePersonalItems}
               items={filteredItems}
+              canDismiss={initialFilter === "all"}
               onDeleteDraft={handleDeleteDraft}
+              onDismiss={dismissInboxItem}
+              onDismissAll={dismissAllInboxItems}
               onFilterChange={handleFilterChange}
               onMarkRead={markItemRead}
               onMarkUnread={markItemUnread}
@@ -752,7 +805,7 @@ export function HomeView({
               item={selectedItem}
               latchedDefaultParentId={latchedDefaultParentId}
               messages={contextMessages}
-              profiles={feedProfiles}
+              profiles={effectiveFeedProfiles}
               selectedEventId={selectedEventId}
               unreadBoundaryEventId={unreadBoundaryEventId}
               onBack={
@@ -819,15 +872,16 @@ export function HomeView({
                     authorLabel: currentPubkey
                       ? resolveUserLabel({
                           currentPubkey,
-                          profiles: feedProfiles,
+                          profiles: effectiveFeedProfiles,
                           pubkey: authorPubkey,
                         })
                       : "You",
                     authorPubkey,
                     avatarUrl:
-                      currentPubkey && feedProfiles
-                        ? (feedProfiles[currentPubkey.trim().toLowerCase()]
-                            ?.avatarUrl ?? null)
+                      currentPubkey && effectiveFeedProfiles
+                        ? (effectiveFeedProfiles[
+                            currentPubkey.trim().toLowerCase()
+                          ]?.avatarUrl ?? null)
                         : null,
                     content,
                     createdAt: result.createdAt,

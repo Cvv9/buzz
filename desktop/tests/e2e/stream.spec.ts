@@ -199,7 +199,9 @@ test("loads channels from the relay", async ({ page }) => {
   await expect(page.getByTestId("dm-list")).toContainText("alice-tyler");
 });
 
-test("loads the home feed from the relay", async ({ browser }) => {
+test("routes relay mentions to Alerts instead of Inbox", async ({
+  browser,
+}) => {
   const message = `Relay home mention ${Date.now()}`;
   const targetContext = await browser.newContext();
   const senderContext = await browser.newContext();
@@ -210,10 +212,14 @@ test("loads the home feed from the relay", async ({ browser }) => {
     await installRelayBridge(page, "tyler");
     await installRelayBridge(senderPage, "alice");
     await page.goto("/");
+    await page.getByTestId("open-alerts-view").click();
     await senderPage.goto("/");
 
     await expect(page.getByTestId("home-inbox")).toBeVisible();
     await expect(page.getByTestId("home-inbox-list")).toBeVisible();
+    await expect(page.getByTestId("inbox-filter-trigger")).toContainText(
+      "Alerts",
+    );
 
     await sendChannelMessage(senderPage, {
       channelName: "general",
@@ -229,7 +235,7 @@ test("loads the home feed from the relay", async ({ browser }) => {
   }
 });
 
-test("shows sent inbox replies immediately in the inbox detail pane", async ({
+test("shows sent alert replies immediately in the detail pane", async ({
   browser,
 }) => {
   const message = `Relay inbox reply target ${Date.now()}`;
@@ -243,6 +249,7 @@ test("shows sent inbox replies immediately in the inbox detail pane", async ({
     await installRelayBridge(page, "tyler");
     await installRelayBridge(senderPage, "alice");
     await page.goto("/");
+    await page.getByTestId("open-alerts-view").click();
     await senderPage.goto("/");
 
     await sendChannelMessage(senderPage, {

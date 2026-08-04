@@ -116,7 +116,6 @@ export type UserProfilePanelProps = {
 export function deriveProfileChannels(
   pubkeyLower: string,
   relayAgent: RelayAgent | undefined,
-  managedAgent: ManagedAgent | undefined,
   channels: Channel[] | undefined,
 ): ProfileChannelLink[] {
   const links = new Map<string, ProfileChannelLink>();
@@ -130,7 +129,7 @@ export function deriveProfileChannels(
     links.set(id, { id, name });
   });
 
-  if (managedAgent && channels) {
+  if (pubkeyLower && channels) {
     for (const channel of channels) {
       const isMember = channel.memberPubkeys.some(
         (memberPubkey) => memberPubkey.toLowerCase() === pubkeyLower,

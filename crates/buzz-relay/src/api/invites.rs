@@ -24,7 +24,9 @@ use axum::{
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::handlers::side_effects::{publish_nip43_member_added, publish_nip43_membership_list};
+use crate::handlers::side_effects::{
+    emit_system_message, publish_nip43_member_added, publish_nip43_membership_list,
+};
 use buzz_core::invite::{
     hash_v2_code, validate_v2_code, DEFAULT_INVITE_TTL_SECS, MAX_INVITE_TTL_SECS, MAX_INVITE_USES,
     MIN_INVITE_TTL_SECS, V2_PREFIX,
@@ -44,6 +46,47 @@ const CLAIM_RATE_LIMIT: u32 = 10;
 /// NIP-98 proves key ownership, not that a key is costly to create, so this
 /// bound is required in addition to expiry.
 pub(crate) const CLAIM_RATE_CACHE_CAPACITY: u64 = 10_000;
+
+/// Emit the durable, idempotent onboarding trigger after a community invite is
+/// claimed for the first time. The trigger is anchored in `#general`, where the
+/// welcome workflow posts, but its identity is the community membership claim
+/// rather than a channel membership upsert.
+async fn emit_first_join_trigger(
+    tenant: &buzz_core::tenant::TenantContext,
+    state: &Arc<AppState>,
+    member_pubkey: &str,
+) {
+    let channel = match state.db.list_channels(tenant.community(), None).await {
+        Ok(channels) => channels
+            .into_iter()
+            .find(|channel| channel.name == "general"),
+        Err(error) => {
+            tracing::warn!(%error, member = %member_pubkey, "could not resolve #general for first-join workflow");
+            return;
+        }
+    };
+    let Some(channel) = channel else {
+        tracing::warn!(member = %member_pubkey, "#general is missing; first-join workflow not emitted");
+        return;
+    };
+
+    if let Err(error) = emit_system_message(
+        tenant,
+        state,
+        channel.id,
+        serde_json::json!({
+            "type": "member_joined",
+            "actor": member_pubkey,
+            "target": member_pubkey,
+            "role": "member",
+            "scope": "community",
+        }),
+    )
+    .await
+    {
+        tracing::warn!(%error, member = %member_pubkey, "first-join workflow trigger failed");
+    }
+}
 
 /// Body for `POST /api/invites`.
 #[derive(Debug, Default, Deserialize)]
@@ -415,6 +458,7 @@ pub async fn claim_invite(
                 if let Err(e) = publish_nip43_membership_list(&tenant, &state).await {
                     tracing::warn!("failed to publish NIP-43 membership list after v2 claim: {e}");
                 }
+                emit_first_join_trigger(&tenant, &state, &claimer_hex).await;
                 Ok(Json(serde_json::json!({
                     "status": "joined",
                     "community_id": tenant.community().to_string(),
@@ -490,6 +534,7 @@ pub async fn claim_invite(
         if let Err(e) = publish_nip43_membership_list(&tenant, &state).await {
             tracing::warn!("failed to publish NIP-43 membership list after claim: {e}");
         }
+        emit_first_join_trigger(&tenant, &state, &claimer_hex).await;
     }
 
     Ok(Json(serde_json::json!({

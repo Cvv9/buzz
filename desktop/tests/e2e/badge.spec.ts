@@ -158,7 +158,7 @@ test("numeric badge increments for DM message", async ({ page }) => {
   await waitForBadgeState(page, withAdditionalBadgeCount(baselineBadge, 1));
 });
 
-test("numeric badge increments for interested thread reply in inactive channel", async ({
+test("interested thread reply shows a channel badge without incrementing the app count", async ({
   page,
 }) => {
   await page.goto("/");
@@ -191,7 +191,7 @@ test("numeric badge increments for interested thread reply in inactive channel",
   );
 
   await expect(page.getByTestId("channel-unread-random")).toBeVisible();
-  await waitForBadgeState(page, withAdditionalBadgeCount(baselineBadge, 1));
+  await waitForBadgeState(page, withDotOnlyBadge(baselineBadge));
 });
 
 test("numeric badge increments for broadcast reply in inactive channel", async ({

@@ -14,7 +14,7 @@ type MockFeedWindow = Window & {
 
 test.use({ viewport: { width: 1280, height: 720 } });
 
-test("Inbox All hides drafts while the Drafts filter keeps them", async ({
+test("decision Inbox hides drafts while the dedicated Drafts view keeps them", async ({
   page,
 }) => {
   const draftKey = `channel:${GENERAL_CHANNEL_ID}`;
@@ -51,21 +51,21 @@ test("Inbox All hides drafts while the Drafts filter keeps them", async ({
     return typeof win.__BUZZ_E2E_PUSH_MOCK_FEED_ITEM__ === "function";
   });
 
-  const messageId = "drafts-all-fix-message";
+  const approvalId = "drafts-all-fix-approval";
   await page.evaluate(
-    ({ channelId, currentPubkey, messageId: id, senderPubkey }) => {
+    ({ approvalEventId: id, channelId, currentPubkey, senderPubkey }) => {
       const pushFeedItem = (window as MockFeedWindow)
         .__BUZZ_E2E_PUSH_MOCK_FEED_ITEM__;
       if (!pushFeedItem) throw new Error("Mock feed helper is not installed.");
       pushFeedItem({
-        category: "mention",
+        category: "needs_action",
         channel_id: channelId,
         channel_name: "general",
         channel_type: "stream",
-        content: "Regular message that belongs in All",
+        content: "Approve the draft review before it is published",
         created_at: Math.floor(Date.now() / 1_000),
         id,
-        kind: 9,
+        kind: 46010,
         pubkey: senderPubkey,
         tags: [
           ["h", channelId],
@@ -74,25 +74,24 @@ test("Inbox All hides drafts while the Drafts filter keeps them", async ({
       });
     },
     {
+      approvalEventId: approvalId,
       channelId: GENERAL_CHANNEL_ID,
       currentPubkey: MOCK_IDENTITY_PUBKEY,
-      messageId,
       senderPubkey: TEST_IDENTITIES.alice.pubkey,
     },
   );
 
-  // All view: the message is present, the draft row is not.
-  await expect(page.getByTestId(`home-inbox-item-${messageId}`)).toBeVisible();
+  // All view: the structured approval is present, while the draft row is not.
+  await expect(page.getByTestId(`home-inbox-item-${approvalId}`)).toBeVisible();
   await expect(page.getByTestId(`home-all-drafts-${draftKey}`)).toHaveCount(0);
   await waitForAnimations(page);
   await page
     .getByTestId("home-inbox")
     .screenshot({ path: `${SHOTS}/01-all-view-no-drafts.png` });
 
-  // Drafts filter: the draft is still listed.
-  await page.getByTestId("inbox-filter-trigger").click();
-  await page.getByRole("menuitemradio", { name: "Drafts" }).click();
-  await page.keyboard.press("Escape");
+  // Dedicated Drafts view: the draft is still listed without mixing it into
+  // the approval-only Inbox.
+  await page.goto("/#/drafts");
   const panel = page.getByTestId("home-inbox-drafts");
   await expect(panel).toBeVisible();
   await expect(

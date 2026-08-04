@@ -53,6 +53,8 @@ export default defineConfig({
         "**/agent-readiness-screenshots.spec.ts",
         "**/agent-error-state-screenshots.spec.ts",
         "**/edit-agent.spec.ts",
+        "**/hosted-agent-edit.spec.ts",
+        "**/agent-message-summary.spec.ts",
         "**/doctor-cta-screenshots.spec.ts",
         "**/pubkey-display-screenshots.spec.ts",
         "**/file-attachment.spec.ts",
@@ -132,6 +134,7 @@ export default defineConfig({
         "**/harness-management.spec.ts",
         "**/harness-catalog-screenshots.spec.ts",
         "**/inline-custom-harness.spec.ts",
+        "**/where-to-run-config.spec.ts",
         "**/huddle-transcription.spec.ts",
       ],
       use: {

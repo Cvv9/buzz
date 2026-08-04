@@ -3,10 +3,18 @@ import type { Page } from "@playwright/test";
 export async function installWorkspaceRelayMock(
   page: Page,
   viewerPubkey: string,
-  options: { generalMemberPubkeys?: string[] } = {},
+  options: {
+    generalMemberPubkeys?: string[];
+    hostedAgentConfig?: {
+      agentPubkey: string;
+      name: string;
+      avatarUrl: string;
+      model: string;
+    };
+  } = {},
 ) {
   await page.addInitScript(
-    ({ pubkey, generalMemberPubkeys }) => {
+    ({ pubkey, generalMemberPubkeys, hostedAgentConfig }) => {
       const event = (
         kind: number,
         eventPubkey: string,
@@ -36,6 +44,23 @@ export async function installWorkspaceRelayMock(
           (index + 10).toString(16),
         );
       });
+      const hostedConfigEvents = hostedAgentConfig
+        ? [
+            event(
+              30179,
+              pubkey,
+              [["d", hostedAgentConfig.agentPubkey]],
+              JSON.stringify({
+                schema: "buzz.hosted-agent-config.v1",
+                agent_pubkey: hostedAgentConfig.agentPubkey,
+                name: hostedAgentConfig.name,
+                avatar_url: hostedAgentConfig.avatarUrl,
+                model: hostedAgentConfig.model,
+              }),
+              "88",
+            ),
+          ]
+        : [];
       const sockets = new Set<MockWebSocket>();
       const publishedEvents: ReturnType<typeof event>[] = [];
       let reactionQueryCount = 0;
@@ -180,8 +205,20 @@ export async function installWorkspaceRelayMock(
                 "4",
               ),
             ];
+          } else if (kinds.includes(30179)) {
+            events = hostedConfigEvents;
           } else if (kinds.includes(10100) || kinds.includes(30177)) {
             events = agentEvents;
+          } else if (kinds.includes(13534)) {
+            events = [
+              event(
+                13534,
+                "f".repeat(64),
+                [["member", pubkey, "owner"]],
+                "",
+                "89",
+              ),
+            ];
           } else if (
             kinds.length === 1 &&
             kinds.includes(0) &&
@@ -342,6 +379,7 @@ export async function installWorkspaceRelayMock(
     {
       pubkey: viewerPubkey,
       generalMemberPubkeys: options.generalMemberPubkeys ?? [],
+      hostedAgentConfig: options.hostedAgentConfig ?? null,
     },
   );
 }

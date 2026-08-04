@@ -11,6 +11,7 @@
 
 use buzz_core_pkg::kind::{KIND_IA_ARCHIVE_REQUEST, KIND_IA_UNARCHIVE_REQUEST};
 use nostr::{EventBuilder, EventId, Kind, Tag};
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -810,13 +811,15 @@ pub fn build_workflow_trigger(workflow_id: &str) -> Result<EventBuilder, String>
 
 /// Kind 46030 — grant an approval token (with optional note).
 pub fn build_approval_grant(token: &str, note: Option<&str>) -> Result<EventBuilder, String> {
-    let tags = vec![tag(vec!["t", token])?];
+    let token_hash = hex::encode(Sha256::digest(token.as_bytes()));
+    let tags = vec![tag(vec!["d", &token_hash])?];
     Ok(EventBuilder::new(Kind::Custom(46030), note.unwrap_or("")).tags(tags))
 }
 
 /// Kind 46031 — deny an approval token (with optional note).
 pub fn build_approval_deny(token: &str, note: Option<&str>) -> Result<EventBuilder, String> {
-    let tags = vec![tag(vec!["t", token])?];
+    let token_hash = hex::encode(Sha256::digest(token.as_bytes()));
+    let tags = vec![tag(vec!["d", &token_hash])?];
     Ok(EventBuilder::new(Kind::Custom(46031), note.unwrap_or("")).tags(tags))
 }
 
@@ -826,6 +829,25 @@ pub fn build_approval_deny(token: &str, note: Option<&str>) -> Result<EventBuild
 mod tests {
     use super::*;
     use nostr::Keys;
+
+    #[test]
+    fn approval_actions_reference_the_relay_token_hash_with_a_d_tag() {
+        let token = "approval-token";
+        let expected_hash = hex::encode(Sha256::digest(token.as_bytes()));
+        for builder in [
+            build_approval_grant(token, Some("yes")).unwrap(),
+            build_approval_deny(token, Some("no")).unwrap(),
+        ] {
+            let event = builder.sign_with_keys(&Keys::generate()).unwrap();
+            let tags: Vec<Vec<String>> = event
+                .tags
+                .iter()
+                .map(|tag| tag.as_slice().to_vec())
+                .collect();
+            assert_eq!(tags, vec![vec!["d".to_string(), expected_hash.clone()]]);
+        }
+    }
+
     #[test]
     fn channel_builders_reject_hash_only_names() {
         let channel_id = Uuid::new_v4();

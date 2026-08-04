@@ -31,22 +31,17 @@ async function openApp(page: Page) {
 function streamNames(page: Page) {
   return page
     .getByTestId("stream-list")
-    .locator("[data-testid^='channel-']")
+    .locator("[data-channel-id]")
     .evaluateAll((nodes) =>
       nodes
-        .map((n) => n.getAttribute("data-testid") ?? "")
-        .filter(
-          (id) =>
-            !id.startsWith("channel-unread") &&
-            !id.startsWith("channel-working") &&
-            !id.startsWith("channel-dm-count"),
-        )
+        .map((node) => node.getAttribute("data-testid"))
+        .filter((id): id is string => id !== null)
         .map((id) => id.replace(/^channel-/, "")),
     );
 }
 
 test.describe("per-group channel sort", () => {
-  test("01 — Channels group defaults to A–Z", async ({ page }) => {
+  test("01 — Workspace group defaults to A–Z", async ({ page }) => {
     await installMockBridge(page);
     await openApp(page);
 
@@ -55,17 +50,17 @@ test.describe("per-group channel sort", () => {
     expect(names).toEqual(sorted);
   });
 
-  test("02 — sort trigger switches Channels to Recent and persists", async ({
+  test("02 — sort trigger switches Workspace to Recent and persists", async ({
     page,
   }) => {
     await installMockBridge(page);
     await openApp(page);
 
-    // Hover the Channels header to reveal the action cluster, then open the
+    // Hover the Workspace header to reveal the action cluster, then open the
     // sort dropdown and choose Recent.
     const streamList = page.getByTestId("stream-list");
     await expect(streamList).toBeVisible();
-    await page.getByText("Channels", { exact: true }).hover();
+    await page.getByText("Workspace", { exact: true }).hover();
     const trigger = page.getByTestId("section-actions-channels");
     await expect(trigger).toBeVisible();
     await waitForAnimations(page);
@@ -116,14 +111,14 @@ test.describe("per-group channel sort", () => {
       .toEqual(["all-replies", "deep-history"]);
   });
 
-  test("03 — group preferences are independent (seeded Channels=recent leaves Forums A–Z)", async ({
+  test("03 — group preferences are independent (seeded Workspace=recent leaves Forums A–Z)", async ({
     page,
   }) => {
     await seedSortState(page, { channels: "recent" });
     await installMockBridge(page);
     await openApp(page);
 
-    // Channels reflects the seeded Recent order…
+    // Workspace reflects the seeded Recent order…
     await expect
       .poll(async () => (await streamNames(page)).slice(0, 2))
       .toEqual(["all-replies", "deep-history"]);

@@ -10,7 +10,7 @@
     "check:file-sizes": "node ./scripts/check-file-sizes.mjs",
     "check:pubkey-truncation": "node ./scripts/check-pubkey-truncation.mjs",
     "lint": "biome lint .",
-    "test:unit": "node --experimental-strip-types --test tests/buzz-download.test.ts",
+    "test:unit": "node --experimental-strip-types --test tests/buzz-download.test.ts tests/workspace-inbox-policy.test.mjs",
     "check": "biome check . && pnpm check:file-sizes && pnpm check:pubkey-truncation && pnpm test:unit",
     "format": "biome format --write .",
     "preview": "vite preview",

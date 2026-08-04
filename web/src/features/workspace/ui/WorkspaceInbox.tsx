@@ -1,4 +1,4 @@
-import { Bell, CheckCheck, Inbox } from "lucide-react";
+import { Bell, CheckCheck, Inbox, X } from "lucide-react";
 import type {
   WorkspaceInboxCategory,
   WorkspaceInboxItem,
@@ -29,44 +29,58 @@ function relativeTime(timestamp: number) {
 export function WorkspaceInbox({
   channels,
   items,
-  onMarkAllRead,
+  mode = "inbox",
+  onDismissAll,
+  onDismissItem,
   onMarkItemRead,
   onSelectItem,
   profileFor,
 }: {
   channels: readonly WorkspaceChannel[];
   items: readonly WorkspaceInboxItem[];
-  onMarkAllRead: () => void;
+  mode?: "alerts" | "inbox";
+  onDismissAll: () => void;
+  onDismissItem: (item: WorkspaceInboxItem) => void;
   onMarkItemRead: (item: WorkspaceInboxItem) => void;
   onSelectItem: (item: WorkspaceInboxItem) => void;
   profileFor: (pubkey: string) => WorkspaceProfile;
 }) {
+  const isAlerts = mode === "alerts";
+  const unreadCount = items.filter((item) => !item.isRead).length;
   const channelNames = new Map(
     channels.map((channel) => [channel.id, channel.name]),
   );
   return (
     <section
       className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
-      data-testid="workspace-inbox"
+      data-testid={isAlerts ? "workspace-alerts" : "workspace-inbox"}
     >
       <header className="flex h-16 shrink-0 items-center justify-between gap-3 border-b border-black/8 px-4 dark:border-white/8 sm:px-6">
         <div className="flex min-w-0 items-center gap-2">
-          <Inbox className="size-4 shrink-0 text-black/40 dark:text-white/35" />
+          {isAlerts ? (
+            <Bell className="size-4 shrink-0 text-black/40 dark:text-white/35" />
+          ) : (
+            <Inbox className="size-4 shrink-0 text-black/40 dark:text-white/35" />
+          )}
           <div>
-            <h1 className="text-sm font-semibold">Inbox</h1>
+            <h1 className="text-sm font-semibold">
+              {isAlerts ? "Alerts" : "Inbox"}
+            </h1>
             <p className="text-xs text-black/40 dark:text-white/35">
-              Mentions, replies, action items, and your agents’ updates.
+              {isAlerts
+                ? "Mentions and replies across every channel."
+                : "Only requests that explicitly need your approval."}
             </p>
           </div>
         </div>
-        {items.length ? (
+        {unreadCount ? (
           <button
             className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium text-black/55 hover:bg-black/5 dark:text-white/50 dark:hover:bg-white/5"
             type="button"
-            onClick={onMarkAllRead}
+            onClick={onDismissAll}
           >
             <CheckCheck className="size-3.5" />
-            Mark all read
+            {isAlerts ? "Mark all read" : "Clear inbox"}
           </button>
         ) : null}
       </header>
@@ -78,41 +92,60 @@ export function WorkspaceInbox({
               const channelExists =
                 item.channelId !== null && channelNames.has(item.channelId);
               return (
-                <button
-                  className="flex w-full gap-3 px-4 py-3 text-left hover:bg-black/[0.035] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#d36b27] dark:hover:bg-white/[0.04]"
-                  key={item.id}
-                  type="button"
-                  onClick={() => {
-                    if (channelExists) onSelectItem(item);
-                    else onMarkItemRead(item);
-                  }}
-                >
-                  <span
-                    aria-hidden="true"
-                    className="mt-1.5 size-2 shrink-0 rounded-full bg-orange-500"
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="flex items-center gap-2">
-                      <span className="truncate text-sm font-medium">
-                        {profile.name}
+                <div className="group relative flex" key={item.id}>
+                  <button
+                    className={`flex min-w-0 flex-1 gap-3 px-4 py-3 pr-12 text-left hover:bg-black/[0.035] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#d36b27] dark:hover:bg-white/[0.04] ${item.isRead ? "opacity-65" : ""}`}
+                    type="button"
+                    onClick={() => {
+                      if (channelExists) onSelectItem(item);
+                      else onMarkItemRead(item);
+                    }}
+                  >
+                    {item.isRead ? (
+                      <span
+                        aria-hidden="true"
+                        className="mt-1.5 size-2 shrink-0"
+                      />
+                    ) : (
+                      <span
+                        aria-hidden="true"
+                        className="mt-1.5 size-2 shrink-0 rounded-full bg-orange-500"
+                      />
+                    )}
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-center gap-2">
+                        <span className="truncate text-sm font-medium">
+                          {profile.name}
+                        </span>
+                        <span className="rounded-full bg-orange-500/12 px-2 py-0.5 text-[0.6875rem] font-medium text-orange-700 dark:text-orange-300">
+                          {categoryLabels[item.category]}
+                        </span>
+                        <span className="ml-auto shrink-0 text-xs text-black/40 dark:text-white/35">
+                          {relativeTime(item.createdAt)}
+                        </span>
                       </span>
-                      <span className="rounded-full bg-orange-500/12 px-2 py-0.5 text-[0.6875rem] font-medium text-orange-700 dark:text-orange-300">
-                        {categoryLabels[item.category]}
+                      <span className="mt-1 block text-sm leading-5 text-black/58 dark:text-white/55">
+                        {preview(item.content) || "No message content"}
                       </span>
-                      <span className="ml-auto shrink-0 text-xs text-black/40 dark:text-white/35">
-                        {relativeTime(item.createdAt)}
+                      <span className="mt-1 block text-xs text-black/40 dark:text-white/35">
+                        {channelExists
+                          ? `#${channelNames.get(item.channelId ?? "")}`
+                          : "Personal notification"}
                       </span>
                     </span>
-                    <span className="mt-1 block text-sm leading-5 text-black/58 dark:text-white/55">
-                      {preview(item.content) || "No message content"}
-                    </span>
-                    <span className="mt-1 block text-xs text-black/40 dark:text-white/35">
-                      {channelExists
-                        ? `#${channelNames.get(item.channelId ?? "")}`
-                        : "Personal notification"}
-                    </span>
-                  </span>
-                </button>
+                  </button>
+                  <button
+                    aria-label={
+                      isAlerts ? "Mark alert read" : "Dismiss from inbox"
+                    }
+                    className="absolute right-3 top-3 inline-flex size-8 items-center justify-center rounded-lg text-black/35 opacity-0 transition hover:bg-black/5 hover:text-black/65 focus-visible:opacity-100 group-hover:opacity-100 dark:text-white/35 dark:hover:bg-white/5 dark:hover:text-white/70"
+                    data-testid={`workspace-inbox-dismiss-${item.id}`}
+                    onClick={() => onDismissItem(item)}
+                    type="button"
+                  >
+                    <X className="size-3.5" />
+                  </button>
+                </div>
               );
             })}
           </div>
@@ -122,10 +155,13 @@ export function WorkspaceInbox({
               <div className="mx-auto flex size-12 items-center justify-center rounded-2xl bg-[#d7d72e]/25 text-[#7d7e00]">
                 <Bell className="size-5" />
               </div>
-              <h2 className="mt-4 font-semibold">You’re all caught up</h2>
+              <h2 className="mt-4 font-semibold">
+                {isAlerts ? "No alerts yet" : "Your inbox is clear"}
+              </h2>
               <p className="mt-2 text-sm leading-6 text-black/45 dark:text-white/40">
-                New mentions, replies, action items, and personal-agent updates
-                will appear here.
+                {isAlerts
+                  ? "Mentions and replies will appear here without getting lost in channel traffic."
+                  : "Requests appear only when they explicitly require your approval."}
               </p>
             </div>
           </div>

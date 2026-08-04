@@ -5,13 +5,17 @@ import {
   useRelayAgentsQuery,
 } from "@/features/agents/hooks";
 import { mergeKnownAgentPubkeys } from "@/features/agents/knownAgentPubkeys";
+import type { RelayAgent } from "@/shared/api/types";
 import { useStableSet } from "@/shared/hooks/useStableReference";
 
 const EMPTY_KNOWN_AGENT_PUBKEYS: ReadonlySet<string> = new Set();
+const EMPTY_RELAY_AGENTS: readonly RelayAgent[] = [];
 
 const KnownAgentPubkeysContext = React.createContext<ReadonlySet<string>>(
   EMPTY_KNOWN_AGENT_PUBKEYS,
 );
+const RelayAgentDirectoryContext =
+  React.createContext<readonly RelayAgent[]>(EMPTY_RELAY_AGENTS);
 
 /**
  * Owns the app's only React Query subscription to the known-agent source
@@ -40,7 +44,7 @@ export function KnownAgentPubkeysProvider({
   children: React.ReactNode;
 }) {
   const managedAgents = useManagedAgentsQuery().data;
-  const relayAgents = useRelayAgentsQuery().data;
+  const relayAgents = useRelayAgentsQuery().data ?? EMPTY_RELAY_AGENTS;
 
   const merged = React.useMemo(
     () => mergeKnownAgentPubkeys(managedAgents, relayAgents),
@@ -50,7 +54,9 @@ export function KnownAgentPubkeysProvider({
 
   return (
     <KnownAgentPubkeysContext.Provider value={stable}>
-      {children}
+      <RelayAgentDirectoryContext.Provider value={relayAgents}>
+        {children}
+      </RelayAgentDirectoryContext.Provider>
     </KnownAgentPubkeysContext.Provider>
   );
 }
@@ -81,4 +87,9 @@ export function KnownAgentPubkeysProvider({
  */
 export function useKnownAgentPubkeys(): ReadonlySet<string> {
   return React.useContext(KnownAgentPubkeysContext);
+}
+
+/** Current hosted-agent directory records from the provider's shared query. */
+export function useRelayAgentDirectory(): readonly RelayAgent[] {
+  return React.useContext(RelayAgentDirectoryContext);
 }

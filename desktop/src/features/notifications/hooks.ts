@@ -392,8 +392,8 @@ export function useHomeFeedNotificationState(
     readStoredSeenFeedIds(normalizedPubkey),
   );
   const currentFeedItems = React.useMemo(() => {
-    return buildHomeBadgeFeedItems(feed, extraInboxItems, localUnreadFeedIds);
-  }, [extraInboxItems, feed, localUnreadFeedIds]);
+    return buildHomeBadgeFeedItems(feed, extraInboxItems);
+  }, [extraInboxItems, feed]);
   const currentFeedIds = React.useMemo(
     () => currentFeedItems.map((item) => item.id),
     [currentFeedItems],

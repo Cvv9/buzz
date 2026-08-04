@@ -304,6 +304,12 @@ pub const KIND_MANAGED_AGENT: u32 = 30177;
 /// Content carries only sanitized fields: no env vars, no `respond_to`
 /// allowlist pubkeys, no source or local ids, no filesystem paths, no secrets.
 pub const KIND_TEAM_CATALOG: u32 = 30178;
+/// Buzz hosted-agent configuration (parameterized replaceable, admin-authored).
+///
+/// Addressed by `(admin pubkey, kind, agent pubkey)`. Clients use this public,
+/// secret-free projection to override a hosted agent's display name, avatar,
+/// and desired model without requiring custody of the agent's signing key.
+pub const KIND_HOSTED_AGENT_CONFIG: u32 = 30179;
 
 // NIP-56 reporting
 /// NIP-56: Report an event, pubkey, or blob to relay moderators (kind:1984).

@@ -108,6 +108,12 @@ type MockRelayAgentSeed = {
   channelNames?: string[];
   channelIds?: string[];
   status?: PresenceStatus;
+  avatarUrl?: string | null;
+  audience?: "community" | "owner";
+  ownerPubkey?: string | null;
+  accessTier?: "shared" | "personal" | "admin";
+  model?: string | null;
+  models?: Array<{ id: string; name?: string | null }>;
 };
 
 type MockPersonaSeed = {
@@ -507,6 +513,11 @@ type E2eConfig = {
      * returning a catalog.
      */
     discoverAgentModelsError?: string;
+    // Backend provider mocks for the create-agent "Run on" section. See
+    // tests/helpers/bridge.ts:MockBridgeOptions for semantics.
+    backendProviders?: Array<{ id: string; binaryPath: string }>;
+    backendProviderProbeResult?: Record<string, unknown>;
+    backendProviderProbeDelayMs?: number;
   };
   relayHttpUrl?: string;
   relayWsUrl?: string;
@@ -770,6 +781,12 @@ type RawRelayAgent = {
   status: PresenceStatus;
   respond_to?: "owner-only" | "allowlist" | "anyone";
   respond_to_allowlist?: string[];
+  avatar_url?: string | null;
+  audience?: "community" | "owner";
+  owner_pubkey?: string | null;
+  access_tier?: "shared" | "personal" | "admin";
+  model?: string | null;
+  models?: Array<{ id: string; name?: string | null }>;
 };
 
 type RawManagedAgent = {
@@ -2124,7 +2141,9 @@ function buildSeededManagedAgent(seed: MockManagedAgentSeed): MockManagedAgent {
 }
 
 function resetMockRelayAgents(config?: E2eConfig) {
-  mockRelayAgents = defaultMockRelayAgents.map((agent) => ({
+  const baseRelayAgents =
+    config?.mock?.relayAgents === undefined ? defaultMockRelayAgents : [];
+  mockRelayAgents = baseRelayAgents.map((agent) => ({
     ...agent,
     channels: [...agent.channels],
     channel_ids: [...agent.channel_ids],
@@ -2149,6 +2168,12 @@ function resetMockRelayAgents(config?: E2eConfig) {
       status: seed.status ?? "online",
       respond_to: seed.respondTo ?? "owner-only",
       respond_to_allowlist: seed.respondToAllowlist ?? [],
+      avatar_url: seed.avatarUrl ?? null,
+      audience: seed.audience ?? "community",
+      owner_pubkey: seed.ownerPubkey ?? null,
+      access_tier: seed.accessTier ?? "shared",
+      model: seed.model ?? null,
+      models: seed.models ?? [],
     });
   }
 }
@@ -8366,6 +8391,7 @@ async function handleUpdateManagedAgent(args: {
   input: {
     pubkey: string;
     name?: string;
+    avatarUrl?: string | null;
     model?: string | null;
     systemPrompt?: string | null;
     envVars?: Record<string, string>;
@@ -8376,6 +8402,9 @@ async function handleUpdateManagedAgent(args: {
   const agent = getMockManagedAgent(args.input.pubkey);
   if (args.input.name !== undefined) {
     agent.name = args.input.name;
+  }
+  if (args.input.avatarUrl !== undefined) {
+    agent.avatar_url = args.input.avatarUrl;
   }
   if (args.input.model !== undefined) {
     agent.model = args.input.model;
@@ -11064,9 +11093,22 @@ export function maybeInstallE2eTauriMocks() {
           activeConfig,
         );
       case "discover_backend_providers":
-        return [];
-      case "probe_backend_provider":
-        return { ok: false, error: "mock: no providers available" };
+        return activeConfig?.mock?.backendProviders ?? [];
+      case "probe_backend_provider": {
+        const probeDelayMs =
+          activeConfig?.mock?.backendProviderProbeDelayMs ?? 0;
+        if (probeDelayMs > 0) {
+          await new Promise((resolve) =>
+            window.setTimeout(resolve, probeDelayMs),
+          );
+        }
+        return (
+          activeConfig?.mock?.backendProviderProbeResult ?? {
+            ok: false,
+            error: "mock: no providers available",
+          }
+        );
+      }
       case "discover_managed_agent_prereqs":
         return handleDiscoverManagedAgentPrereqs(
           payload as Parameters<typeof handleDiscoverManagedAgentPrereqs>[0],
@@ -11658,6 +11700,18 @@ export function maybeInstallE2eTauriMocks() {
           payload as Parameters<typeof handleGetChannelMembers>[0],
           activeConfig,
         );
+      case "list_relay_members":
+        return { members: mockRelayMembers.map((member) => ({ ...member })) };
+      case "get_my_relay_membership": {
+        const pubkey = getMockMemberPubkey(activeConfig);
+        const membership = mockRelayMembers.find(
+          (member) => member.pubkey === pubkey,
+        );
+        if (!membership) {
+          throw new Error("relay returned 404 Not Found");
+        }
+        return { ...membership };
+      }
       case "update_channel":
         return handleUpdateChannel(
           (payload as { input: Parameters<typeof handleUpdateChannel>[0] })

@@ -4,6 +4,11 @@ Scope: `desktop/src/features/agents/` (config surfaces, shared config renderer,
 and the agent config core). Read this before changing how harness / provider /
 model / effort configuration is modeled, rendered, persisted, or applied.
 
+Cross-surface plan: `docs/agent-surface-map.md`. Read and update that map when
+changing agent identity, avatar, model, access, channel membership, mentions,
+Inbox/history presentation, routes, event shapes, or cache invalidation. A
+configuration change is incomplete when only the `/agents` screen is updated.
+
 Plan of record: `Buzz/Harness-Provider-Model.md` in Morgan's Obsidian vault
 (PR sequence, decisions log). PRs: #2140 (rename), #2148 (flag reduction),
 #2156 (honest model states), #2158 (Agent Config Core).
@@ -25,6 +30,16 @@ X" flag): add it to `KnownAcpRuntime` first, expose it on
 with a TypeScript lookup table or an id comparison in a component.
 
 ## Rules
+
+Hosted-agent identity/config is a separate capability-driven path. The hosted
+runtime advertises its model catalog in its signed kind:10100 directory event;
+the frontend must render those options and must not maintain a provider/model
+table. Admin edits are stored in an admin-authored kind:30179 event keyed by the
+hosted agent pubkey. `list_relay_agents` accepts only community owner/admin
+authors (or the agent's declared owner), chooses the newest authorized head,
+and every presentation surface treats that merged name/avatar as
+authoritative over stale kind:0 metadata. A hosted model save also uses the
+authenticated observer `switch_model` control for the agent's known channels.
 
 1. **No hardcoded harness-ID checks in render code.** `runtime.id === "claude"`
    belongs in `deriveAgentConfigFieldModel` (once, with a named reason), never
@@ -80,7 +95,10 @@ with a TypeScript lookup table or an id comparison in a component.
    picker while discovery is in flight and after IPC resolves with no usable
    options (`modelDiscoverySuccessfulEmpty` / `isSuccessfulEmptyDiscovery`).
    A thrown or unavailable discovery keeps the control so #2246 failure UI can
-   render, and must not heal/clear persisted model or effort. Full disclosure
+   render, and must not heal/clear persisted model or effort. When that control
+   remains visible for an `acpNative` harness, its zero-value option is
+   **Runtime default** even when no baked/global fallback exists; optional
+   native selection must never collapse to only **Custom model**. Full disclosure
    still shows the control when Custom model is available. Required-model
    harnesses always keep the field. Gate: `defaults hides model when optional
    harness has empty discovery` (and the failed-discovery counterpart) in
@@ -173,6 +191,10 @@ with a TypeScript lookup table or an id comparison in a component.
 - Rust: `runtime_metadata_env_vars` tests pin spawn-time key application.
 - Rust: persona sharing/retention tests pin relay+owner scoping, durable
   enqueue errors, relay rejection/unavailability, and accepted publication.
+- `lib/agentSurfaceMapContract.test.mjs` — all declared desktop/web routes stay
+  inventoried, search and mentions share the canonical access policy, Inbox
+  overlays current hosted presentation, and both clients retain hosted-config
+  readers.
 
 ## Keep this file true
 

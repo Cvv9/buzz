@@ -12,6 +12,43 @@ test.beforeEach(async ({ page }) => {
   await installMockBridge(page);
 });
 
+test("Alerts is a first-class sidebar destination", async ({ page }) => {
+  await page.goto("/");
+
+  await page.getByTestId("open-alerts-view").click();
+
+  await expect(page).toHaveURL(/\/alerts$/);
+  await expect(page.getByTestId("inbox-filter-trigger")).toContainText(
+    "Alerts",
+  );
+});
+
+test("Workspace channels have a visible persistent disclosure control", async ({
+  page,
+}) => {
+  await page.goto("/");
+
+  const toggle = page.getByTestId("stream-list-section-label");
+  await expect(toggle).toContainText("Workspace");
+  await expect(toggle.locator("span").nth(1)).toHaveText(/^\d+$/);
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+
+  const chevronOpacity = await toggle
+    .locator("span[aria-hidden='true']")
+    .evaluate((element) =>
+      Number.parseFloat(getComputedStyle(element).opacity),
+    );
+  expect(chevronOpacity).toBeGreaterThan(0);
+
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByTestId("stream-list")).toHaveCount(0);
+
+  await page.reload();
+  await expect(toggle).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByTestId("stream-list")).toHaveCount(0);
+});
+
 async function sidebarWidth(page: Page) {
   return page.getByTestId("app-sidebar").evaluate((element) => {
     return Math.round(element.getBoundingClientRect().width);

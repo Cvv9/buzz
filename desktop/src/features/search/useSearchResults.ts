@@ -4,6 +4,7 @@ import {
   useManagedAgentsQuery,
   useRelayAgentsQuery,
 } from "@/features/agents/hooks";
+import { relayAgentIsSharedWithUser } from "@/features/agents/lib/agentAutocompleteEligibility";
 import { useIsArchivedPredicate } from "@/features/identity-archive/hooks";
 import {
   useUserSearchQuery,
@@ -24,6 +25,7 @@ import type { Channel, SearchHit, UserSearchResult } from "@/shared/api/types";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 
 export const MIN_SEARCH_QUERY_LENGTH = 2;
+const NO_SHARED_CHANNELS: ReadonlySet<string> = new Set();
 
 function formatUserResultName(user: UserSearchResult) {
   return user.displayName?.trim() || user.nip05Handle?.trim() || user.pubkey;
@@ -288,7 +290,7 @@ export function useSearchResults({
     const pubkeys = new Set(managedAgentPubkeys);
 
     for (const agent of relayAgentsQuery.data ?? []) {
-      if (agent.respondTo === "anyone") {
+      if (relayAgentIsSharedWithUser(agent, NO_SHARED_CHANNELS)) {
         pubkeys.add(normalizePubkey(agent.pubkey));
       }
     }
@@ -355,7 +357,7 @@ export function useSearchResults({
     }
 
     for (const agent of relayAgentsQuery.data ?? []) {
-      if (agent.respondTo !== "anyone") {
+      if (!relayAgentIsSharedWithUser(agent, NO_SHARED_CHANNELS)) {
         continue;
       }
 

@@ -1,4 +1,4 @@
-import { Activity, Bot, FolderGit2, Inbox, Zap } from "lucide-react";
+import { Activity, Bell, Bot, FolderGit2, Inbox, Zap } from "lucide-react";
 
 import { TopbarSearch } from "@/features/search/ui/TopbarSearch";
 import { FeatureGate } from "@/shared/features";
@@ -14,6 +14,7 @@ import { SidebarMenuLabel } from "@/shared/ui/sidebar-menu-label";
 
 type SidebarSelectedView =
   | "home"
+  | "alerts"
   | "channel"
   | "messages"
   | "agents"
@@ -37,6 +38,7 @@ type AppSidebarPinnedHeaderProps = {
 
 type AppSidebarPrimaryMenuProps = {
   homeBadgeCount: number;
+  onSelectAlerts: () => void;
   onSelectAgents: () => void;
   onSelectHome: () => void;
   onSelectProjects: () => void;
@@ -82,6 +84,7 @@ export function AppSidebarPinnedHeader({
 
 export function AppSidebarPrimaryMenu({
   homeBadgeCount,
+  onSelectAlerts,
   onSelectAgents,
   onSelectHome,
   onSelectProjects,
@@ -114,6 +117,18 @@ export function AppSidebarPrimaryMenu({
               {Math.min(homeBadgeCount, 99)}
             </SidebarMenuBadge>
           ) : null}
+        </SidebarMenuItem>
+        <SidebarMenuItem>
+          <SidebarMenuButton
+            data-testid="open-alerts-view"
+            isActive={selectedView === "alerts"}
+            onClick={onSelectAlerts}
+            tooltip="Alerts"
+            type="button"
+          >
+            <Bell className="h-4 w-4" />
+            <SidebarMenuLabel>Alerts</SidebarMenuLabel>
+          </SidebarMenuButton>
         </SidebarMenuItem>
         <FeatureGate feature="pulse">
           <SidebarMenuItem>

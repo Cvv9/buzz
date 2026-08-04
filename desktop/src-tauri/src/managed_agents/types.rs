@@ -208,6 +208,16 @@ pub struct RelayAgentInfo {
     pub audience: Option<String>,
     pub owner_pubkey: Option<String>,
     pub access_tier: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub models: Vec<RelayAgentModelInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelayAgentModelInfo {
+    pub id: String,
+    pub name: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ManagedAgentRecord {

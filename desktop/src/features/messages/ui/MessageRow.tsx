@@ -36,6 +36,7 @@ import { useChannelNavigation } from "@/shared/context/ChannelNavigationContext"
 import { parseImetaTags } from "@/shared/ui/markdown/parseImeta";
 import { useMessageEmoji } from "@/features/messages/lib/useMessageEmoji";
 import { parseWaveMessageContent } from "@/features/messages/lib/waveMessage";
+import { projectAgentMessage } from "@/features/messages/lib/agentMessageProjection";
 import { resolveSnapshotSharedBy } from "@/features/messages/lib/snapshotSharedBy";
 import { resolveMentionProps } from "@/shared/lib/resolveMentionNames";
 import { Markdown } from "@/shared/ui/markdown";
@@ -209,6 +210,16 @@ export const MessageRow = React.memo(
       (message.pubkey && isKnownAgentPubkey(message.pubkey))
         ? "bot"
         : message.role;
+    const authorIsAgent = Boolean(
+      message.pubkey && isKnownAgentPubkey(message.pubkey),
+    );
+    const projectedBody = React.useMemo(
+      () =>
+        authorIsAgent
+          ? projectAgentMessage(message.body)
+          : { content: message.body, rawDetailsHidden: false },
+      [authorIsAgent, message.body],
+    );
     const agentMentionPubkeysByName = React.useMemo(() => {
       if (!mentionPubkeysByName) {
         return undefined;
@@ -356,31 +367,43 @@ export const MessageRow = React.memo(
           }
 
           return (
-            <Markdown
-              channelNames={channelNames}
-              className={cn(
-                "max-w-full text-sm",
-                emojiOnly &&
-                  "text-4xl leading-tight [&_p]:leading-tight [&_img[data-custom-emoji]]:h-[1.45em] [&_img[data-custom-emoji]]:align-middle [&_button:has(img[data-custom-emoji])]:align-middle",
-              )}
-              // Only pass the author pubkey for agent-authored messages so
-              // config-nudge cards can authenticate the sender. Uses the
-              // raw event signer (signerPubkey), not a relay-delegated display
-              // author, because the agent itself must have signed the card.
-              configNudgeAuthorPubkey={getConfigNudgeAuthorPubkey(
-                message,
-                isKnownAgentPubkey,
-              )}
-              content={message.body}
-              customEmoji={customEmoji}
-              imetaByUrl={imetaByUrl}
-              agentMentionPubkeysByName={agentMentionPubkeysByName}
-              mentionNames={mentionNames}
-              mentionPubkeysByName={mentionPubkeysByName}
-              searchQuery={searchQuery}
-              snapshotSharedBy={snapshotSharedBy}
-              videoReviewContext={videoReviewContext}
-            />
+            <>
+              <Markdown
+                channelNames={channelNames}
+                className={cn(
+                  "max-w-full text-sm",
+                  emojiOnly &&
+                    "text-4xl leading-tight [&_p]:leading-tight [&_img[data-custom-emoji]]:h-[1.45em] [&_img[data-custom-emoji]]:align-middle [&_button:has(img[data-custom-emoji])]:align-middle",
+                )}
+                // Only pass the author pubkey for agent-authored messages so
+                // config-nudge cards can authenticate the sender. Uses the
+                // raw event signer (signerPubkey), not a relay-delegated display
+                // author, because the agent itself must have signed the card.
+                configNudgeAuthorPubkey={getConfigNudgeAuthorPubkey(
+                  message,
+                  isKnownAgentPubkey,
+                )}
+                content={projectedBody.content}
+                customEmoji={customEmoji}
+                imetaByUrl={imetaByUrl}
+                agentMentionPubkeysByName={agentMentionPubkeysByName}
+                mentionNames={mentionNames}
+                mentionPubkeysByName={mentionPubkeysByName}
+                searchQuery={searchQuery}
+                snapshotSharedBy={snapshotSharedBy}
+                videoReviewContext={videoReviewContext}
+              />
+              {projectedBody.rawDetailsHidden ? (
+                <details className="group/raw-details mt-2 max-w-full text-xs text-muted-foreground">
+                  <summary className="inline-flex cursor-pointer list-none items-center rounded-md px-2 py-1 font-medium transition-colors hover:bg-muted/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                    Show raw details
+                  </summary>
+                  <pre className="mt-2 max-h-80 max-w-full overflow-auto whitespace-pre-wrap break-words rounded-xl bg-muted/45 p-3 font-mono text-2xs leading-relaxed text-muted-foreground">
+                    {message.body}
+                  </pre>
+                </details>
+              ) : null}
+            </>
           );
       }
     };

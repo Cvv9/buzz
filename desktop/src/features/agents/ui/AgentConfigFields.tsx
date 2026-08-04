@@ -774,9 +774,13 @@ export function AgentConfigFields({
       {modelControlVisible ? (
         <div className={showDescriptions ? fieldClassName : undefined}>
           <AgentModelField
-            allowDefaultModel={fallbackModel !== null}
+            allowDefaultModel={modelIsOptional || fallbackModel !== null}
             defaultModelLabel={
-              fallbackModel ? `Default model (${fallbackModel})` : undefined
+              fallbackModel
+                ? `Default model (${fallbackModel})`
+                : modelIsOptional
+                  ? "Runtime default"
+                  : undefined
             }
             disableSelectDuringDiscovery={disableModelSelectDuringDiscovery}
             disabled={dependentFieldsDisabled}

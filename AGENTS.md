@@ -99,6 +99,15 @@ inside the background PowerShell process.
 
 See CONTRIBUTING.md for full setup details and dependency requirements.
 
+### Agent changes are cross-surface changes
+
+Before changing an agent name, avatar, model, access rule, channel membership,
+mention behavior, or historical message presentation, read
+[`docs/agent-surface-map.md`](docs/agent-surface-map.md). It inventories the
+relay events, precedence rules, write paths, caches, desktop/web routes, UI
+consumers, and required tests. Update the map in the same change when a route,
+source of truth, consumer, or invalidation boundary changes.
+
 ---
 
 ## Quality Gates

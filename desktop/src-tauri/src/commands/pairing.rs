@@ -472,13 +472,13 @@ fn parse_relay_event(text: &str, sub_id: &str) -> Option<nostr::Event> {
 #[derive(Debug, PartialEq, Eq)]
 enum PairingRelay {
     Configured(String),
-    LegacyPath,
     MainRelay,
 }
 
 /// Prefer the relay-advertised dedicated pairing URL. The legacy `/pair`
-/// convention remains as a compatibility fallback for NIP-43 relays that do
-/// not advertise the extension yet.
+/// convention is not inferred from NIP-43: membership support does not prove a
+/// `/pair` sidecar exists, and modern Buzz relays carry pairing events on their
+/// main WebSocket when no dedicated URL is advertised.
 async fn probe_pairing_relay(relay_url: &str) -> PairingRelay {
     let http_url = if let Some(rest) = relay_url.strip_prefix("wss://") {
         format!("https://{rest}")
@@ -517,13 +517,6 @@ fn resolve_pairing_relay_url(
 ) -> Result<String, String> {
     match pairing_relay {
         PairingRelay::Configured(url) => Ok(url),
-        PairingRelay::LegacyPath => {
-            let mut url =
-                url::Url::parse(main_relay_url).map_err(|e| format!("invalid relay URL: {e}"))?;
-            let path = url.path().trim_end_matches('/').to_string();
-            url.set_path(&format!("{path}/pair"));
-            Ok(url.to_string())
-        }
         PairingRelay::MainRelay => Ok(main_relay_url.to_string()),
     }
 }
@@ -540,15 +533,7 @@ fn pairing_relay_from_nip11(json: &serde_json::Value) -> PairingRelay {
         }
     }
 
-    if json
-        .get("supported_nips")
-        .and_then(|value| value.as_array())
-        .is_some_and(|nips| nips.iter().any(|nip| nip.as_u64() == Some(43)))
-    {
-        PairingRelay::LegacyPath
-    } else {
-        PairingRelay::MainRelay
-    }
+    PairingRelay::MainRelay
 }
 
 fn parse_auth_challenge(text: &str) -> Option<String> {
@@ -665,7 +650,7 @@ mod pairing_relay_tests {
     }
 
     #[test]
-    fn configured_pairing_relay_takes_precedence_over_legacy_path() {
+    fn configured_pairing_relay_takes_precedence_over_membership_support() {
         let document = serde_json::json!({
             "pairing_relay_url": "wss://pairing.buzz.xyz",
             "supported_nips": [43]
@@ -678,16 +663,13 @@ mod pairing_relay_tests {
     }
 
     #[test]
-    fn invalid_pairing_relay_url_falls_back_to_legacy_path() {
+    fn invalid_pairing_relay_url_uses_main_relay() {
         let document = serde_json::json!({
             "pairing_relay_url": "https://pairing.buzz.xyz",
             "supported_nips": [43]
         });
 
-        assert_eq!(
-            pairing_relay_from_nip11(&document),
-            PairingRelay::LegacyPath
-        );
+        assert_eq!(pairing_relay_from_nip11(&document), PairingRelay::MainRelay);
     }
 
     #[test]
@@ -709,14 +691,16 @@ mod pairing_relay_tests {
     }
 
     #[test]
-    fn legacy_pairing_relay_appends_pair_path() {
+    fn nip43_without_pairing_url_uses_main_relay() {
         let resolved = resolve_pairing_relay_url(
             "wss://flint.communities.buzz.xyz/community",
-            PairingRelay::LegacyPath,
+            pairing_relay_from_nip11(&serde_json::json!({
+                "supported_nips": [1, 11, 43]
+            })),
         )
-        .expect("resolve legacy pairing relay");
+        .expect("resolve main pairing relay");
 
-        assert_eq!(resolved, "wss://flint.communities.buzz.xyz/community/pair");
+        assert_eq!(resolved, "wss://flint.communities.buzz.xyz/community");
     }
 
     #[test]
