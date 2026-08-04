@@ -207,6 +207,7 @@ test.describe("inbox refactor screenshots", () => {
     await installMockBridge(page, { mode: "mock" });
 
     await page.goto("/", { waitUntil: "domcontentloaded" });
+    await page.getByTestId("open-alerts-view").click();
     await waitForMockFeedHelpers(page);
 
     const dmIds = ["shot-dm-first", "shot-dm-second", "shot-dm-third"];
@@ -276,6 +277,7 @@ test.describe("inbox refactor screenshots", () => {
     await installMockBridge(page, { mode: "mock" });
 
     await page.goto("/", { waitUntil: "domcontentloaded" });
+    await page.getByTestId("open-alerts-view").click();
     await waitForMockFeedHelpers(page);
 
     const replyIds = [

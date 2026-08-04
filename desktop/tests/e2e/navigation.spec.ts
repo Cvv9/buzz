@@ -225,10 +225,11 @@ test("open thread panels survive reload", async ({ page }) => {
   await expect(threadPanel).toBeVisible();
 });
 
-test("home inbox selection survives reload and back restores it", async ({
+test("Alerts selection survives reload and back restores it", async ({
   page,
 }) => {
   await page.goto("/");
+  await page.getByTestId("open-alerts-view").click();
 
   const inboxList = page.getByTestId("home-inbox-list");
   await expect(inboxList).toBeVisible();

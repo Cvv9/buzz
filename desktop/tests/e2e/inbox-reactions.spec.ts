@@ -29,15 +29,16 @@ type MockWindow = Window & {
   }) => unknown;
 };
 
-// Regression test: a reaction added from the Inbox detail pane must survive
-// the post-toggle refetch. Inbox items are typically thread replies, which the
+// Regression test: a reaction added from the Alerts detail pane must survive
+// the post-toggle refetch. Alert items are typically thread replies, which the
 // server-assembled channel window does NOT carry reactions for — the Inbox
 // must hydrate them by `#e` reference or the optimistic pill vanishes.
-test("inbox reaction on a thread-reply mention persists after refetch", async ({
+test("Alerts reaction on a thread-reply mention persists after refetch", async ({
   page,
 }) => {
   await installMockBridge(page);
   await page.goto("/");
+  await page.getByTestId("open-alerts-view").click();
   await expect(page.getByTestId("home-inbox-list")).toBeVisible();
   await page.waitForFunction(() => {
     const win = window as MockWindow;
@@ -114,7 +115,7 @@ test("inbox reaction on a thread-reply mention persists after refetch", async ({
     },
   );
 
-  // Open the inbox item and react via the hover action bar's quick reaction.
+  // Open the alert item and react via the hover action bar's quick reaction.
   const item = page.getByTestId(`home-inbox-item-${replyEvent.id}`);
   await item.click();
   const detail = page.getByTestId("home-inbox-detail");
