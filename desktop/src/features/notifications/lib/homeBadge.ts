@@ -5,6 +5,7 @@ import {
   isBroadcastReply,
   isThreadReply,
 } from "@/features/messages/lib/threading";
+import { KIND_APPROVAL_REQUEST } from "@/shared/constants/kinds";
 
 function dedupeFeedItemsById(items: readonly FeedItem[]): FeedItem[] {
   const seen = new Set<string>();
@@ -22,22 +23,14 @@ function dedupeFeedItemsById(items: readonly FeedItem[]): FeedItem[] {
 export function buildHomeBadgeFeedItems(
   feed: HomeFeedResponse | undefined,
   extraInboxItems: readonly FeedItem[],
-  localUnreadFeedIds: ReadonlySet<string>,
 ): FeedItem[] {
   const items = feed
-    ? [...feed.feed.mentions, ...feed.feed.needsAction, ...extraInboxItems]
+    ? [...feed.feed.needsAction, ...extraInboxItems]
     : [...extraInboxItems];
 
-  if (feed && localUnreadFeedIds.size > 0) {
-    items.push(
-      ...feed.feed.activity.filter((item) => localUnreadFeedIds.has(item.id)),
-      ...feed.feed.agentActivity.filter((item) =>
-        localUnreadFeedIds.has(item.id),
-      ),
-    );
-  }
-
-  return dedupeFeedItemsById(items);
+  return dedupeFeedItemsById(
+    items.filter((item) => item.kind === KIND_APPROVAL_REQUEST),
+  );
 }
 
 export function shouldCountTowardHomeBadgeSubtotal(
