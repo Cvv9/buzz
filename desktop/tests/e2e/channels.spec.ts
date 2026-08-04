@@ -658,10 +658,8 @@ test("sends the first message from the new direct message composer", async ({
   await page.goto("/");
   await openNewMessagePage(page);
 
-  await page.getByTestId("new-dm-search").fill("charlie");
-  await page
-    .getByTestId(`new-dm-result-${TEST_IDENTITIES.charlie.pubkey}`)
-    .click();
+  await page.getByTestId("new-dm-search").fill("bob");
+  await page.getByTestId(`new-dm-result-${TEST_IDENTITIES.bob.pubkey}`).click();
 
   const message = "First message from the new conversation";
   await page.getByTestId("message-input").fill(message);
@@ -674,15 +672,14 @@ test("sends the first message from the new direct message composer", async ({
 test("creates the DM before preparing a persona mention", async ({ page }) => {
   await installMockBridge(page, {
     activePersonaIds: ["builtin:fizz"],
+    relayAgents: [],
     createManagedAgentDelayMs: 1_000,
   });
   await page.goto("/");
   await openNewMessagePage(page);
 
-  await page.getByTestId("new-dm-search").fill("charlie");
-  await page
-    .getByTestId(`new-dm-result-${TEST_IDENTITIES.charlie.pubkey}`)
-    .click();
+  await page.getByTestId("new-dm-search").fill("bob");
+  await page.getByTestId(`new-dm-result-${TEST_IDENTITIES.bob.pubkey}`).click();
 
   const input = page.getByTestId("message-input");
   await input.fill("Ask @fi");
@@ -709,7 +706,7 @@ test("creates the DM before preparing a persona mention", async ({ page }) => {
     .poll(async () => commandCount(await readCommandLog(page), "open_dm"))
     .toBeGreaterThan(baselineOpenDmCount);
   await expect(
-    page.getByTestId(`new-dm-selected-${TEST_IDENTITIES.charlie.pubkey}`),
+    page.getByTestId(`new-dm-selected-${TEST_IDENTITIES.bob.pubkey}`),
   ).toBeDisabled();
   await expect(page.getByTestId("new-dm-search")).toBeDisabled();
   await expect
@@ -717,7 +714,7 @@ test("creates the DM before preparing a persona mention", async ({ page }) => {
       commandCount(await readCommandLog(page), "create_managed_agent"),
     )
     .toBeGreaterThan(baselineCreateCount);
-  await expect(page.getByTestId("chat-title")).toContainText("charlie");
+  await expect(page.getByTestId("chat-title")).toContainText("bob");
   await expect(page.getByTestId("chat-title")).toContainText("Fizz");
   // Assert popover hidden after chat-title settles — by this point the send
   // flow has completed and the UI has fully transitioned away from the popover.
@@ -788,6 +785,7 @@ test("routes an agent mention from an existing DM to the expanded conversation",
   // cannot collapse into the same fast CI tick before assertions observe it.
   await installMockBridge(page, {
     activePersonaIds: ["builtin:fizz"],
+    relayAgents: [],
     createManagedAgentDelayMs: 100,
   });
   await page.goto("/");
@@ -912,6 +910,7 @@ test("does not reroute an expanded DM after the user navigates away", async ({
 }) => {
   await installMockBridge(page, {
     activePersonaIds: ["builtin:fizz"],
+    relayAgents: [],
     sendMessageDelayMs: 1_000,
   });
   await page.goto("/");
@@ -944,6 +943,7 @@ test("does not reroute an expanded DM after the channel pane unmounts", async ({
 }) => {
   await installMockBridge(page, {
     activePersonaIds: ["builtin:fizz"],
+    relayAgents: [],
     openDmDelayMs: 1_000,
   });
   await page.goto("/");
@@ -979,16 +979,15 @@ test("drops an expanded DM after the first message fails", async ({ page }) => {
   // cannot collapse into the same fast CI tick before assertions observe it.
   await installMockBridge(page, {
     activePersonaIds: ["builtin:fizz"],
+    relayAgents: [],
     createManagedAgentDelayMs: 100,
     sendMessageErrors: [sendError],
   });
   await page.goto("/");
   await openNewMessagePage(page);
 
-  await page.getByTestId("new-dm-search").fill("charlie");
-  await page
-    .getByTestId(`new-dm-result-${TEST_IDENTITIES.charlie.pubkey}`)
-    .click();
+  await page.getByTestId("new-dm-search").fill("bob");
+  await page.getByTestId(`new-dm-result-${TEST_IDENTITIES.bob.pubkey}`).click();
 
   const input = page.getByTestId("message-input");
   await input.fill("Ask @fi");
@@ -1020,7 +1019,7 @@ test("drops an expanded DM after the first message fails", async ({ page }) => {
   const retryBaseline = commandsAfterFailure.length;
   await page.getByTestId("send-message").click();
 
-  await expect(page.getByTestId("chat-title")).toHaveText("charlie");
+  await expect(page.getByTestId("chat-title")).toContainText("bob");
   await expect(page.getByTestId("message-timeline")).toContainText(
     retryMessage,
   );
@@ -1068,15 +1067,14 @@ test("drops an expanded DM after agent startup fails", async ({ page }) => {
   const startError = "Mock agent startup failed.";
   await installMockBridge(page, {
     activePersonaIds: ["builtin:fizz"],
+    relayAgents: [],
     startManagedAgentErrors: [startError],
   });
   await page.goto("/");
   await openNewMessagePage(page);
 
-  await page.getByTestId("new-dm-search").fill("charlie");
-  await page
-    .getByTestId(`new-dm-result-${TEST_IDENTITIES.charlie.pubkey}`)
-    .click();
+  await page.getByTestId("new-dm-search").fill("bob");
+  await page.getByTestId(`new-dm-result-${TEST_IDENTITIES.bob.pubkey}`).click();
 
   const input = page.getByTestId("message-input");
   await input.fill("Ask @fi");
@@ -1103,7 +1101,7 @@ test("drops an expanded DM after agent startup fails", async ({ page }) => {
   expect(
     (openDmCallsAfterFailure.at(-1)?.payload as { pubkeys?: string[] })
       ?.pubkeys,
-  ).toEqual(expect.arrayContaining([TEST_IDENTITIES.charlie.pubkey]));
+  ).toEqual(expect.arrayContaining([TEST_IDENTITIES.bob.pubkey]));
   expect(
     (openDmCallsAfterFailure.at(-1)?.payload as { pubkeys?: string[] })
       ?.pubkeys,
@@ -1113,7 +1111,7 @@ test("drops an expanded DM after agent startup fails", async ({ page }) => {
   const retryBaseline = commandsAfterFailure.length;
   await page.getByTestId("send-message").click();
 
-  await expect(page.getByTestId("chat-title")).toHaveText("charlie");
+  await expect(page.getByTestId("chat-title")).toContainText("bob");
   await expect(page.getByTestId("message-timeline")).toContainText(
     retryMessage,
   );
@@ -1126,7 +1124,7 @@ test("drops an expanded DM after agent startup fails", async ({ page }) => {
   );
   expect(
     (retryOpenDm?.payload as { pubkeys?: string[] } | undefined)?.pubkeys,
-  ).toEqual([TEST_IDENTITIES.charlie.pubkey]);
+  ).toEqual([TEST_IDENTITIES.bob.pubkey]);
   await expect(page.getByTestId("chat-title")).not.toContainText("Fizz");
 });
 

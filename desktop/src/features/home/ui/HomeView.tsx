@@ -3,7 +3,11 @@ import { RefreshCcw } from "lucide-react";
 
 import { useAppShell } from "@/app/AppShellContext";
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
-import { useKnownAgentPubkeys } from "@/features/agents/useKnownAgentPubkeys";
+import { overlayHostedAgentProfiles } from "@/features/agents/lib/hostedAgentPresentation";
+import {
+  useKnownAgentPubkeys,
+  useRelayAgentDirectory,
+} from "@/features/agents/useKnownAgentPubkeys";
 import { useChannelsQuery, useOpenDmMutation } from "@/features/channels/hooks";
 import { RightAuxiliaryPane } from "@/features/channels/ui/RightAuxiliaryPane";
 import { ChannelManagementSheet } from "@/features/channels/ui/ChannelManagementSheet";
@@ -323,20 +327,25 @@ export function HomeView({
     enabled: feedProfilePubkeys.length > 0,
   });
   const feedProfiles = feedProfilesQuery.data?.profiles;
+  const relayAgentDirectory = useRelayAgentDirectory();
+  const effectiveFeedProfiles = React.useMemo(
+    () => overlayHostedAgentProfiles(feedProfiles, relayAgentDirectory),
+    [feedProfiles, relayAgentDirectory],
+  );
   const ownedAgentPubkeys = useOwnedAgentPubkeys(
     true,
-    feedProfiles,
+    effectiveFeedProfiles,
     currentPubkey,
   );
   const feedOwnerPubkeys = React.useMemo(
     () => [
       ...new Set(
-        Object.values(feedProfiles ?? {})
+        Object.values(effectiveFeedProfiles ?? {})
           .map((profile) => profile.ownerPubkey)
           .filter((pubkey): pubkey is string => Boolean(pubkey)),
       ),
     ],
-    [feedProfiles],
+    [effectiveFeedProfiles],
   );
   const feedOwnerProfilesQuery = useUsersBatchQuery(feedOwnerPubkeys, {
     enabled: feedOwnerPubkeys.length > 0,
@@ -346,14 +355,16 @@ export function HomeView({
   const inboxAgentPubkeys = React.useMemo(() => {
     const pubkeys = new Set(communityAgentPubkeys);
 
-    for (const [pubkey, profile] of Object.entries(feedProfiles ?? {})) {
+    for (const [pubkey, profile] of Object.entries(
+      effectiveFeedProfiles ?? {},
+    )) {
       if (profile.isAgent) {
         pubkeys.add(normalizePubkey(pubkey));
       }
     }
 
     return pubkeys;
-  }, [feedProfiles, communityAgentPubkeys]);
+  }, [effectiveFeedProfiles, communityAgentPubkeys]);
   // biome-ignore lint/correctness/useExhaustiveDependencies: readStateVersion invalidates the stable getChannelReadAt callback
   const inboxItems = React.useMemo(() => {
     const items = buildInboxItems({
@@ -363,14 +374,14 @@ export function HomeView({
       getChannelReadAt,
       getMessageReadAt,
       getThreadReadAt,
-      profiles: feedProfiles,
+      profiles: effectiveFeedProfiles,
     });
     return filterInboxItems(items);
   }, [
     channels,
     currentPubkey,
     feed,
-    feedProfiles,
+    effectiveFeedProfiles,
     getChannelReadAt,
     getMessageReadAt,
     getThreadReadAt,
@@ -456,7 +467,7 @@ export function HomeView({
     currentPubkey,
     events: threadContext.events,
     ownerProfiles: feedOwnerProfiles,
-    profiles: feedProfiles,
+    profiles: effectiveFeedProfiles,
     reactionEvents: threadContext.reactionEvents,
     relaySelfPubkey,
     selectedChannel,
@@ -754,7 +765,7 @@ export function HomeView({
               item={selectedItem}
               latchedDefaultParentId={latchedDefaultParentId}
               messages={contextMessages}
-              profiles={feedProfiles}
+              profiles={effectiveFeedProfiles}
               selectedEventId={selectedEventId}
               unreadBoundaryEventId={unreadBoundaryEventId}
               onBack={
@@ -821,15 +832,16 @@ export function HomeView({
                     authorLabel: currentPubkey
                       ? resolveUserLabel({
                           currentPubkey,
-                          profiles: feedProfiles,
+                          profiles: effectiveFeedProfiles,
                           pubkey: authorPubkey,
                         })
                       : "You",
                     authorPubkey,
                     avatarUrl:
-                      currentPubkey && feedProfiles
-                        ? (feedProfiles[currentPubkey.trim().toLowerCase()]
-                            ?.avatarUrl ?? null)
+                      currentPubkey && effectiveFeedProfiles
+                        ? (effectiveFeedProfiles[
+                            currentPubkey.trim().toLowerCase()
+                          ]?.avatarUrl ?? null)
                         : null,
                     content,
                     createdAt: result.createdAt,

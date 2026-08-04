@@ -11,7 +11,7 @@ use buzz_core::kind::{
     KIND_GIT_REPO_ANNOUNCEMENT, KIND_IA_ARCHIVED, KIND_IA_ARCHIVED_LIST, KIND_IA_UNARCHIVED,
     KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION, KIND_NIP29_GROUP_ADMINS,
     KIND_NIP29_GROUP_MEMBERS, KIND_NIP29_GROUP_METADATA, KIND_NIP43_MEMBERSHIP_LIST, KIND_REACTION,
-    KIND_THREAD_SUMMARY,
+    KIND_SYSTEM_MESSAGE, KIND_THREAD_SUMMARY,
 };
 use buzz_core::StoredEvent;
 use buzz_db::channel::{MemberRecord, MemberRole};
@@ -33,7 +33,7 @@ pub fn is_admin_kind(kind: u32) -> bool {
 /// handled in `ingest_event()` before storage so we can short-circuit on
 /// duplicates without storing the event at all.
 pub fn is_side_effect_kind(kind: u32) -> bool {
-    matches!(kind, 0 | 5 | 9000..=9022 | KIND_GIT_REPO_ANNOUNCEMENT | KIND_AGENT_PROFILE | 41001..=41003 | 40099)
+    matches!(kind, 0 | 5 | 9000..=9022 | KIND_GIT_REPO_ANNOUNCEMENT | KIND_AGENT_PROFILE | 41001..=41003 | KIND_SYSTEM_MESSAGE)
 }
 
 async fn evict_live_channel_subscriptions(
@@ -765,18 +765,25 @@ pub async fn emit_system_message(
 ) -> anyhow::Result<()> {
     let channel_tag = Tag::parse(["h", &channel_id.to_string()])?;
 
-    let event = EventBuilder::new(Kind::Custom(40099), content.to_string())
-        .tags([channel_tag])
-        .sign_with_keys(&state.relay_keypair)
-        .map_err(|e| anyhow::anyhow!("failed to sign system message: {e}"))?;
+    let event = EventBuilder::new(
+        Kind::Custom(KIND_SYSTEM_MESSAGE as u16),
+        content.to_string(),
+    )
+    .tags([channel_tag])
+    .sign_with_keys(&state.relay_keypair)
+    .map_err(|e| anyhow::anyhow!("failed to sign system message: {e}"))?;
 
-    if let Err(e) = state
+    let stored = match state
         .db
         .insert_event(tenant.community(), &event, Some(channel_id))
         .await
     {
-        warn!(channel = %channel_id, error = %e, "system message insert failed");
-    }
+        Ok((stored, _)) => Some(stored),
+        Err(e) => {
+            warn!(channel = %channel_id, error = %e, "system message insert failed");
+            None
+        }
+    };
 
     // Fan out to subscribers
     if let Err(e) = state
@@ -785,6 +792,16 @@ pub async fn emit_system_message(
         .await
     {
         warn!("System message fan-out failed: {e}");
+    }
+
+    if let Some(stored) = stored {
+        if let Err(e) = state
+            .workflow_engine
+            .on_event(tenant.community(), &stored)
+            .await
+        {
+            warn!(channel = %channel_id, error = %e, "system message workflow dispatch failed");
+        }
     }
 
     Ok(())
@@ -1294,17 +1311,19 @@ async fn handle_put_user(
     // No role tag = no role change: preserve an existing member's current role and
     // fall back to Member only for a new member. Unconditionally defaulting to
     // Member let a bare PUT_USER silently demote an existing owner/admin.
+    let existing_member = state
+        .db
+        .get_members(tenant.community(), channel_id)
+        .await?
+        .into_iter()
+        .find(|member| member.pubkey == target_pubkey);
     let role: MemberRole = match extract_tag_value(event, "role") {
         Some(role_str) => role_str
             .parse()
             .map_err(|_| anyhow::anyhow!("invalid role: {role_str}"))?,
-        None => state
-            .db
-            .get_members(tenant.community(), channel_id)
-            .await?
-            .iter()
-            .find(|m| m.pubkey == target_pubkey)
-            .and_then(|m| m.role.parse().ok())
+        None => existing_member
+            .as_ref()
+            .and_then(|member| member.role.parse().ok())
             .unwrap_or(MemberRole::Member),
     };
 
@@ -1324,17 +1343,23 @@ async fn handle_put_user(
 
     let actor_hex = hex::encode(&actor_bytes);
     let target_hex = hex::encode(&target_pubkey);
-    emit_system_message(
-        tenant,
-        state,
-        channel_id,
-        serde_json::json!({
-            "type": "member_joined",
-            "actor": actor_hex,
-            "target": target_hex,
-        }),
-    )
-    .await?;
+    // PUT_USER is also used for idempotent reconciliation and role updates.
+    // Only a genuinely new active membership is a join; otherwise a policy
+    // replay or role edit would retrigger onboarding workflows.
+    if existing_member.is_none() {
+        emit_system_message(
+            tenant,
+            state,
+            channel_id,
+            serde_json::json!({
+                "type": "member_joined",
+                "actor": actor_hex,
+                "target": target_hex,
+                "role": role.as_str(),
+            }),
+        )
+        .await?;
+    }
 
     if let Err(e) = emit_group_discovery_events(tenant, state, channel_id).await {
         warn!(channel = %channel_id, error = %e, "NIP-29 group discovery emission failed");
@@ -1981,6 +2006,7 @@ async fn handle_join_request(
             "type": "member_joined",
             "actor": actor_hex,
             "target": actor_hex,
+            "role": "member",
         }),
     )
     .await?;

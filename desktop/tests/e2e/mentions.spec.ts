@@ -187,7 +187,7 @@ async function expectAgentProfileActionsHidden(
   ).toHaveCount(0);
 }
 
-test("@ trigger prioritizes channel members before runnable personas and other managed agents", async ({
+test("@ trigger prioritizes channel members before managed agents and hides starter personas", async ({
   page,
 }) => {
   await installMockBridge(page, {
@@ -208,9 +208,9 @@ test("@ trigger prioritizes channel members before runnable personas and other m
 
   const dropdown = autocomplete(page);
   await expect(dropdown).toBeVisible();
-  await expect(dropdown.getByText("alice")).toHaveCount(0);
+  await expect(dropdown.getByText("alice")).toBeVisible();
   await expect(dropdown.getByText("bob")).toBeVisible();
-  await expect(dropdown.getByText("Fizz")).toBeVisible();
+  await expect(dropdown.getByText("Fizz")).toHaveCount(0);
   await expect(dropdown.getByText("charlie")).toBeVisible();
   await expect(dropdown.getByText("outsider")).toHaveCount(0);
   const charlieRow = dropdown.locator("button", { hasText: "charlie" });
@@ -224,7 +224,6 @@ test("@ trigger prioritizes channel members before runnable personas and other m
 
   const suggestions = dropdown.locator("button");
   const suggestionText = await suggestions.allInnerTexts();
-  const fizzIndex = suggestionText.findIndex((text) => text.includes("Fizz"));
   const bobIndex = suggestionText.findIndex((text) => text.includes("bob"));
   const charlieIndex = suggestionText.findIndex((text) =>
     text.includes("charlie"),
@@ -232,12 +231,10 @@ test("@ trigger prioritizes channel members before runnable personas and other m
   const outsiderIndex = suggestionText.findIndex((text) =>
     text.includes("outsider"),
   );
-  expect(fizzIndex).toBeGreaterThanOrEqual(0);
   expect(bobIndex).toBeGreaterThanOrEqual(0);
   expect(charlieIndex).toBeGreaterThanOrEqual(0);
   expect(outsiderIndex).toEqual(-1);
-  expect(bobIndex).toBeLessThan(fizzIndex);
-  expect(fizzIndex).toBeLessThan(charlieIndex);
+  expect(bobIndex).toBeLessThan(charlieIndex);
 });
 
 test("thread autocomplete keeps multiple long names readable in a narrow panel", async ({
@@ -312,11 +309,12 @@ test("thread autocomplete keeps multiple long names readable in a narrow panel",
   }
 });
 
-test("blocks non-participant persona mentions in DM threads", async ({
+test("hides non-participant starter personas in DM threads", async ({
   page,
 }) => {
   await installMockBridge(page, {
     activePersonaIds: ["builtin:fizz"],
+    relayAgents: [],
   });
   await page.goto("/");
   await page.getByTestId("channel-bob-tyler").click();
@@ -338,22 +336,12 @@ test("blocks non-participant persona mentions in DM threads", async ({
   const threadPanel = page.getByTestId("message-thread-panel");
   const input = threadPanel.getByTestId("message-input");
   await input.fill("Ask @fi");
+  const baselineCommands = await readCommandLog(page);
   await expect(
     threadPanel
       .getByTestId("mention-autocomplete")
       .locator("button", { hasText: "Fizz" }),
-  ).toBeVisible();
-  await input.press("Enter");
-  await page.keyboard.type(" in this thread");
-  const baselineCommands = await readCommandLog(page);
-
-  await threadPanel.getByTestId("send-message").click();
-
-  await expect(
-    page.getByText(
-      "Agents must already be in a DM to be mentioned in its threads. Start a new conversation that includes the agent.",
-    ),
-  ).toBeVisible();
+  ).toHaveCount(0);
   const commands = await readCommandLog(page);
   expect(commandCount(commands, "create_managed_agent")).toBe(
     commandCount(baselineCommands, "create_managed_agent"),
@@ -361,7 +349,7 @@ test("blocks non-participant persona mentions in DM threads", async ({
   expect(commandCount(commands, "add_channel_members")).toBe(
     commandCount(baselineCommands, "add_channel_members"),
   );
-  await expect(input).toContainText("Fizz");
+  await expect(input).toContainText("@fi");
   await expect(page.getByTestId("chat-title")).toHaveText("bob-tyler");
 });
 
@@ -569,11 +557,12 @@ test("selecting a managed agent mention inserts @Name into input", async ({
   await expect(agentMentionChip).toHaveCSS("border-top-width", "0px");
 });
 
-test("selecting a persona mention creates a channel agent before sending", async ({
+test("starter personas do not replace the hosted agent directory", async ({
   page,
 }) => {
   await installMockBridge(page, {
     activePersonaIds: ["builtin:fizz"],
+    relayAgents: [],
   });
   await page.goto("/");
   await page.getByTestId("channel-general").click();
@@ -584,70 +573,7 @@ test("selecting a persona mention creates a channel agent before sending", async
 
   const dropdown = autocomplete(page);
   const fizzRow = dropdown.locator("button", { hasText: "Fizz" });
-  await expect(fizzRow).toBeVisible();
-  await expect(fizzRow.getByTestId("mention-agent-icon")).toBeVisible();
-  await expect(fizzRow.getByText("agent")).toBeVisible();
-  await expect(fizzRow.getByText("not in channel")).toBeVisible();
-  await input.press("Enter");
-  await page.keyboard.type(" for a hand");
-
-  const composerChip = input.locator(".agent-mention-highlight", {
-    hasText: "Fizz",
-  });
-  await expect(composerChip).toBeVisible();
-  await expect(composerChip).toHaveText("Fizz");
-
-  const baselineCommands = await readCommandLog(page);
-  const baselineCreateCount = commandCount(
-    baselineCommands,
-    "create_managed_agent",
-  );
-  const baselineAddCount = commandCount(
-    baselineCommands,
-    "add_channel_members",
-  );
-  const baselineStartCount = commandCount(
-    baselineCommands,
-    "start_managed_agent",
-  );
-
-  await page.getByTestId("send-message").click();
-  await expect(page.getByRole("alertdialog")).toHaveCount(0);
-
-  await expect
-    .poll(async () =>
-      commandCount(await readCommandLog(page), "create_managed_agent"),
-    )
-    .toBeGreaterThan(baselineCreateCount);
-  await expect
-    .poll(async () =>
-      commandCount(await readCommandLog(page), "add_channel_members"),
-    )
-    .toBeGreaterThan(baselineAddCount);
-  await expect
-    .poll(async () =>
-      commandCount(await readCommandLog(page), "start_managed_agent"),
-    )
-    .toBeGreaterThan(baselineStartCount);
-  await expect
-    .poll(async () => commandCount(await readCommandLog(page), "sign_event"))
-    .toBeGreaterThan(commandCount(baselineCommands, "sign_event"));
-
-  const commandsAfterSend = (await readCommandLog(page)).slice(
-    baselineCommands.length,
-  );
-  const startIndex = commandsAfterSend.indexOf("start_managed_agent");
-  const sendIndex = commandsAfterSend.indexOf("sign_event");
-  expect(startIndex).toBeGreaterThanOrEqual(0);
-  expect(sendIndex).toBeGreaterThanOrEqual(0);
-  expect(startIndex).toBeLessThan(sendIndex);
-
-  const mentionChip = page
-    .getByTestId("message-row")
-    .last()
-    .locator("[data-mention].agent-mention-highlight", { hasText: "Fizz" });
-  await expect(mentionChip).toBeVisible();
-  await expect(mentionChip).toHaveText("Fizz");
+  await expect(fizzRow).toHaveCount(0);
 });
 
 test("selecting a persona mention reuses an existing persona agent", async ({
@@ -860,6 +786,69 @@ test("hosted relay agents replace starter personas in channel mentions", async (
   await expect(
     dropdown.getByText("Physiotherapist", { exact: true }),
   ).toHaveCount(0);
+});
+
+test("community agents are mentionable and auto-added before joining any channel", async ({
+  page,
+}) => {
+  await installMockBridge(page, {
+    relayAgents: [
+      {
+        pubkey: ALLOWLIST_RELAY_AGENT_PUBKEY,
+        name: "Oracle",
+        accessTier: "shared",
+        audience: "community",
+        // Visibility is authoritative. This deliberately models a shared
+        // record whose older runtime response policy has not caught up yet.
+        respondTo: "owner-only",
+        channelIds: [],
+        channelNames: [],
+      },
+    ],
+  });
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+  await expect(page.getByTestId("chat-title")).toHaveText("general");
+
+  const input = page.getByTestId("message-input");
+  await input.fill("@Oracle");
+
+  const row = autocomplete(page).locator("button", { hasText: "Oracle" });
+  await expect(row).toBeVisible();
+  await expect(row.getByText("agent")).toBeVisible();
+  await expect(row.getByText("not in channel")).toBeVisible();
+
+  await input.fill("@Oracle say hi");
+  await page.getByTestId("send-message").click();
+  await expect(page.getByRole("alertdialog")).toHaveCount(0);
+
+  await expect
+    .poll(async () =>
+      (await readCommandPayloadLog(page)).some(({ command, payload }) => {
+        if (command !== "add_channel_members") return false;
+        const addInput = payload as Record<string, unknown> | null;
+        return (
+          addInput?.role === "bot" &&
+          Array.isArray(addInput.pubkeys) &&
+          addInput.pubkeys.includes(ALLOWLIST_RELAY_AGENT_PUBKEY)
+        );
+      }),
+    )
+    .toBe(true);
+
+  await expect
+    .poll(async () =>
+      (await readCommandPayloadLog(page)).some(({ command, payload }) => {
+        if (command !== "plugin:websocket|send") return false;
+        const data = (payload as { message?: { data?: string } } | undefined)
+          ?.message?.data;
+        return (
+          data?.includes('"kind":9') === true &&
+          data.includes(`["p","${ALLOWLIST_RELAY_AGENT_PUBKEY}"]`)
+        );
+      }),
+    )
+    .toBe(true);
 });
 
 test("owner-only hosted agents remain mentionable by their owner outside agent channels", async ({

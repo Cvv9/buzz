@@ -1,6 +1,26 @@
 import type { Channel, RelayAgent } from "@/shared/api/types";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 
+export function resolveAgentMentionDisplayName({
+  directoryName,
+  memberName,
+  profileDisplayName,
+  profileHandle,
+}: {
+  directoryName?: string | null;
+  memberName?: string | null;
+  profileDisplayName?: string | null;
+  profileHandle?: string | null;
+}) {
+  return (
+    directoryName?.trim() ||
+    memberName?.trim() ||
+    profileDisplayName?.trim() ||
+    profileHandle?.trim() ||
+    null
+  );
+}
+
 export function getSharedChannelIds(channels: readonly Channel[] | undefined) {
   return new Set(
     (channels ?? [])
@@ -12,9 +32,14 @@ export function getSharedChannelIds(channels: readonly Channel[] | undefined) {
 export function relayAgentIsSharedWithUser(
   agent: Pick<
     RelayAgent,
-    "channelIds" | "ownerPubkey" | "respondTo" | "respondToAllowlist"
+    | "accessTier"
+    | "audience"
+    | "channelIds"
+    | "ownerPubkey"
+    | "respondTo"
+    | "respondToAllowlist"
   >,
-  sharedChannelIds: ReadonlySet<string>,
+  _sharedChannelIds: ReadonlySet<string>,
   currentPubkey?: string | null,
 ) {
   const normalizedCurrentPubkey = currentPubkey
@@ -24,6 +49,25 @@ export function relayAgentIsSharedWithUser(
   const normalizedOwnerPubkey = agent.ownerPubkey
     ? normalizePubkey(agent.ownerPubkey)
     : null;
+
+  const isPrivateAgent =
+    agent.audience === "owner" ||
+    agent.accessTier === "personal" ||
+    agent.accessTier === "admin";
+  if (isPrivateAgent) {
+    return Boolean(
+      normalizedCurrentPubkey &&
+        normalizedOwnerPubkey === normalizedCurrentPubkey,
+    );
+  }
+
+  // Access tier and audience are the authoritative visibility controls for
+  // the hosted directory. Community agents must be discoverable before their
+  // first channel invitation; older runtime records can still carry a stale
+  // owner-only response policy after an agent was promoted to shared.
+  if (agent.audience === "community" || agent.accessTier === "shared") {
+    return true;
+  }
 
   // The relay defaults a missing respond_to value to owner-only. Hosted
   // personal/admin agents are still invocable by their owner even when they
@@ -42,10 +86,12 @@ export function relayAgentIsSharedWithUser(
       .includes(normalizedCurrentPubkey);
   }
 
-  return (
-    agent.respondTo === "anyone" &&
-    agent.channelIds.some((channelId) => sharedChannelIds.has(channelId))
-  );
+  // Community agents explicitly configured for anyone are invocable across
+  // the community, even before they belong to the channel being composed in.
+  // An owner/admin mention adds the agent to that channel during the send
+  // flow. Requiring an existing shared channel here made the directory entry
+  // disappear precisely when that first invitation was needed.
+  return agent.respondTo === "anyone";
 }
 
 export function getMentionableAgentPubkeys({

@@ -17,6 +17,7 @@ import {
   getMentionableAgentPubkeys,
   getSharedChannelIds,
   isAgentIdentityInKnownDirectories,
+  resolveAgentMentionDisplayName,
   shouldHideAgentFromMentions,
 } from "@/features/agents/lib/agentAutocompleteEligibility";
 import { localRosterForHostedCommunity } from "@/features/agents/lib/hostedAgentView";
@@ -317,12 +318,12 @@ export function useMentions(
       addCandidate({
         kind: "identity",
         pubkey,
-        displayName:
-          member.displayName?.trim() ||
-          agentName ||
-          profile?.displayName?.trim() ||
-          profile?.nip05Handle?.trim() ||
-          null,
+        displayName: resolveAgentMentionDisplayName({
+          directoryName: agentName,
+          memberName: member.displayName,
+          profileDisplayName: profile?.displayName,
+          profileHandle: profile?.nip05Handle,
+        }),
         avatarUrl: profile?.avatarUrl ?? null,
         isMember: true,
         personaId:

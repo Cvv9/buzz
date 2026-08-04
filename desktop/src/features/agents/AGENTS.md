@@ -4,6 +4,11 @@ Scope: `desktop/src/features/agents/` (config surfaces, shared config renderer,
 and the agent config core). Read this before changing how harness / provider /
 model / effort configuration is modeled, rendered, persisted, or applied.
 
+Cross-surface plan: `docs/agent-surface-map.md`. Read and update that map when
+changing agent identity, avatar, model, access, channel membership, mentions,
+Inbox/history presentation, routes, event shapes, or cache invalidation. A
+configuration change is incomplete when only the `/agents` screen is updated.
+
 Plan of record: `Buzz/Harness-Provider-Model.md` in Morgan's Obsidian vault
 (PR sequence, decisions log). PRs: #2140 (rename), #2148 (flag reduction),
 #2156 (honest model states), #2158 (Agent Config Core).
@@ -186,6 +191,10 @@ authenticated observer `switch_model` control for the agent's known channels.
 - Rust: `runtime_metadata_env_vars` tests pin spawn-time key application.
 - Rust: persona sharing/retention tests pin relay+owner scoping, durable
   enqueue errors, relay rejection/unavailability, and accepted publication.
+- `lib/agentSurfaceMapContract.test.mjs` — all declared desktop/web routes stay
+  inventoried, search and mentions share the canonical access policy, Inbox
+  overlays current hosted presentation, and both clients retain hosted-config
+  readers.
 
 ## Keep this file true
 

@@ -1,4 +1,5 @@
-import type { RelayAgent } from "@/shared/api/types";
+import type { RelayAgent, UserProfileSummary } from "@/shared/api/types";
+import { normalizePubkey } from "@/shared/lib/pubkey";
 
 type ProfileFallback = {
   avatarUrl: string | null;
@@ -29,4 +30,33 @@ export function getHostedAgentPresentation(
     displayName:
       firstNonBlank(agent.name, profile?.displayName) ?? "Hosted agent",
   };
+}
+
+/**
+ * Overlays current hosted-directory presentation onto historical kind:0
+ * profiles. Inbox and message history keep the event author's pubkey, so a
+ * renamed/rebranded agent should immediately render with its current identity.
+ */
+export function overlayHostedAgentProfiles(
+  profiles: Record<string, UserProfileSummary> | undefined,
+  agents: readonly RelayAgent[],
+): Record<string, UserProfileSummary> | undefined {
+  if (agents.length === 0) return profiles;
+
+  const overlaid = { ...(profiles ?? {}) };
+  for (const agent of agents) {
+    const pubkey = normalizePubkey(agent.pubkey);
+    const existing = overlaid[pubkey];
+    const presentation = getHostedAgentPresentation(agent, existing);
+    overlaid[pubkey] = {
+      ...existing,
+      avatarUrl: presentation.avatarUrl,
+      displayName: presentation.displayName,
+      isAgent: true,
+      ownerPubkey: agent.ownerPubkey ?? existing?.ownerPubkey ?? null,
+      nip05Handle: existing?.nip05Handle ?? null,
+    };
+  }
+
+  return overlaid;
 }

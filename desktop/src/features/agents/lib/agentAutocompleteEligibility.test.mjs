@@ -7,6 +7,7 @@ import {
   getSharedChannelIds,
   isAgentIdentityInKnownDirectories,
   relayAgentIsSharedWithUser,
+  resolveAgentMentionDisplayName,
   shouldHideAgentFromMentions,
 } from "./agentAutocompleteEligibility.ts";
 
@@ -47,7 +48,18 @@ test("getSharedChannelIds: includes only active joined channels", () => {
   );
 });
 
-test("relayAgentIsSharedWithUser: accepts shared anyone agents and rejects unshared ones", () => {
+test("resolveAgentMentionDisplayName: current directory name replaces stale channel membership label", () => {
+  assert.equal(
+    resolveAgentMentionDisplayName({
+      directoryName: "Sylar",
+      memberName: "Founder Chief of Staff",
+      profileDisplayName: "Older profile name",
+    }),
+    "Sylar",
+  );
+});
+
+test("relayAgentIsSharedWithUser: accepts anyone agents before their first shared channel", () => {
   const sharedChannelIds = new Set(["general"]);
 
   assert.equal(
@@ -74,6 +86,40 @@ test("relayAgentIsSharedWithUser: accepts shared anyone agents and rejects unsha
     relayAgentIsSharedWithUser(
       { respondTo: "anyone", respondToAllowlist: [], channelIds: ["other"] },
       sharedChannelIds,
+    ),
+    true,
+  );
+});
+
+test("relayAgentIsSharedWithUser: uses hosted visibility even when response policy is stale", () => {
+  assert.equal(
+    relayAgentIsSharedWithUser(
+      {
+        accessTier: "shared",
+        audience: "community",
+        respondTo: "owner-only",
+        respondToAllowlist: [],
+        channelIds: [],
+        ownerPubkey: OTHER_OWNER_PUBKEY,
+      },
+      new Set(),
+      CURRENT_PUBKEY,
+    ),
+    true,
+  );
+
+  assert.equal(
+    relayAgentIsSharedWithUser(
+      {
+        accessTier: "personal",
+        audience: "owner",
+        respondTo: "anyone",
+        respondToAllowlist: [],
+        channelIds: ["general"],
+        ownerPubkey: OTHER_OWNER_PUBKEY,
+      },
+      new Set(["general"]),
+      CURRENT_PUBKEY,
     ),
     false,
   );
@@ -142,7 +188,7 @@ test("relayAgentIsSharedWithUser: accepts allowlist agents for the current user"
   );
 });
 
-test("getMentionableAgentPubkeys: keeps managed agents and shared relay agents", () => {
+test("getMentionableAgentPubkeys: keeps managed and community-wide relay agents", () => {
   const result = getMentionableAgentPubkeys({
     managedAgentPubkeys: [PUB_A],
     currentPubkey: CURRENT_PUBKEY,
@@ -169,7 +215,7 @@ test("getMentionableAgentPubkeys: keeps managed agents and shared relay agents",
     sharedChannelIds: new Set(["general"]),
   });
 
-  assert.deepEqual(result, new Set([PUB_A, PUB_B, PUB_C]));
+  assert.deepEqual(result, new Set([PUB_A, PUB_B, PUB_C, PUB_D]));
 });
 
 test("isAgentIdentityInKnownDirectories: keeps people and known managed or relay agent identities", () => {

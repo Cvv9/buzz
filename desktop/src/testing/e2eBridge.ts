@@ -2141,7 +2141,9 @@ function buildSeededManagedAgent(seed: MockManagedAgentSeed): MockManagedAgent {
 }
 
 function resetMockRelayAgents(config?: E2eConfig) {
-  mockRelayAgents = defaultMockRelayAgents.map((agent) => ({
+  const baseRelayAgents =
+    config?.mock?.relayAgents === undefined ? defaultMockRelayAgents : [];
+  mockRelayAgents = baseRelayAgents.map((agent) => ({
     ...agent,
     channels: [...agent.channels],
     channel_ids: [...agent.channel_ids],
