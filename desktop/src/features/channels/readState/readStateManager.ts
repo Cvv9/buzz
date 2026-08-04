@@ -243,9 +243,9 @@ export interface TrimResult {
 
 /**
  * Trim a contexts map to fit within `maxBytes` when serialized as the JSON
- * blob `{v:1, client_id, contexts}`. Evicts oldest `msg:` entries first
- * (lowest timestamp), then oldest `thread:` entries. Channel keys are never
- * evicted. Mutates `contexts` in place.
+ * blob `{v:1, client_id, contexts}`. Evicts oldest per-item entries first
+ * (Inbox dismissals, then messages), followed by oldest threads. Channel keys
+ * are never evicted. Mutates `contexts` in place.
  *
  * Returns `{ evicted, fitsAfterTrim }`. `fitsAfterTrim` is false when the
  * remaining blob (channel keys only) still exceeds `maxBytes` — the caller
@@ -268,15 +268,19 @@ export function trimContextsToBudget(
   }
 
   const msgEntries: [string, number][] = [];
+  const inboxDismissEntries: [string, number][] = [];
   const threadEntries: [string, number][] = [];
   for (const [key, ts] of Object.entries(contexts)) {
-    if (key.startsWith(MSG_PREFIX)) {
+    if (key.startsWith("inbox-dismiss:")) {
+      inboxDismissEntries.push([key, ts]);
+    } else if (key.startsWith(MSG_PREFIX)) {
       msgEntries.push([key, ts]);
     } else if (key.startsWith(THREAD_PREFIX)) {
       threadEntries.push([key, ts]);
     }
   }
   // Oldest-first within each tier.
+  inboxDismissEntries.sort((a, b) => a[1] - b[1]);
   msgEntries.sort((a, b) => a[1] - b[1]);
   threadEntries.sort((a, b) => a[1] - b[1]);
 
@@ -285,7 +289,11 @@ export function trimContextsToBudget(
   // (key.length + 3 bytes for `"`, `"`, `:` plus 1 comma) + timestamp digits.
   // This is an approximation — the final encode below is the authoritative check.
   const toEvict: string[] = [];
-  for (const [key, ts] of [...msgEntries, ...threadEntries]) {
+  for (const [key, ts] of [
+    ...inboxDismissEntries,
+    ...msgEntries,
+    ...threadEntries,
+  ]) {
     if (currentBytes <= maxBytes) break;
     // Contribution: `,"key":timestamp` — comma + quoted key + colon + value
     currentBytes -= key.length + 3 + String(ts).length + 1;

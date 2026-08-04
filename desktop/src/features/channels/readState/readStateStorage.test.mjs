@@ -42,7 +42,7 @@ function installLocalStorage() {
 
 const NOW = 1_750_000_000;
 
-test("pruneStaleContexts drops msg/thread markers older than horizon", () => {
+test("pruneStaleContexts drops per-item markers older than horizon", () => {
   const cutoff = NOW - READ_STATE_HORIZON_SECONDS;
   const contexts = new Map([
     ["channel-1", cutoff - 999_999],
@@ -50,6 +50,8 @@ test("pruneStaleContexts drops msg/thread markers older than horizon", () => {
     [`thread:${"b".repeat(64)}`, cutoff + 1],
     [`msg:${"c".repeat(64)}`, cutoff - 1],
     [`msg:${"d".repeat(64)}`, cutoff + 1],
+    [`inbox-dismiss:${"e".repeat(64)}`, cutoff - 1],
+    [`inbox-dismiss:${"f".repeat(64)}`, cutoff + 1],
   ]);
 
   const pruned = pruneStaleContexts(contexts, NOW);
@@ -59,6 +61,8 @@ test("pruneStaleContexts drops msg/thread markers older than horizon", () => {
   assert.equal(pruned.has(`thread:${"b".repeat(64)}`), true);
   assert.equal(pruned.has(`msg:${"c".repeat(64)}`), false);
   assert.equal(pruned.has(`msg:${"d".repeat(64)}`), true);
+  assert.equal(pruned.has(`inbox-dismiss:${"e".repeat(64)}`), false);
+  assert.equal(pruned.has(`inbox-dismiss:${"f".repeat(64)}`), true);
 });
 
 test("pruneStaleContexts caps within-horizon prunable entries, newest kept", () => {

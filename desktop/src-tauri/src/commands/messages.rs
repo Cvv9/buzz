@@ -90,7 +90,7 @@ pub async fn get_feed(
     }
     // Needs-action: workflow approval-request events sent to me.
     let mut approval_filter = serde_json::json!({
-        "kinds": [46010, 46011, 46012],
+        "kinds": [46010],
         "#p": [my_pubkey],
         "limit": 20,
     });

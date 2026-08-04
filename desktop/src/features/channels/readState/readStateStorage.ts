@@ -105,12 +105,14 @@ export function readStoredReadState(pubkey: string): StoredReadState {
 
 function isPrunableContextKey(contextId: string): boolean {
   return (
-    contextId.startsWith(MSG_PREFIX) || contextId.startsWith(THREAD_PREFIX)
+    contextId.startsWith(MSG_PREFIX) ||
+    contextId.startsWith(THREAD_PREFIX) ||
+    contextId.startsWith("inbox-dismiss:")
   );
 }
 
 /**
- * Drops msg:/thread: markers older than the relay's 7-day horizon, then caps
+ * Drops msg:/thread:/inbox-dismiss: markers older than the relay's 7-day horizon, then caps
  * the survivors at LOCAL_MAX_PRUNABLE_CONTEXTS (oldest first). Channel keys
  * are never pruned — they are small, bounded by membership, and losing one
  * would resurrect the channel's unread badge. Mirrors the eviction order the

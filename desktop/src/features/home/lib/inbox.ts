@@ -20,6 +20,12 @@ import type {
 } from "@/shared/api/types";
 import { resolveMentionProps } from "@/shared/lib/resolveMentionNames";
 
+export const INBOX_DISMISS_CONTEXT_PREFIX = "inbox-dismiss:";
+
+export function getInboxDismissContextId(approvalEventId: string) {
+  return `${INBOX_DISMISS_CONTEXT_PREFIX}${approvalEventId}`;
+}
+
 export type InboxFilter =
   | "all"
   | "alerts"

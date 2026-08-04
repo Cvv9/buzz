@@ -16,7 +16,7 @@ import type {
   RelayEvent,
   UserProfileSummary,
 } from "@/shared/api/types";
-import { KIND_REMINDER } from "@/shared/constants/kinds";
+import { KIND_APPROVAL_REQUEST } from "@/shared/constants/kinds";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import { resolveMentionProps } from "@/shared/lib/resolveMentionNames";
 
@@ -26,7 +26,18 @@ function hasThreadReplyTags(tags: string[][]) {
 }
 
 export function filterInboxItems(items: InboxItem[]) {
-  return items.filter((item) => item.item.kind !== KIND_REMINDER);
+  // Inbox is a decision queue, not a second copy of chat. Mentions, DMs,
+  // thread replies, reminders, and routine agent updates stay on their native
+  // surfaces. Only an explicit workflow approval request belongs here.
+  return items.filter((item) => getInboxApprovalRequest(item) !== null);
+}
+
+export function getInboxApprovalRequest(item: InboxItem) {
+  return (
+    item.groupItems.find(
+      (candidate) => candidate.kind === KIND_APPROVAL_REQUEST,
+    ) ?? null
+  );
 }
 
 export function hasInboxThreadContext(

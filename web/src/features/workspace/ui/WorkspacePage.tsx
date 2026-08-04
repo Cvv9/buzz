@@ -147,6 +147,8 @@ export function WorkspacePage() {
   );
   const {
     alertItems,
+    dismissAllInboxItems,
+    dismissInboxItem,
     inboxItems,
     markAllRead,
     markInboxItemRead,
@@ -426,7 +428,8 @@ export function WorkspacePage() {
           <WorkspaceInbox
             channels={channels}
             items={inboxItems}
-            onMarkAllRead={markAllRead}
+            onDismissAll={dismissAllInboxItems}
+            onDismissItem={dismissInboxItem}
             onMarkItemRead={markInboxItemRead}
             onSelectItem={(item) => {
               if (!item.channelId) {
@@ -446,7 +449,8 @@ export function WorkspacePage() {
             channels={channels}
             items={alertItems}
             mode="alerts"
-            onMarkAllRead={markAllRead}
+            onDismissAll={markAllRead}
+            onDismissItem={markInboxItemRead}
             onMarkItemRead={markInboxItemRead}
             onSelectItem={(item) => {
               if (!item.channelId) {

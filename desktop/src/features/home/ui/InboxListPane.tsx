@@ -1,4 +1,4 @@
-import { Bell, Clock, Ellipsis, ExternalLink, MailOpen } from "lucide-react";
+import { Bell, Clock, Ellipsis, ExternalLink, MailOpen, X } from "lucide-react";
 import * as React from "react";
 
 import {
@@ -181,6 +181,8 @@ type InboxListPaneProps = {
   doneSet: ReadonlySet<string>;
   filter: InboxFilter;
   items: InboxItem[];
+  onDismiss: (itemId: string) => void;
+  onDismissAll: () => void;
   onFilterChange: (filter: InboxFilter) => void;
   onDeleteDraft: (draftKey: string) => void;
   onMarkRead: (itemId: string) => void;
@@ -209,6 +211,8 @@ export function InboxListPane({
   doneSet,
   filter,
   items,
+  onDismiss,
+  onDismissAll,
   onFilterChange,
   onDeleteDraft,
   onMarkRead,
@@ -437,6 +441,12 @@ export function InboxListPane({
             </InboxRowActionButton>
           )}
           <InboxRowActionButton
+            label="Dismiss from inbox"
+            onClick={() => onDismiss(item.id)}
+          >
+            <X className="!h-4 !w-4" />
+          </InboxRowActionButton>
+          <InboxRowActionButton
             disabled={!hasChannelTarget}
             label={hasChannelTarget ? "Open in channel" : "No channel link"}
             onClick={() => onOpenDirect(item)}
@@ -476,6 +486,11 @@ export function InboxListPane({
               Mark as read
             </ContextMenuItem>
           )}
+          <ContextMenuSeparator />
+          <ContextMenuItem onClick={() => onDismiss(item.id)}>
+            <X className="h-4 w-4" />
+            Dismiss from inbox
+          </ContextMenuItem>
           <ContextMenuSeparator />
           <ContextMenuItem
             disabled={!hasChannelTarget}
@@ -559,6 +574,20 @@ export function InboxListPane({
                     {unreadVisibleItemCount > 0 ? (
                       <span className="ml-auto text-xs text-muted-foreground">
                         {unreadVisibleItemCount}
+                      </span>
+                    ) : null}
+                  </button>
+                  <button
+                    className="flex min-h-9 w-full items-center rounded-lg px-2 py-2 text-left text-sm transition-colors hover:bg-muted/50 disabled:pointer-events-none disabled:opacity-50"
+                    data-testid="inbox-dismiss-all"
+                    disabled={items.length === 0}
+                    onClick={onDismissAll}
+                    type="button"
+                  >
+                    <span>Clear inbox</span>
+                    {items.length > 0 ? (
+                      <span className="ml-auto text-xs text-muted-foreground">
+                        {items.length}
                       </span>
                     ) : null}
                   </button>

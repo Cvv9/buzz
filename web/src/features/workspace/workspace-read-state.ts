@@ -15,6 +15,11 @@ import {
   type WorkspaceChannel,
   type WorkspaceMessage,
 } from "./workspace-api";
+import {
+  APPROVAL_REQUEST_KIND,
+  inboxDismissContextId,
+  isTargetedApprovalRequest,
+} from "./workspace-inbox-policy.mjs";
 
 const READ_STATE_D_TAG_PREFIX = "read-state:";
 const READ_STATE_HORIZON_SECONDS = 7 * 24 * 60 * 60;
@@ -27,13 +32,12 @@ const CONVERSATIONAL_KINDS = [9, 40002] as const;
 // their dot semantics, while these sources feed the Inbox only when addressed
 // to the current identity.
 const MENTION_KINDS = [9, 40002, 1, 45001, 45003] as const;
-const NEEDS_ACTION_KINDS = [46010, 46011, 46012] as const;
 const AGENT_ACTIVITY_KINDS = [
   43001, 43002, 43003, 43004, 43005, 43006,
 ] as const;
 const INBOX_SOURCE_KINDS = [
   ...MENTION_KINDS,
-  ...NEEDS_ACTION_KINDS,
+  APPROVAL_REQUEST_KIND,
   ...AGENT_ACTIVITY_KINDS,
 ] as const;
 
@@ -55,6 +59,7 @@ export type WorkspaceInboxItem = {
   channelId: string | null;
   content: string;
   contextId: string;
+  dismissContextId: string;
   createdAt: number;
   id: string;
   isRead: boolean;
@@ -249,11 +254,7 @@ function categoryForMessage(args: {
   channel?: WorkspaceChannel;
 }): WorkspaceInboxCategory | null {
   const { channel, event, participatedThreadRootIds, pubkey } = args;
-  if (
-    NEEDS_ACTION_KINDS.includes(
-      event.kind as (typeof NEEDS_ACTION_KINDS)[number],
-    )
-  ) {
+  if (isTargetedApprovalRequest(event, pubkey)) {
     return "needs_action";
   }
   if (
@@ -275,24 +276,6 @@ function categoryForMessage(args: {
     )
   ) {
     return "mention";
-  }
-  if (
-    event.tags.some(
-      (tag) =>
-        (tag[0] === "status" &&
-          /^(needs[_-]action|required)$/i.test(tag[1] ?? "")) ||
-        (tag[0] === "action" && /^(required|approval)$/i.test(tag[1] ?? "")),
-    )
-  ) {
-    return "needs_action";
-  }
-  if (
-    isConversationalMessage(event) &&
-    /(?:awaiting|waiting for|requires?|requested?)\s+(?:your\s+)?approval|approval\s+(?:is\s+)?required|\/sylars\s+(?:approve|deny)\b/i.test(
-      event.content,
-    )
-  ) {
-    return "needs_action";
   }
   if (event.rootEventId && participatedThreadRootIds.has(event.rootEventId)) {
     return "reply";
@@ -370,11 +353,13 @@ export function deriveWorkspaceUnread(args: {
         channel: channelsById.get(channelId),
       });
       if (category) {
+        const dismissContextId = inboxDismissContextId(event.id);
         const item = {
           category,
           channelId: channelsById.has(channelId) ? channelId : null,
           content: event.content,
           contextId: channelId,
+          dismissContextId,
           createdAt: event.created_at,
           id: event.id,
           isRead,
@@ -382,7 +367,11 @@ export function deriveWorkspaceUnread(args: {
         } satisfies WorkspaceInboxItem;
         if (category === "mention" || category === "reply") {
           alertItems.push(item);
-        } else {
+        } else if (
+          category === "needs_action" &&
+          isTargetedApprovalRequest(event, pubkey) &&
+          (markers.get(dismissContextId) ?? 0) < event.created_at
+        ) {
           inboxItems.push(item);
         }
       }
@@ -667,8 +656,43 @@ export function useWorkspaceReadState({
     [persistAndPublish],
   );
 
+  const dismissInboxItem = React.useCallback(
+    (item: WorkspaceInboxItem) => {
+      setMarkers((current) => {
+        if ((current.get(item.dismissContextId) ?? 0) >= item.createdAt) {
+          return current;
+        }
+        const next = new Map(current).set(
+          item.dismissContextId,
+          item.createdAt,
+        );
+        persistAndPublish(next);
+        return next;
+      });
+    },
+    [persistAndPublish],
+  );
+
+  const dismissAllInboxItems = React.useCallback(() => {
+    setMarkers((current) => {
+      const next = new Map(current);
+      let changed = false;
+      for (const item of unread.inboxItems) {
+        if ((next.get(item.dismissContextId) ?? 0) < item.createdAt) {
+          next.set(item.dismissContextId, item.createdAt);
+          changed = true;
+        }
+      }
+      if (!changed) return current;
+      persistAndPublish(next);
+      return next;
+    });
+  }, [persistAndPublish, unread.inboxItems]);
+
   return {
     alertItems: unread.alertItems,
+    dismissAllInboxItems,
+    dismissInboxItem,
     inboxItems: unread.inboxItems,
     markAllRead,
     markInboxItemRead,

@@ -15,12 +15,30 @@ import {
   toTimelineMessage,
 } from "./inboxViewHelpers.ts";
 
-test("Inbox uses the dedicated reminder list instead of feed reminder rows", () => {
-  const message = { item: { kind: 9 } };
-  const reminder = { item: { kind: 40007 } };
-  const items = [message, reminder];
+test("Inbox contains only explicit approval requests", () => {
+  const mention = { item: { kind: 9 }, groupItems: [{ kind: 9 }] };
+  const reminder = {
+    item: { kind: 40007 },
+    groupItems: [{ kind: 40007 }],
+  };
+  const agentUpdate = {
+    item: { kind: 43003 },
+    groupItems: [{ kind: 43003 }],
+  };
+  const approval = {
+    item: { kind: 46010 },
+    groupItems: [{ kind: 46010 }],
+  };
+  const approvalWithNewerReply = {
+    item: { kind: 9 },
+    groupItems: [{ kind: 46010 }, { kind: 9 }],
+  };
+  const items = [mention, reminder, agentUpdate, approval];
 
-  assert.deepEqual(filterInboxItems(items), [message]);
+  assert.deepEqual(filterInboxItems(items), [approval]);
+  assert.deepEqual(filterInboxItems([approvalWithNewerReply]), [
+    approvalWithNewerReply,
+  ]);
 });
 
 test("hasInboxThreadContext finds replies in the grouped row or loaded context", () => {

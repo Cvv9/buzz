@@ -17,12 +17,14 @@ import {
   buildInboxItems,
   findInboxItemByEventId,
   formatInboxFullTimestamp,
+  getInboxDismissContextId,
   getInboxItemConversationId,
 } from "@/features/home/lib/inbox";
 import { useInboxSelectionAnchor } from "@/features/home/useInboxSelectionAnchor";
 import { useOwnedAgentPubkeys } from "@/features/home/useOwnedAgentPubkeys";
 import {
   filterInboxItems,
+  getInboxApprovalRequest,
   matchesInboxFilter,
 } from "@/features/home/lib/inboxViewHelpers";
 import { resolveInboxFilterSelection } from "@/features/home/lib/inboxSelection";
@@ -376,7 +378,13 @@ export function HomeView({
       getThreadReadAt,
       profiles: effectiveFeedProfiles,
     });
-    return filterInboxItems(items);
+    return filterInboxItems(items).filter((item) => {
+      const approval = getInboxApprovalRequest(item);
+      if (!approval) return false;
+      const dismissedAt =
+        getChannelReadAt(getInboxDismissContextId(approval.id)) ?? 0;
+      return dismissedAt < approval.createdAt;
+    });
   }, [
     channels,
     currentPubkey,
@@ -404,6 +412,29 @@ export function HomeView({
       undoDoneLocal: undoDone,
       undoUnreadLocal: undoUnread,
     });
+  const dismissInboxItem = React.useCallback(
+    (itemId: string) => {
+      const item = findInboxItemByEventId(inboxItems, itemId);
+      if (!item) return;
+      const approval = getInboxApprovalRequest(item);
+      if (!approval) return;
+      markChannelRead(
+        getInboxDismissContextId(approval.id),
+        new Date(approval.createdAt * 1_000).toISOString(),
+      );
+    },
+    [inboxItems, markChannelRead],
+  );
+  const dismissAllInboxItems = React.useCallback(() => {
+    for (const item of inboxItems) {
+      const approval = getInboxApprovalRequest(item);
+      if (!approval) continue;
+      markChannelRead(
+        getInboxDismissContextId(approval.id),
+        new Date(approval.createdAt * 1_000).toISOString(),
+      );
+    }
+  }, [inboxItems, markChannelRead]);
   // Resolve selection before filtering so unread-only can retain its active row.
   const selectedItemFromAll = React.useMemo(
     () =>
@@ -657,6 +688,8 @@ export function HomeView({
               filter={filter}
               items={filteredItems}
               onDeleteDraft={handleDeleteDraft}
+              onDismiss={dismissInboxItem}
+              onDismissAll={dismissAllInboxItems}
               onFilterChange={handleFilterChange}
               onMarkRead={markItemRead}
               onMarkUnread={markItemUnread}

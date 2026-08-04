@@ -107,6 +107,30 @@ Primary files:
 6. The web client mirrors this in `useAgentMentionDelivery.ts` using
    `addWorkspaceMember` and `sendWorkspaceMessage`.
 
+### Route an item to Inbox
+
+Inbox is a decision queue, not a copy of chat. The cross-client contract is:
+
+1. Only a pending kind `46010` workflow approval request with a `p` tag for the
+   current identity enters Inbox.
+2. Mentions and replies enter Alerts. Direct messages remain in their DM.
+   Reminders, agent lifecycle updates, and ordinary channel messages remain on
+   their dedicated surfaces.
+3. Free text such as “waiting for approval” and status-like tags do not create
+   Inbox work. Producers must emit the structured approval event.
+4. Dismiss and Clear Inbox write per-event `inbox-dismiss:<event-id>` markers
+   through the existing encrypted kind `30078` NIP-RS state. They never delete
+   or mark the source channel message read.
+5. Terminal grant/deny events (kinds `46011` and `46012`) never enter Inbox.
+
+Primary files:
+
+- `desktop/src-tauri/src/commands/messages.rs`
+- `desktop/src/features/home/lib/inboxViewHelpers.ts`
+- `desktop/src/features/home/ui/HomeView.tsx`
+- `web/src/features/workspace/workspace-read-state.ts`
+- `web/src/features/workspace/ui/WorkspaceInbox.tsx`
+
 ## Consumer matrix
 
 Every checkmark is a required verification when that field changes.
@@ -120,7 +144,8 @@ Every checkmark is a required verification when that field changes.
 | New message | Desktop `/messages/new` | ✓ |  | ✓ |  | `NewMessageScreen.tsx`, mention candidate helpers |
 | Global search | Desktop overlay on all routes | ✓ |  | ✓ |  | `useSearchResults.ts`, `TopbarSearch.tsx` |
 | Timeline and threads | Desktop channel/post routes | ✓ |  |  |  | `formatTimelineMessages.ts`, `MessageRow.tsx`, `MessageThreadPanel.tsx` |
-| Inbox list and detail | Desktop `/` | ✓ |  |  | ✓ | `HomeView.tsx`, `inbox.ts`, `useHomeInboxContextMessages.ts` |
+| Inbox decision list and detail | Desktop `/` | ✓ |  |  | ✓ | `messages.rs`, `HomeView.tsx`, `inboxViewHelpers.ts` |
+| Inbox decision list | Web `/`, internal `inbox` view | ✓ |  |  | ✓ | `workspace-read-state.ts`, `WorkspaceInbox.tsx` |
 | Agents workspace | Web `/`, internal `agents` view | ✓ | ✓ | ✓ | ✓ | `WorkspaceAgents.tsx`, `workspace-api.ts` |
 | Web composer/timeline | Web `/`, internal `channel`/`inbox` views | ✓ |  | ✓ | ✓ | `WorkspaceComposer.tsx`, `useAgentMentionDelivery.ts`, `WorkspaceMessageRow.tsx` |
 | Runtime process | Desktop native backend |  | ✓ | ✓ | ✓ | managed-agent runtime modules and observer `switch_model` |
