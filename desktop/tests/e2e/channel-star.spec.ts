@@ -45,7 +45,9 @@ test.describe("channel starring", () => {
     );
   });
 
-  test("02 — starred channel appears in Starred section", async ({ page }) => {
+  test("02 — starred channel appears in Favorites section", async ({
+    page,
+  }) => {
     await seedStarState(page, ENGINEERING_CHANNEL_ID);
     await installMockBridge(page);
 
@@ -84,7 +86,7 @@ test.describe("channel starring", () => {
     );
   });
 
-  test("04 — starred channel is removed from the Channels group", async ({
+  test("04 — starred channel is removed from the Workspace group", async ({
     page,
   }) => {
     await seedStarState(page, ENGINEERING_CHANNEL_ID);
@@ -95,7 +97,7 @@ test.describe("channel starring", () => {
     await expect(page.getByTestId("chat-title")).toHaveText("general");
 
     // Exclusive behavior (Slack-style): the starred channel lives only in the
-    // Starred section and no longer appears in the default Channels group.
+    // Favorites section and no longer appears in the default Workspace group.
     await expect(
       page.getByTestId("starred-list").getByTestId("channel-engineering"),
     ).toBeVisible();

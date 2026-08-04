@@ -83,12 +83,14 @@ export function DroppableSectionBody({
 export function DroppableUngroupedBody({
   children,
   className,
+  dropId = "ungrouped",
 }: {
   children: React.ReactNode;
   className?: string;
+  dropId?: string;
 }) {
   const { setNodeRef, isOver } = useDroppable({
-    id: "ungrouped",
+    id: dropId,
     data: { type: "ungrouped" } satisfies DndUngroupedData,
   });
 
