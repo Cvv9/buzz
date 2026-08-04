@@ -277,10 +277,11 @@ test("create agent supports parallelism and system prompt overrides", async ({
   await expect(log).toContainText("system prompt override configured");
 });
 
-test("opens a mocked channel from the inbox feed", async ({ page }) => {
+test("opens a mocked channel from the Alerts feed", async ({ page }) => {
   const inboxList = page.getByTestId("home-inbox-list");
 
   await page.goto("/");
+  await page.getByTestId("open-alerts-view").click();
 
   await expectHomeView(page);
   await expect(inboxList).toContainText("Please review the release checklist.");
@@ -314,8 +315,9 @@ test("Inbox excludes generic channel and unowned agent traffic", async ({
   await expect(inboxList).toContainText("No agent updates found");
 });
 
-test("inbox feed renders resolved author labels", async ({ page }) => {
+test("Alerts feed renders resolved author labels", async ({ page }) => {
   await page.goto("/");
+  await page.getByTestId("open-alerts-view").click();
 
   await expect(page.getByTestId("home-inbox-list")).toContainText("alice");
   await expect(page.getByTestId("home-inbox-list")).not.toContainText("You");

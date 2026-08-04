@@ -307,11 +307,12 @@ test("masked link inside a hidden spoiler does not leak its URL until revealed",
   await expect(page.getByRole("tooltip")).toContainText(SECRET_URL);
 });
 
-test("non-interactive inbox preview spoilers let row clicks pass through", async ({
+test("non-interactive Alerts preview spoilers let row clicks pass through", async ({
   page,
 }) => {
   await installSpoilerBridge(page);
   await page.goto("/");
+  await page.getByTestId("open-alerts-view").click();
   await expect(page.getByTestId("home-inbox-list")).toBeVisible();
   await page.waitForFunction(
     () =>
@@ -362,7 +363,7 @@ test("non-interactive inbox preview spoilers let row clicks pass through", async
   const box = await spoiler.boundingBox();
   expect(box).not.toBeNull();
   if (!box) {
-    throw new Error("Expected inbox preview spoiler to have a bounding box.");
+    throw new Error("Expected Alerts preview spoiler to have a bounding box.");
   }
 
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);

@@ -116,12 +116,13 @@ test.describe("reminder set → app stays clickable", () => {
     await expectAppAliveAfterDialogClose(page);
   });
 
-  // The regression path: only the inbox right-click stacks a modal
+  // The regression path: the Alerts row right-click stacks a modal
   // ContextMenu under the modal dialog. Fails if two copies of the
   // dismissable layer are ever bundled again — body pointer-events stays
   // "none" after the dialog closes and the sidebar click below times out.
-  test("03 — inbox row right-click → Remind me later", async ({ page }) => {
+  test("03 — Alerts row right-click → Remind me later", async ({ page }) => {
     await page.goto("/");
+    await page.getByTestId("open-alerts-view").click();
     await expect(page.getByTestId("home-inbox")).toBeVisible();
 
     const row = page.getByTestId(INBOX_MENTION_ROW);
