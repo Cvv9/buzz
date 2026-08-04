@@ -4,6 +4,7 @@ import {
   ArchiveRestore,
   CopyPlus,
   Download,
+  Pencil,
   Power,
   Settings,
   Trash2,
@@ -39,6 +40,8 @@ export function UserProfileAgentSettingsMenu({
   managedAgent,
   onDelete,
   onDuplicatePersona,
+  onEditAgent,
+  onEditHostedAgent,
   onExportPersona,
   onToggleAutoStart,
   personaActionKey,
@@ -49,6 +52,8 @@ export function UserProfileAgentSettingsMenu({
   managedAgent?: ManagedAgent;
   onDelete?: () => void;
   onDuplicatePersona?: () => void;
+  onEditAgent?: () => void;
+  onEditHostedAgent?: () => void;
   onExportPersona?: () => void;
   onToggleAutoStart?: () => void;
   personaActionKey?: string;
@@ -62,7 +67,9 @@ export function UserProfileAgentSettingsMenu({
     managedAgent.backend.type === "local" &&
     onToggleAutoStart !== undefined;
   const autoStartSwitchId = `user-profile-agent-auto-start-${actionKey}`;
-  const hasPrimaryActions = Boolean(onDuplicatePersona || onExportPersona);
+  const hasPrimaryActions = Boolean(
+    onEditAgent || onEditHostedAgent || onDuplicatePersona || onExportPersona,
+  );
   const hasArchiveAction =
     archiveActions?.canArchive === true &&
     archiveActions.isArchived !== undefined;
@@ -98,6 +105,16 @@ export function UserProfileAgentSettingsMenu({
           className="min-w-56"
           onCloseAutoFocus={(event) => event.preventDefault()}
         >
+          {onEditAgent || onEditHostedAgent ? (
+            <DropdownMenuItem
+              data-testid="user-profile-agent-edit"
+              disabled={isPending}
+              onClick={onEditAgent ?? onEditHostedAgent}
+            >
+              <Pencil className="h-4 w-4" />
+              Edit agent
+            </DropdownMenuItem>
+          ) : null}
           {canToggleAutoStart ? (
             <DropdownMenuItem
               className="gap-3 pr-2"
@@ -225,6 +242,8 @@ export function UserProfileAgentSettingsMenuSlot({
   onDeleteAgent,
   onDeletePersona,
   onDuplicatePersona,
+  onEditAgent,
+  onEditHostedAgent,
   onExportPersona,
   onToggleAutoStart,
   personaActionKey,
@@ -240,6 +259,8 @@ export function UserProfileAgentSettingsMenuSlot({
   onDeleteAgent: () => void;
   onDeletePersona: () => void;
   onDuplicatePersona: () => void;
+  onEditAgent?: () => void;
+  onEditHostedAgent?: () => void;
   onExportPersona: () => void;
   onToggleAutoStart: () => void;
   personaActionKey?: string;
@@ -254,6 +275,7 @@ export function UserProfileAgentSettingsMenuSlot({
     isBot,
     isPending: settingsActionPending,
     onDuplicatePersona: canManagePersona ? onDuplicatePersona : undefined,
+    onEditHostedAgent,
     onExportPersona: canManagePersona ? onExportPersona : undefined,
     personaActionKey,
   };
@@ -264,6 +286,7 @@ export function UserProfileAgentSettingsMenuSlot({
         {...sharedProps}
         managedAgent={managedAgent}
         onDelete={onDeleteAgent}
+        onEditAgent={onEditAgent}
         onToggleAutoStart={onToggleAutoStart}
       />
     );
@@ -278,12 +301,13 @@ export function UserProfileAgentSettingsMenuSlot({
     );
   }
 
-  if (canShowArchiveAction) {
+  if (canShowArchiveAction || onEditHostedAgent) {
     return (
       <UserProfileAgentSettingsMenu
-        archiveActions={archiveActions}
+        archiveActions={canShowArchiveAction ? archiveActions : undefined}
         isBot={isBot}
         isPending={settingsActionPending}
+        onEditHostedAgent={onEditHostedAgent}
       />
     );
   }

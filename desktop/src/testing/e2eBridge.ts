@@ -108,6 +108,12 @@ type MockRelayAgentSeed = {
   channelNames?: string[];
   channelIds?: string[];
   status?: PresenceStatus;
+  avatarUrl?: string | null;
+  audience?: "community" | "owner";
+  ownerPubkey?: string | null;
+  accessTier?: "shared" | "personal" | "admin";
+  model?: string | null;
+  models?: Array<{ id: string; name?: string | null }>;
 };
 
 type MockPersonaSeed = {
@@ -775,6 +781,12 @@ type RawRelayAgent = {
   status: PresenceStatus;
   respond_to?: "owner-only" | "allowlist" | "anyone";
   respond_to_allowlist?: string[];
+  avatar_url?: string | null;
+  audience?: "community" | "owner";
+  owner_pubkey?: string | null;
+  access_tier?: "shared" | "personal" | "admin";
+  model?: string | null;
+  models?: Array<{ id: string; name?: string | null }>;
 };
 
 type RawManagedAgent = {
@@ -2154,6 +2166,12 @@ function resetMockRelayAgents(config?: E2eConfig) {
       status: seed.status ?? "online",
       respond_to: seed.respondTo ?? "owner-only",
       respond_to_allowlist: seed.respondToAllowlist ?? [],
+      avatar_url: seed.avatarUrl ?? null,
+      audience: seed.audience ?? "community",
+      owner_pubkey: seed.ownerPubkey ?? null,
+      access_tier: seed.accessTier ?? "shared",
+      model: seed.model ?? null,
+      models: seed.models ?? [],
     });
   }
 }
@@ -8371,6 +8389,7 @@ async function handleUpdateManagedAgent(args: {
   input: {
     pubkey: string;
     name?: string;
+    avatarUrl?: string | null;
     model?: string | null;
     systemPrompt?: string | null;
     envVars?: Record<string, string>;
@@ -8381,6 +8400,9 @@ async function handleUpdateManagedAgent(args: {
   const agent = getMockManagedAgent(args.input.pubkey);
   if (args.input.name !== undefined) {
     agent.name = args.input.name;
+  }
+  if (args.input.avatarUrl !== undefined) {
+    agent.avatar_url = args.input.avatarUrl;
   }
   if (args.input.model !== undefined) {
     agent.model = args.input.model;

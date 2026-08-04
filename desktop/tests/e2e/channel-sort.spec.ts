@@ -31,16 +31,11 @@ async function openApp(page: Page) {
 function streamNames(page: Page) {
   return page
     .getByTestId("stream-list")
-    .locator("[data-testid^='channel-']")
+    .locator("[data-channel-id]")
     .evaluateAll((nodes) =>
       nodes
-        .map((n) => n.getAttribute("data-testid") ?? "")
-        .filter(
-          (id) =>
-            !id.startsWith("channel-unread") &&
-            !id.startsWith("channel-working") &&
-            !id.startsWith("channel-dm-count"),
-        )
+        .map((node) => node.getAttribute("data-testid"))
+        .filter((id): id is string => id !== null)
         .map((id) => id.replace(/^channel-/, "")),
     );
 }

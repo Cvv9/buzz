@@ -140,8 +140,11 @@ export function mergeAgentNamesIntoProfiles(
     const key = normalizePubkey(agent.pubkey);
     merged[key] = {
       ...merged[key],
-      displayName: merged[key]?.displayName || agent.name,
-      avatarUrl: merged[key]?.avatarUrl ?? null,
+      // The relay-agent value already includes the current administrator's
+      // hosted config projection. It must win over stale kind:0 metadata so
+      // names and pictures remain identical in Agents, profiles, and messages.
+      displayName: agent.name || merged[key]?.displayName,
+      avatarUrl: agent.avatarUrl ?? merged[key]?.avatarUrl ?? null,
       nip05Handle: merged[key]?.nip05Handle ?? null,
       isAgent: true,
     };

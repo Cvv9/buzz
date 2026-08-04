@@ -26,7 +26,7 @@ use serde::Serialize;
 use tauri::{AppHandle, State};
 
 use buzz_core_pkg::engram::{self, extract_refs, select_head, validate_and_decrypt, Body};
-use buzz_core_pkg::kind::KIND_AGENT_ENGRAM;
+use buzz_core_pkg::kind::{KIND_AGENT_ENGRAM, KIND_AGENT_PROFILE};
 
 use crate::commands::identity_archive::{extract_oa_owner, fetch_kind0};
 use crate::{app_state::AppState, managed_agents::load_managed_agents, relay::query_relay};
@@ -91,6 +91,33 @@ fn kind0_declares_viewer_owner(kind0: Option<&nostr::Event>, viewer_pubkey: &str
     }
 }
 
+async fn hosted_profile_declares_viewer_owner(
+    state: &AppState,
+    agent_pubkey: &str,
+    viewer_pubkey: &str,
+) -> Result<bool, String> {
+    let events = query_relay(
+        state,
+        &[serde_json::json!({
+            "kinds": [KIND_AGENT_PROFILE],
+            "authors": [agent_pubkey],
+            "limit": 1,
+        })],
+    )
+    .await?;
+    Ok(events.first().is_some_and(|event| {
+        serde_json::from_str::<serde_json::Value>(&event.content)
+            .ok()
+            .and_then(|content| {
+                content
+                    .get("owner_pubkey")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .is_some_and(|owner| owner.eq_ignore_ascii_case(viewer_pubkey))
+    }))
+}
+
 /// `get_agent_memory` — owner-gated single-payload engram listing.
 ///
 /// Returns the full decrypted set for the (agent, owner) pair where
@@ -147,15 +174,18 @@ pub async fn get_agent_memory(
     let is_declared_owner = if is_managed {
         false // already authorized; skip the relay roundtrip
     } else {
-        // Verify the agent's live `kind:0` declares the viewer as owner.
+        // Prefer the verified NIP-OA declaration, then accept the hosted
+        // agent's own signed directory profile. The engram remains encrypted
+        // to the viewer and p-gated by the relay; this only avoids rejecting a
+        // legitimate owner before that real boundary is exercised.
         let kind0 = fetch_kind0(&state, &agent_pubkey).await?;
         kind0_declares_viewer_owner(kind0.as_ref(), &viewer_pubkey)
+            || hosted_profile_declares_viewer_owner(&state, &agent_pubkey, &viewer_pubkey).await?
     };
 
     if !is_managed && !is_declared_owner {
         return Err(format!(
-            "not the owner of agent {agent_pubkey} (no managed-agent record \
-             and no verified NIP-OA owner declaration)"
+            "not the owner of agent {agent_pubkey} (no local record or signed owner declaration)"
         ));
     }
 

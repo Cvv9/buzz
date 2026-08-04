@@ -50,6 +50,20 @@ const rules = [
 // Do not add to this list; split the file instead. Remove each entry as its
 // file is broken up. Tracked as a follow-up.
 const overrides = new Map([
+  // Relay-hosted agents expose a compact model catalog beside their existing
+  // identity fields. The transport type is intentionally kept at the relay
+  // boundary while the catalog behavior remains in dedicated modules.
+  ["src-tauri/src/managed_agents/types.rs", 1010],
+  // Alerts navigation adds one route callback at each end of the existing
+  // AppSidebar composition seam; all alert behavior lives outside AppShell.
+  ["src/app/AppShell.tsx", 1002],
+  // The model selector distinguishes a harness-native runtime default from a
+  // concrete inherited model. The selector implementation remains shared.
+  ["src/features/agents/ui/AgentConfigFields.tsx", 1001],
+  // Persisted workspace/project groups and alert routing extend the sidebar's
+  // composition layer. Sorting and group partitioning remain split into
+  // defaultChannelGroups, with the broader sidebar decomposition still queued.
+  ["src/features/sidebar/ui/AppSidebar.tsx", 1166],
   // Native Builderlab auth/community commands add a small registration surface
   // to the existing Tauri composition root. The implementation lives in
   // builderlab.rs; this narrowly ratchets the command wiring while lib.rs is
@@ -443,7 +457,10 @@ const overrides = new Map([
   ["src/features/profile/ui/UserProfilePanelSections.tsx", 1140],
   // +14 for openEditAgent event subscription (config-nudge card "Open Edit Agent" action).
   // +11 for editAgentFocus state + initialFocus prop threading (deep-link granularity).
-  ["src/features/profile/ui/UserProfilePanel.tsx", 1025],
+  // Hosted-agent presentation and edit authorization add the profile-level
+  // bridge for relay agents. The dialog implementation remains split out in
+  // HostedAgentEditDialog; this file only owns the profile integration seam.
+  ["src/features/profile/ui/UserProfilePanel.tsx", 1029],
   // PersistBackend enum + marker-on-keyring-success plumbing and its three
   // fail-closed regression tests (silent identity rotation on keyring outage).
   // A small overage from load-bearing security plumbing on a file already at
@@ -680,7 +697,9 @@ const overrides = new Map([
   // hidden-key projection keeps the top-level secret out of Advanced rows.
   // +6 (1195 -> 1201): rebase onto main — this PR's model-source label wiring
   // lands on top of main's dialog growth. Queued to split.
-  ["src/features/agents/ui/AgentInstanceEditDialog.tsx", 1229],
+  // Instance avatar overrides complete the existing profile edit flow. The
+  // picker itself remains in AgentCreationPreview; this is submit/render wiring.
+  ["src/features/agents/ui/AgentInstanceEditDialog.tsx", 1235],
   // AgentDefinitionDialog grew past 1000 with the following load-bearing fixes:
   // isRuntimeAutoSeededRef tracking for edit-mode seeding (Fizz shows models);
   // runtimeSupportsLlmProviderSelection guard on discovery provider (codex fix);

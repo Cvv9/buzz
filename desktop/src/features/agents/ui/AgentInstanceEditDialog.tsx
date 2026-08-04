@@ -657,6 +657,10 @@ export function AgentInstanceEditDialog({
       const input: UpdateManagedAgentInput = {
         pubkey: agent.pubkey,
         name: name.trim() !== agent.name ? name.trim() : undefined,
+        avatarUrl:
+          (avatarUrl.trim() || null) !== (agent.avatarUrl ?? null)
+            ? avatarUrl.trim() || null
+            : undefined,
         // relayUrl deliberately never submitted: the legacy per-record pin is
         // ignored (#2122) and the stored value is preserved as-is.
         acpCommand:
@@ -876,16 +880,18 @@ export function AgentInstanceEditDialog({
         }
       >
         <div className="grid gap-5 lg:grid-cols-[220px_minmax(0,1fr)]">
-          {/* Avatar is definition-level identity. hideEditControl suppresses
-              the internal pencil badge; the CTA below is the only edit path. */}
+          {/* An instance can carry an explicit avatar override. Keeping the
+              picker here makes the profile's Edit action complete even for
+              built-in or otherwise non-editable definitions. */}
           <div className="flex flex-col items-center gap-2">
             <AgentCreationPreview
               avatarUrl={previewAvatarUrl}
-              hideEditControl
+              disabled={updateMutation.isPending}
               label={previewLabel}
               onClearAvatar={() => setAvatarUrl("")}
               onUploadPendingChange={setIsAvatarUploadPending}
               onSelectAvatar={setAvatarUrl}
+              testIdPrefix="edit-agent-avatar"
             />
             {onEditLinkedPersona ? (
               <Button
@@ -898,11 +904,11 @@ export function AgentInstanceEditDialog({
                 type="button"
                 variant="outline"
               >
-                Edit avatar
+                Edit shared identity
               </Button>
             ) : (
               <p className="text-center text-xs text-muted-foreground">
-                Avatar is shared identity
+                This picture is used on the agent profile.
               </p>
             )}
           </div>

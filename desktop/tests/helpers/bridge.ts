@@ -81,6 +81,12 @@ type MockRelayAgentSeed = {
   channelNames?: string[];
   channelIds?: string[];
   status?: "online" | "away" | "offline";
+  avatarUrl?: string | null;
+  audience?: "community" | "owner";
+  ownerPubkey?: string | null;
+  accessTier?: "shared" | "personal" | "admin";
+  model?: string | null;
+  models?: Array<{ id: string; name?: string | null }>;
 };
 
 type MockHuddleSeed = {

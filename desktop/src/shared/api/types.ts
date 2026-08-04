@@ -282,6 +282,10 @@ export type RelayAgent = {
   audience?: "community" | "owner";
   ownerPubkey?: string | null;
   accessTier?: "shared" | "personal" | "admin";
+  /** Admin-authored desired model for this hosted agent. */
+  model?: string | null;
+  /** Model catalog advertised and signed by the hosted runtime. */
+  models?: AgentModelInfo[];
 };
 
 export type ManagedAgentRuntimeLifecycle =
@@ -687,6 +691,8 @@ export type RuntimeConfigSurface = {
 export type UpdateManagedAgentInput = {
   pubkey: string;
   name?: string;
+  /** Absent = don't touch. null = remove the custom avatar. */
+  avatarUrl?: string | null;
   model?: string | null;
   provider?: string | null;
   systemPrompt?: string | null;

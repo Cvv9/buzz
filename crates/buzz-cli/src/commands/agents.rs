@@ -20,6 +20,8 @@ pub async fn dispatch(command: AgentsCmd, client: &BuzzClient) -> Result<(), Cli
             owner_pubkey,
             access_tier,
             channel_add_policy,
+            models_json,
+            model,
         } => {
             let display_name = display_name.trim();
             if display_name.is_empty() {
@@ -84,6 +86,19 @@ pub async fn dispatch(command: AgentsCmd, client: &BuzzClient) -> Result<(), Cli
             if let Some(pubkey) = owner_pubkey {
                 validate_hex64(pubkey)?;
             }
+            let models = models_json
+                .as_deref()
+                .map(serde_json::from_str::<serde_json::Value>)
+                .transpose()
+                .map_err(|error| {
+                    CliError::Usage(format!("--models-json must be valid JSON: {error}"))
+                })?
+                .unwrap_or_else(|| serde_json::json!([]));
+            if !models.is_array() {
+                return Err(CliError::Usage(
+                    "--models-json must be a JSON array".to_string(),
+                ));
+            }
             let content = serde_json::json!({
                 "name": display_name,
                 "display_name": display_name,
@@ -96,6 +111,8 @@ pub async fn dispatch(command: AgentsCmd, client: &BuzzClient) -> Result<(), Cli
                 "owner_pubkey": owner_pubkey,
                 "access_tier": access_tier,
                 "channel_add_policy": channel_add_policy,
+                "models": models,
+                "model": model,
             })
             .to_string();
             let builder = nostr::EventBuilder::new(

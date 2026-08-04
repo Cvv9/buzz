@@ -7,6 +7,7 @@ import {
   EllipsisVertical,
   Pencil,
   Plus,
+  Star,
   Trash2,
 } from "lucide-react";
 
@@ -39,6 +40,7 @@ import {
   SidebarGroupContent,
   SidebarGroupLabel,
   SidebarMenu,
+  SidebarMenuAction,
   SidebarMenuItem,
 } from "@/shared/ui/sidebar";
 import { ChannelMenuButton } from "@/features/sidebar/ui/SidebarSection";
@@ -68,6 +70,43 @@ const SECTION_LABEL_CHEVRON_CLASS =
   "relative size-2.5 shrink-0 text-current opacity-60 transition-[color,opacity] group-hover/sidebar-section:opacity-100 group-hover/section-label:opacity-100 group-focus-within/sidebar-section:opacity-100 group-focus-visible/section-label:opacity-100 group-data-[section-actions-open=true]/sidebar-section:opacity-100";
 const SECTION_LABEL_CHEVRON_ICON_CLASS =
   "absolute left-1/2 top-1/2 size-2.5 -translate-x-1/2 -translate-y-1/2";
+
+function ChannelStarAction({
+  channel,
+  isStarred,
+  onStarChannel,
+  onUnstarChannel,
+}: {
+  channel: Channel;
+  isStarred: boolean;
+  onStarChannel?: (channelId: string) => void;
+  onUnstarChannel?: (channelId: string) => void;
+}) {
+  const action = isStarred ? onUnstarChannel : onStarChannel;
+  if (!action) return null;
+
+  const label = isStarred
+    ? `Remove ${channel.name} from favorites`
+    : `Add ${channel.name} to favorites`;
+
+  return (
+    <SidebarMenuAction
+      aria-label={label}
+      className={cn(isStarred && "text-sidebar-primary md:opacity-100")}
+      data-testid={`channel-favorite-${channel.name}`}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        action(channel.id);
+      }}
+      showOnHover={!isStarred}
+      title={label}
+      type="button"
+    >
+      <Star className={cn(isStarred && "fill-current")} />
+    </SidebarMenuAction>
+  );
+}
 
 const SORT_OPTIONS: { value: ChannelSortMode; label: string }[] = [
   { value: "recent", label: "Recent" },
@@ -468,6 +507,12 @@ export function ChannelGroupSection({
                     onSelectChannel={onSelectChannel}
                   />
                 )}
+                <ChannelStarAction
+                  channel={channel}
+                  isStarred={starredChannelIds?.has(channel.id) ?? false}
+                  onStarChannel={onStarChannel}
+                  onUnstarChannel={onUnstarChannel}
+                />
               </SidebarMenuItem>
             </ContextMenuTrigger>
             <ContextMenuContent>
@@ -764,6 +809,14 @@ export function CustomChannelSection({
                                 onSelectChannel={onSelectChannel}
                               />
                             </DraggableChannelRow>
+                            <ChannelStarAction
+                              channel={channel}
+                              isStarred={
+                                starredChannelIds?.has(channel.id) ?? false
+                              }
+                              onStarChannel={onStarChannel}
+                              onUnstarChannel={onUnstarChannel}
+                            />
                           </SidebarMenuItem>
                         </ContextMenuTrigger>
                         <ContextMenuContent>

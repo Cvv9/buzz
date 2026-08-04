@@ -2,12 +2,34 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  deriveProfileChannels,
   parseProfilePanelTab,
   parseProfilePanelView,
   personaManagedAgentUpdate,
   profilePanelTabFromSearch,
   profilePanelViewFromSearch,
 } from "./UserProfilePanelUtils.ts";
+
+test("deriveProfileChannels uses the channel roster for hosted agents", () => {
+  const pubkey = "ab".repeat(32);
+  const channels = [
+    {
+      id: "operations-id",
+      name: "operations",
+      memberPubkeys: [pubkey.toUpperCase()],
+    },
+    { id: "general-id", name: "general", memberPubkeys: [] },
+  ];
+  const hostedAgent = {
+    pubkey,
+    channels: [],
+    channelIds: [],
+  };
+
+  assert.deepEqual(deriveProfileChannels(pubkey, hostedAgent, channels), [
+    { id: "operations-id", name: "operations" },
+  ]);
+});
 
 function agent(overrides = {}) {
   return {

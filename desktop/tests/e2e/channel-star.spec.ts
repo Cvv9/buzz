@@ -26,6 +26,21 @@ function seedStarState(
 }
 
 test.describe("channel starring", () => {
+  test("00 — visible row action adds a channel to Favorites", async ({
+    page,
+  }) => {
+    await installMockBridge(page);
+    await page.goto("/");
+
+    const channel = page.getByTestId("channel-engineering");
+    await channel.hover();
+    await page.getByTestId("channel-favorite-engineering").click();
+
+    await expect(
+      page.getByTestId("starred-list").getByTestId("channel-engineering"),
+    ).toBeVisible();
+  });
+
   test("01 — context menu shows Star channel", async ({ page }) => {
     await installMockBridge(page);
     await page.goto("/");

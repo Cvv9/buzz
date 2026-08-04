@@ -1061,11 +1061,126 @@ pub async fn list_relay_agents(state: State<'_, AppState>) -> Result<Vec<RelayAg
     // The convert helper returns `{"agents": [...]}`. Extract and re-deserialize
     // into the strongly-typed `Vec<RelayAgentInfo>` the frontend expects.
     let value = nostr_convert::agents_from_events(&events);
-    let agents = value
-        .get("agents")
-        .cloned()
-        .unwrap_or_else(|| serde_json::json!([]));
-    serde_json::from_value(agents).map_err(|e| format!("agent parse failed: {e}"))
+    let mut agents: Vec<RelayAgentInfo> = serde_json::from_value(
+        value
+            .get("agents")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!([])),
+    )
+    .map_err(|e| format!("agent parse failed: {e}"))?;
+
+    // Hosted agents own their kind:10100 directory event, so an administrator
+    // cannot safely rewrite it. Merge public, admin-authored parameterized
+    // projections instead. Every client must see the same authorized head.
+    let config_events = query_relay(
+        &state,
+        &[serde_json::json!({
+            "kinds": [
+                buzz_core_pkg::kind::KIND_HOSTED_AGENT_CONFIG,
+                buzz_core_pkg::kind::KIND_MANAGED_AGENT,
+            ],
+        })],
+    )
+    .await?;
+    let membership_events = query_relay(
+        &state,
+        &[serde_json::json!({
+            "kinds": [buzz_core_pkg::kind::KIND_NIP43_MEMBERSHIP_LIST],
+            "limit": 1,
+        })],
+    )
+    .await?;
+    let admin_pubkeys: std::collections::HashSet<String> = membership_events
+        .first()
+        .map(|event| {
+            event
+                .tags
+                .iter()
+                .filter_map(|tag| {
+                    let parts = tag.as_slice();
+                    let role = parts.get(2).map(String::as_str).unwrap_or("member");
+                    (parts.first().map(String::as_str) == Some("member")
+                        && matches!(role, "owner" | "admin"))
+                    .then(|| parts.get(1).cloned())
+                    .flatten()
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let mut latest_config_at = std::collections::HashMap::<String, u64>::new();
+
+    for event in config_events {
+        let d_tag = event.tags.iter().find_map(|tag| {
+            let parts = tag.as_slice();
+            (parts.first().map(String::as_str) == Some("d"))
+                .then(|| parts.get(1).cloned())
+                .flatten()
+        });
+        let Some(d_tag) = d_tag else {
+            continue;
+        };
+        let Ok(config) = serde_json::from_str::<serde_json::Value>(&event.content) else {
+            continue;
+        };
+        let is_compat_projection =
+            event.kind.as_u16() as u32 == buzz_core_pkg::kind::KIND_MANAGED_AGENT;
+        if is_compat_projection
+            && (config.get("schema").and_then(serde_json::Value::as_str)
+                != Some("buzz.hosted-agent-config.v1")
+                || !d_tag.starts_with("hosted-agent:"))
+        {
+            continue;
+        }
+        let agent_pubkey = config
+            .get("agent_pubkey")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| d_tag.strip_prefix("hosted-agent:").unwrap_or(&d_tag))
+            .to_string();
+        let Some(agent) = agents
+            .iter_mut()
+            .find(|agent| agent.pubkey.eq_ignore_ascii_case(&agent_pubkey))
+        else {
+            continue;
+        };
+        let author = event.pubkey.to_hex();
+        let declared_owner = agent.owner_pubkey.as_deref().unwrap_or_default();
+        if !admin_pubkeys.contains(&author) && !declared_owner.eq_ignore_ascii_case(&author) {
+            continue;
+        }
+        let created_at = event.created_at.as_secs();
+        if latest_config_at
+            .get(&agent_pubkey)
+            .is_some_and(|latest| *latest > created_at)
+        {
+            continue;
+        }
+        latest_config_at.insert(agent_pubkey.clone(), created_at);
+        if let Some(name) = config
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            agent.name = name.to_string();
+        }
+        if let Some(avatar_url) = config.get("avatar_url") {
+            agent.avatar_url = avatar_url
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+        }
+        if let Some(model) = config.get("model") {
+            agent.model = model
+                .as_str()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+        }
+    }
+
+    Ok(agents)
 }
 
 #[cfg(test)]

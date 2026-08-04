@@ -415,7 +415,7 @@ export function useUpdateManagedAgentMutation() {
       }
     },
     onSettled: async (_data, _error, variables) => {
-      // Backend republishes kind:0 on a name change (sync_managed_agent_profile),
+      // Backend republishes kind:0 on a profile change (sync_managed_agent_profile),
       // so the relay has fresh profile data — but the desktop's React Query cache
       // for ["user-profile", pubkey] has a 60s staleTime and will not refetch on
       // its own. Invalidate explicitly so the profile pane re-renders against

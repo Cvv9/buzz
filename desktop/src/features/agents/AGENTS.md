@@ -26,6 +26,16 @@ with a TypeScript lookup table or an id comparison in a component.
 
 ## Rules
 
+Hosted-agent identity/config is a separate capability-driven path. The hosted
+runtime advertises its model catalog in its signed kind:10100 directory event;
+the frontend must render those options and must not maintain a provider/model
+table. Admin edits are stored in an admin-authored kind:30179 event keyed by the
+hosted agent pubkey. `list_relay_agents` accepts only community owner/admin
+authors (or the agent's declared owner), chooses the newest authorized head,
+and every presentation surface treats that merged name/avatar as
+authoritative over stale kind:0 metadata. A hosted model save also uses the
+authenticated observer `switch_model` control for the agent's known channels.
+
 1. **No hardcoded harness-ID checks in render code.** `runtime.id === "claude"`
    belongs in `deriveAgentConfigFieldModel` (once, with a named reason), never
    in a component. Components ask the field model what exists
@@ -80,7 +90,10 @@ with a TypeScript lookup table or an id comparison in a component.
    picker while discovery is in flight and after IPC resolves with no usable
    options (`modelDiscoverySuccessfulEmpty` / `isSuccessfulEmptyDiscovery`).
    A thrown or unavailable discovery keeps the control so #2246 failure UI can
-   render, and must not heal/clear persisted model or effort. Full disclosure
+   render, and must not heal/clear persisted model or effort. When that control
+   remains visible for an `acpNative` harness, its zero-value option is
+   **Runtime default** even when no baked/global fallback exists; optional
+   native selection must never collapse to only **Custom model**. Full disclosure
    still shows the control when Custom model is available. Required-model
    harnesses always keep the field. Gate: `defaults hides model when optional
    harness has empty discovery` (and the failed-discovery counterpart) in

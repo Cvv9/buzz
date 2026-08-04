@@ -34,6 +34,9 @@ import {
 } from "@/features/agents/lib/instanceInputForDefinition";
 import { describeLogFile } from "@/features/agents/ui/agentUi";
 import { AgentDialog } from "@/features/agents/ui/AgentDialog";
+import { HostedAgentEditDialog } from "@/features/agents/ui/HostedAgentEditDialog";
+import { getHostedAgentPresentation } from "@/features/agents/lib/hostedAgentPresentation";
+import { useMyRelayMembershipQuery } from "@/features/community-members/hooks";
 import { useAgentLifecycleActions } from "@/features/profile/ui/useAgentLifecycleActions";
 import {
   consumePendingOpenEditAgent,
@@ -270,13 +273,11 @@ export function UserProfilePanel({
   const unfollowMutation = useUnfollowMutation(currentPubkey);
   const { canOpenAgentActivity, openAgentActivity } = useOpenAgentActivity();
   const { goChannel } = useAppNavigation();
-  const profile = resolvePanelProfile({
+  const baseProfile = resolvePanelProfile({
     managedAgent,
     persona: resolvedPersona,
     profile: profileQuery.data,
   });
-  const ownerPubkey = profile?.ownerPubkey ?? null;
-  const ownerProfileQuery = useUserProfileQuery(ownerPubkey ?? undefined);
   const presenceStatus = pubkeyLower
     ? presenceQuery.data?.[pubkeyLower]
     : undefined;
@@ -287,6 +288,23 @@ export function UserProfilePanel({
   const relayAgent = relayAgentsQuery.data?.find(
     (agent) => agent.pubkey.toLowerCase() === pubkeyLower,
   );
+  const hostedPresentation = relayAgent
+    ? getHostedAgentPresentation(relayAgent, baseProfile)
+    : null;
+  const profile = relayAgent
+    ? {
+        pubkey: relayAgent.pubkey,
+        displayName: hostedPresentation?.displayName ?? null,
+        avatarUrl: hostedPresentation?.avatarUrl ?? null,
+        about: baseProfile?.about ?? null,
+        nip05Handle: baseProfile?.nip05Handle ?? null,
+        ownerPubkey: baseProfile?.ownerPubkey ?? relayAgent.ownerPubkey ?? null,
+        hasProfileEvent: baseProfile?.hasProfileEvent ?? false,
+      }
+    : baseProfile;
+  const ownerPubkey = profile?.ownerPubkey ?? relayAgent?.ownerPubkey ?? null;
+  const ownerProfileQuery = useUserProfileQuery(ownerPubkey ?? undefined);
+  const myRelayMembershipQuery = useMyRelayMembershipQuery();
   const managedAgentLogQuery = useManagedAgentLogQuery(
     (view === "diagnostics" || view === "logs") &&
       managedAgent?.backend.type === "local"
@@ -331,6 +349,12 @@ export function UserProfilePanel({
   const canEditAgent =
     isOwner === true &&
     (managedAgent !== undefined || resolvedPersona !== undefined);
+  const membershipRole = myRelayMembershipQuery.data?.role;
+  const canEditHostedAgent =
+    relayAgent !== undefined &&
+    (membershipRole === "owner" ||
+      membershipRole === "admin" ||
+      relayAgent.ownerPubkey?.toLowerCase() === currentPubkey?.toLowerCase());
   const memoryQuery = useAgentMemoryQuery(effectivePubkey, {
     enabled: viewerIsOwner && Boolean(effectivePubkey),
   });
@@ -368,14 +392,8 @@ export function UserProfilePanel({
       false);
 
   const profileChannels = React.useMemo(
-    () =>
-      deriveProfileChannels(
-        pubkeyLower,
-        relayAgent,
-        managedAgent,
-        channelsQuery.data,
-      ),
-    [pubkeyLower, relayAgent, managedAgent, channelsQuery.data],
+    () => deriveProfileChannels(pubkeyLower, relayAgent, channelsQuery.data),
+    [pubkeyLower, relayAgent, channelsQuery.data],
   );
 
   const channelIdToName = React.useMemo(() => {
@@ -733,6 +751,8 @@ export function UserProfilePanel({
       onDeleteAgent={handleDeleteAgent}
       onDeletePersona={handleDeletePersona}
       onDuplicatePersona={handleDuplicatePersona}
+      onEditAgent={canEditAgent ? handleEditAgent : undefined}
+      onEditHostedAgent={canEditHostedAgent ? handleEditAgent : undefined}
       onExportPersona={handleExportPersona}
       onToggleAutoStart={handleToggleAgentAutoStart}
       personaActionKey={resolvedPersona?.id}
@@ -906,7 +926,17 @@ export function UserProfilePanel({
     </AuxiliaryPanelBody>
   );
   const editAgentDialog =
-    canEditAgent && managedAgent ? (
+    canEditHostedAgent && relayAgent && !managedAgent ? (
+      <HostedAgentEditDialog
+        agent={relayAgent}
+        onOpenChange={setEditAgentOpen}
+        onSaved={async () => {
+          await relayAgentsQuery.refetch();
+          await profileQuery.refetch();
+        }}
+        open={editAgentOpen}
+      />
+    ) : canEditAgent && managedAgent ? (
       <AgentDialog
         agent={managedAgent}
         mode="instance-edit"

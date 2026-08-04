@@ -145,3 +145,13 @@ tokio = { version = "1", features = ["test-util"] }
 # The relay's media validation, so the snapshot-sharing tests can prove the
 # full export → sanitize → relay-accept → import contract end to end.
 buzz_media_pkg = { package = "buzz-media", path = "../../crates/buzz-media" }
+
+# Dev profile — see the matching block in the root workspace Cargo.toml. This
+# is a separate workspace, so it needs its own copy: profiles only apply from
+# the workspace root, and src-tauri compiles its own duplicate of every shared
+# dependency. Without this the desktop `target/` alone reaches ~21 GB.
+[profile.dev]
+debug = true
+
+[profile.dev.package."*"]
+debug = false

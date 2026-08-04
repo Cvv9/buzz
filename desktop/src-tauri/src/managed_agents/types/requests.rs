@@ -203,6 +203,9 @@ pub struct UpdateManagedAgentRequest {
     /// Absent = don't touch. Present = rename the agent.
     #[serde(default)]
     pub name: Option<String>,
+    /// Absent = don't touch. null/blank = remove the custom avatar.
+    #[serde(default, deserialize_with = "crate::util::double_option")]
+    pub avatar_url: Option<Option<String>>,
     /// Absent = don't touch. null = clear to agent default. "id" = set.
     #[serde(default)]
     pub model: Option<Option<String>>,
@@ -466,5 +469,26 @@ mod tests {
         )
         .expect("a create payload without provenance should deserialize");
         assert_eq!(request.catalog_source, None);
+    }
+
+    #[test]
+    fn update_request_preserves_avatar_patch_tristate() {
+        let absent: UpdateManagedAgentRequest =
+            serde_json::from_str(r#"{ "pubkey": "agent" }"#).expect("avatar may be omitted");
+        assert_eq!(absent.avatar_url, None);
+
+        let cleared: UpdateManagedAgentRequest =
+            serde_json::from_str(r#"{ "pubkey": "agent", "avatarUrl": null }"#)
+                .expect("avatar may be cleared");
+        assert_eq!(cleared.avatar_url, Some(None));
+
+        let changed: UpdateManagedAgentRequest = serde_json::from_str(
+            r#"{ "pubkey": "agent", "avatarUrl": "https://example.com/new.png" }"#,
+        )
+        .expect("avatar may be changed");
+        assert_eq!(
+            changed.avatar_url,
+            Some(Some("https://example.com/new.png".to_string()))
+        );
     }
 }

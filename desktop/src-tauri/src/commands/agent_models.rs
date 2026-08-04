@@ -806,7 +806,7 @@ fn apply_model_provider_prompt_update(
 ///
 /// Does NOT auto-restart the agent. Runtime config changes (system prompt,
 /// parallelism, commands, toolsets) take effect on the next agent spawn.
-/// Name changes are synced to the relay immediately via a kind:0 re-publish.
+/// Name and avatar changes are synced to the relay immediately via a kind:0 re-publish.
 #[tauri::command]
 pub async fn update_managed_agent(
     input: UpdateManagedAgentRequest,
@@ -839,6 +839,17 @@ pub async fn update_managed_agent(
             if !trimmed.is_empty() && trimmed != record.name {
                 record.name = trimmed;
                 name_changed = true;
+            }
+        }
+        let mut avatar_changed = false;
+        if let Some(avatar_update) = input.avatar_url {
+            let normalized = avatar_update.and_then(|value| {
+                let trimmed = value.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            });
+            if normalized != record.avatar_url {
+                record.avatar_url = normalized;
+                avatar_changed = true;
             }
         }
         apply_model_provider_prompt_update(
@@ -943,7 +954,7 @@ pub async fn update_managed_agent(
         // update that touched only runtime/local fields is a no-op publish.
         super::agents::retain_managed_agent_pending(&app, &state, record);
 
-        let sync_params = if name_changed {
+        let sync_params = if name_changed || avatar_changed {
             let agent_keys = Keys::parse(&record.private_key_nsec)
                 .map_err(|e| format!("failed to parse agent keys: {e}"))?;
             // Re-publish the renamed profile to the agent's effective relay:
@@ -978,7 +989,8 @@ pub async fn update_managed_agent(
                 &crate::managed_agents::load_global_agent_config(&app).unwrap_or_default(),
             )?
         };
-        let rollback = name_changed.then(|| AgentUpdateRollback::new(previous_record, record));
+        let rollback = (name_changed || avatar_changed)
+            .then(|| AgentUpdateRollback::new(previous_record, record));
         (summary, sync_params, rollback)
     }; // lock dropped here
 
@@ -1003,7 +1015,7 @@ pub async fn update_managed_agent(
             })?;
             rollback_failed_agent_update(&app, &state, &summary.pubkey, rollback)?;
             return Err(format!(
-                "Agent rename failed because its relay profile could not be updated. No changes were saved: {sync_error}"
+                "Agent profile update failed because the relay profile could not be updated. No changes were saved: {sync_error}"
             ));
         }
     }

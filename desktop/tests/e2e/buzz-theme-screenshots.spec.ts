@@ -70,7 +70,7 @@ async function expectBuzzSidebarPalette(page: Page, mode: "light" | "dark") {
   const primaryMenu = page.getByTestId("sidebar-primary-menu");
   const sectionLabel = page
     .locator('[data-sidebar="group-label"]')
-    .filter({ hasText: "Channels" })
+    .filter({ hasText: "Workspace" })
     .first();
 
   await expect(sectionLabel).toHaveCSS("color", mutedColor);

@@ -451,7 +451,7 @@ test("defaults renders only fields supported by the selected harness", async ({
   );
   await expect(page.getByTestId("global-agent-provider")).toHaveCount(0);
   await expect(page.getByTestId("global-agent-model")).toHaveText(
-    "Default model",
+    "Runtime default",
   );
   await expect(
     page.getByTestId("global-agent-thinking-effort-select"),
@@ -524,6 +524,9 @@ test("defaults keeps model control when optional harness discovery fails", async
   // Failed discovery must not look like successful empty: keep the control
   // and surface #2246 failure UI (status line bypasses onboarding-essential).
   await expect(page.getByTestId("global-agent-model")).toBeVisible();
+  await expect(page.getByTestId("global-agent-model")).toContainText(
+    "Runtime default",
+  );
   await expect(page.getByText(/Could not load live models/i)).toBeVisible();
   await expect(page.getByTestId("onboarding-finish")).toBeEnabled();
 });

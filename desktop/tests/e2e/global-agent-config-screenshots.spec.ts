@@ -227,7 +227,7 @@ test.describe("global agent config screenshots", () => {
       .getByTestId("global-agent-default-harness-option-claude")
       .click();
     await expect(page.getByTestId("global-agent-model")).toHaveText(
-      /Default model/,
+      /Runtime default/,
     );
     await expect(
       page.getByRole("button", { name: "Save defaults" }),

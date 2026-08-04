@@ -80,6 +80,46 @@ if [ ! -s "${BUZZ_AGENT_KEY_FILE}" ]; then
 fi
 export VARVIK_AGENT_PUBKEY BUZZ_PRIVATE_KEY
 
+# Ask the configured ACP adapter for its model catalog before publishing the
+# hosted directory entry. This keeps Desktop's per-agent picker capability-
+# driven: Claude, Codex, and future adapters each advertise their own options
+# instead of the UI maintaining a stale provider table.
+if [ -z "${BUZZ_ACP_PROFILE_MODELS_JSON:-}" ]; then
+  raw_models="$(buzz-acp models --json 2>/dev/null || true)"
+  BUZZ_ACP_PROFILE_MODELS_JSON="$(printf '%s' "${raw_models}" | node -e '
+    let input = "";
+    process.stdin.on("data", chunk => { input += chunk; });
+    process.stdin.on("end", () => {
+      try {
+        const payload = JSON.parse(input);
+        const found = new Map();
+        for (const config of payload?.stable?.configOptions ?? []) {
+          for (const option of config?.options ?? []) {
+            if (typeof option?.value === "string") {
+              found.set(option.value, {
+                id: option.value,
+                name: typeof option.displayName === "string" ? option.displayName : null,
+              });
+            }
+          }
+        }
+        for (const option of payload?.unstable?.availableModels ?? []) {
+          if (typeof option?.modelId === "string" && !found.has(option.modelId)) {
+            found.set(option.modelId, {
+              id: option.modelId,
+              name: typeof option.name === "string" ? option.name : null,
+            });
+          }
+        }
+        process.stdout.write(JSON.stringify([...found.values()]));
+      } catch {
+        process.stdout.write("[]");
+      }
+    });
+  ')"
+fi
+export BUZZ_ACP_PROFILE_MODELS_JSON
+
 # Local single-host bundles may let the agent perform its own idempotent member
 # bootstrap. Managed deployments pre-register public keys with the relay and
 # disable this step so agent containers never receive relay-administrator
@@ -181,6 +221,10 @@ if [ -n "${BUZZ_ACP_PROFILE_AVATAR:-}" ]; then
 fi
 if [ -n "${BUZZ_ACP_PROFILE_ALIASES:-}" ]; then
   set -- "$@" --aliases "${BUZZ_ACP_PROFILE_ALIASES}"
+fi
+set -- "$@" --models-json "${BUZZ_ACP_PROFILE_MODELS_JSON:-[]}"
+if [ -n "${BUZZ_ACP_MODEL:-}" ]; then
+  set -- "$@" --model "${BUZZ_ACP_MODEL}"
 fi
 
 "$@"

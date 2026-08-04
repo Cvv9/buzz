@@ -288,6 +288,12 @@ pub enum AgentsCmd {
         /// Who may add this agent to channels: anyone, owner_only, or nobody
         #[arg(long, default_value = "anyone")]
         channel_add_policy: String,
+        /// JSON array of runtime-advertised model objects (`id`, optional `name`)
+        #[arg(long)]
+        models_json: Option<String>,
+        /// Model selected by this hosted runtime
+        #[arg(long)]
+        model: Option<String>,
     },
     /// Open a prefilled create-agent form in the owner's Buzz Desktop
     DraftCreate {

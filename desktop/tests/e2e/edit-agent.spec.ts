@@ -18,7 +18,7 @@ const BAKED_DEFAULTS = [
 // pre-existing spec rather than one written alongside it.
 //
 // Mock-boundary caveat: the e2eBridge `update_managed_agent` handler echoes
-// name/model/systemPrompt/envVars/respondTo/respondToAllowlist into the
+// name/avatar/model/systemPrompt/envVars/respondTo/respondToAllowlist into the
 // mock store — it does NOT
 // model the diff-based partial-update wire semantics (change-detected-or-omit,
 // tri-state provider, harnessOverride derivation), and it ignores
@@ -79,6 +79,57 @@ async function pickDropdownOption(
 }
 
 test.describe("edit agent dialog", () => {
+  test("makes agent editing available from the profile settings menu", async ({
+    page,
+  }) => {
+    await installMockBridge(page, {
+      managedAgents: [
+        {
+          pubkey: AGENT_PUBKEY,
+          name: AGENT_NAME,
+          status: "stopped",
+          channelNames: ["agents"],
+        },
+      ],
+    });
+
+    await page.goto("/");
+    await page.getByTestId("open-agents-view").click();
+    await page
+      .getByRole("button", { name: `${AGENT_NAME} agent profile` })
+      .click();
+    await page.getByTestId("user-profile-settings-menu-trigger").click();
+    await page.getByTestId("user-profile-agent-edit").click();
+
+    await expect(page.getByTestId("edit-agent-dialog")).toBeVisible();
+  });
+
+  test("changes the agent picture and persists it", async ({ page }) => {
+    const avatarUrl = "/landing/buzz-wordmark.png";
+    await installMockBridge(page, {
+      managedAgents: [
+        {
+          pubkey: AGENT_PUBKEY,
+          name: AGENT_NAME,
+          status: "stopped",
+          channelNames: ["agents"],
+        },
+      ],
+    });
+
+    await openEditDialog(page);
+    await page.getByRole("button", { name: /(?:Add|Edit) avatar/ }).click();
+    await page.getByPlaceholder("Paste a URL").fill(avatarUrl);
+    await page.getByRole("button", { name: "Apply" }).click();
+    await page.getByTestId("edit-agent-dialog-submit").click();
+    await expect(page.getByTestId("edit-agent-dialog")).not.toBeVisible();
+
+    await page.getByTestId("user-profile-edit-agent").click();
+    await expect(
+      page.getByRole("img", { name: `${AGENT_NAME} avatar` }),
+    ).toHaveAttribute("src", avatarUrl);
+  });
+
   test("edits the agent name and persists it across a dialog reopen", async ({
     page,
   }) => {
