@@ -263,7 +263,7 @@ test("message delivery across users", async ({
   }
 });
 
-test("live mentions refetch the home feed without waiting for polling", async ({
+test("live mentions refetch Alerts without waiting for polling", async ({
   browser,
 }: {
   browser: Browser;
@@ -303,15 +303,10 @@ test("live mentions refetch the home feed without waiting for polling", async ({
       },
     ]);
 
-    // The Inbox feed should have been refetched live (the original purpose
-    // of this test). The home badge stays at 0 while the user is actively
-    // reading #general — reading in-channel advances the NIP-RS marker past
-    // the new mention — so the assertion that the refetch happened is the
-    // Inbox-list content, not the badge.
-    await targetPage
-      .getByTestId("app-sidebar")
-      .getByRole("button", { name: "Inbox" })
-      .click();
+    // Mentions belong in Alerts, not the approval-only Inbox. The shared
+    // activity list should still refetch immediately when the relay event
+    // arrives.
+    await targetPage.getByTestId("open-alerts-view").click();
     await expect(targetPage.getByTestId("home-inbox-list")).toBeVisible();
     await expect(targetPage.getByTestId("home-inbox-list")).toContainText(
       message,
@@ -324,7 +319,7 @@ test("live mentions refetch the home feed without waiting for polling", async ({
   }
 });
 
-test("live forum mentions refetch the home feed without waiting for polling", async ({
+test("live forum mentions refetch Alerts without waiting for polling", async ({
   browser,
 }: {
   browser: Browser;
@@ -355,7 +350,7 @@ test("live forum mentions refetch the home feed without waiting for polling", as
       mentionPubkeys: [TEST_IDENTITIES.tyler.pubkey],
     });
 
-    await expect(targetPage.getByTestId("sidebar-home-count")).toHaveText("1");
+    await expect(targetPage.getByTestId("sidebar-home-count")).toHaveCount(0);
 
     await expectLoggedNotifications(targetPage, [
       {
@@ -364,11 +359,7 @@ test("live forum mentions refetch the home feed without waiting for polling", as
       },
     ]);
 
-    await targetPage
-      .getByTestId("app-sidebar")
-      .getByRole("button", { name: "Inbox" })
-      .click();
-    await expect(targetPage.getByTestId("home-inbox-list")).toBeVisible();
+    await targetPage.getByTestId("open-alerts-view").click();
     await expect(targetPage.getByTestId("home-inbox-list")).toBeVisible();
     await expect(targetPage.getByTestId("home-inbox-list")).toContainText(
       message,

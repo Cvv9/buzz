@@ -211,7 +211,8 @@ test("routes relay mentions to Alerts instead of Inbox", async ({
   try {
     await installRelayBridge(page, "tyler");
     await installRelayBridge(senderPage, "alice");
-    await page.goto("/alerts");
+    await page.goto("/");
+    await page.getByTestId("open-alerts-view").click();
     await senderPage.goto("/");
 
     await expect(page.getByTestId("home-inbox")).toBeVisible();
@@ -247,7 +248,8 @@ test("shows sent alert replies immediately in the detail pane", async ({
   try {
     await installRelayBridge(page, "tyler");
     await installRelayBridge(senderPage, "alice");
-    await page.goto("/alerts");
+    await page.goto("/");
+    await page.getByTestId("open-alerts-view").click();
     await senderPage.goto("/");
 
     await sendChannelMessage(senderPage, {
