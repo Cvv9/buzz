@@ -64,6 +64,11 @@ const overrides = new Map([
   // composition layer. Sorting and group partitioning remain split into
   // defaultChannelGroups, with the broader sidebar decomposition still queued.
   ["src/features/sidebar/ui/AppSidebar.tsx", 1166],
+  // Hosted-agent identity resolution now covers directory-backed candidates,
+  // exact-name mentions, and explicit relay-agent routing in one existing
+  // composition hook. Keep the ratchet exact while that hook is split into a
+  // pure mention-resolution module in the follow-up decomposition.
+  ["src/features/messages/lib/useMentions.ts", 1087],
   // Native Builderlab auth/community commands add a small registration surface
   // to the existing Tauri composition root. The implementation lives in
   // builderlab.rs; this narrowly ratchets the command wiring while lib.rs is
