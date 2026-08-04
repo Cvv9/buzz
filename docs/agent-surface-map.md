@@ -161,6 +161,7 @@ new route cannot silently bypass this impact analysis.
 - `/` — Home/Inbox; agent author presentation is visible here.
 - `/alerts` — alert messages may carry agent authors/mentions.
 - `/agents` — roster, profile and configuration source surface.
+- `/drafts` — personal unsent channel and thread messages.
 - `/pulse` — activity can carry agent identity.
 - `/reminders` — reminders can link to agent-authored messages.
 - `/settings` — global agent defaults and runtime setup.
