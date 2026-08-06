@@ -18,7 +18,6 @@ import {
   getMentionableAgentPubkeys,
   getSharedChannelIds,
   isAgentIdentityInKnownDirectories,
-  isAgentMentionChannelType,
   resolveAgentMentionDisplayName,
   shouldHideAgentFromMentions,
   uniqueAutocompleteLabels,
@@ -196,16 +195,16 @@ export function useMentions(
     () => getSharedChannelIds(channelsQuery.data),
     [channelsQuery.data],
   );
-  const mentionChannelId = isAgentMentionChannelType(options?.channelType)
-    ? channelId
-    : null;
+  // Community scope, not upstream's per-channel scope. Hosted VarVik agents are
+  // pre-registered in the relay directory and must be mentionable across the
+  // community before they have joined any channel — upstream's "channel" scope
+  // requires prior channel membership and its "managed-only" fallback drops
+  // relay agents entirely, both of which hide the hosted fleet.
   const mentionableAgentPubkeys = React.useMemo(
     () =>
       getMentionableAgentPubkeys({
         currentPubkey,
-        eligibilityScope: mentionChannelId
-          ? { type: "channel", channelId: mentionChannelId }
-          : { type: "managed-only" },
+        eligibilityScope: { type: "community" },
         managedAgentPubkeys,
         relayAgents: relayAgentsQuery.data,
         sharedChannelIds,
@@ -213,7 +212,6 @@ export function useMentions(
     [
       currentPubkey,
       managedAgentPubkeys,
-      mentionChannelId,
       relayAgentsQuery.data,
       sharedChannelIds,
     ],
