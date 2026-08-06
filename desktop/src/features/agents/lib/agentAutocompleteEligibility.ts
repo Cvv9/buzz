@@ -94,13 +94,31 @@ export function relayAgentIsSharedWithUser(
   return agent.respondTo === "anyone";
 }
 
+export function relayAgentCanRespondInChannel(
+  agent: Pick<RelayAgent, "channelIds" | "respondTo" | "respondToAllowlist">,
+  channelId: string,
+  currentPubkey?: string | null,
+) {
+  return (
+    agent.channelIds.includes(channelId) &&
+    relayAgentIsSharedWithUser(agent, new Set([channelId]), currentPubkey)
+  );
+}
+
+export type AgentEligibilityScope =
+  | { type: "community" }
+  | { type: "channel"; channelId: string }
+  | { type: "managed-only" };
+
 export function getMentionableAgentPubkeys({
   currentPubkey,
+  eligibilityScope,
   managedAgentPubkeys,
   relayAgents,
   sharedChannelIds,
 }: {
   currentPubkey?: string | null;
+  eligibilityScope: AgentEligibilityScope;
   managedAgentPubkeys: Iterable<string>;
   relayAgents: readonly RelayAgent[] | undefined;
   sharedChannelIds: ReadonlySet<string>;
@@ -110,7 +128,17 @@ export function getMentionableAgentPubkeys({
   );
 
   for (const agent of relayAgents ?? []) {
-    if (relayAgentIsSharedWithUser(agent, sharedChannelIds, currentPubkey)) {
+    const isAllowed =
+      eligibilityScope.type === "managed-only"
+        ? false
+        : eligibilityScope.type === "community"
+          ? relayAgentIsSharedWithUser(agent, sharedChannelIds, currentPubkey)
+          : relayAgentCanRespondInChannel(
+              agent,
+              eligibilityScope.channelId,
+              currentPubkey,
+            );
+    if (isAllowed) {
       pubkeys.add(normalizePubkey(agent.pubkey));
     }
   }
@@ -118,6 +146,9 @@ export function getMentionableAgentPubkeys({
   return pubkeys;
 }
 
+// Hosted VarVik agents are pre-registered in the relay directory rather than
+// discovered as managed processes, so an identity is eligible when it appears
+// in either directory.
 export function isAgentIdentityInKnownDirectories(
   candidate: { isAgent?: boolean; pubkey: string },
   managedAgentPubkeys: ReadonlySet<string>,
@@ -164,9 +195,58 @@ export function shouldHideAgentFromMentions({
   return directoryAgentPubkeys.has(normalized);
 }
 
+export function isAgentMentionChannelType(type?: string | null) {
+  return type === "stream" || type === "forum";
+}
+
+export function uniqueAutocompleteLabels(
+  candidates: readonly AgentAutocompleteCandidate[],
+) {
+  const unique = new Map<string, string>();
+  for (const candidate of candidates) {
+    for (const label of [
+      candidate.displayName,
+      candidate.personaName,
+      candidate.secondaryLabel,
+    ]) {
+      const trimmed = label?.trim();
+      if (trimmed && !unique.has(trimmed.toLowerCase())) {
+        unique.set(trimmed.toLowerCase(), trimmed);
+      }
+    }
+  }
+  return [...unique.values()];
+}
+
+export function filterCachedAgentSuggestions<
+  T extends {
+    isAgent?: boolean;
+    pubkey?: string;
+  },
+>(
+  suggestions: readonly T[],
+  currentCandidates: readonly AgentAutocompleteCandidate[],
+) {
+  const admittedAgentPubkeys = new Set(
+    currentCandidates.flatMap((candidate) =>
+      candidate.isAgent && candidate.pubkey
+        ? [normalizePubkey(candidate.pubkey)]
+        : [],
+    ),
+  );
+  return suggestions.filter(
+    (suggestion) =>
+      !suggestion.isAgent ||
+      !suggestion.pubkey ||
+      admittedAgentPubkeys.has(normalizePubkey(suggestion.pubkey)),
+  );
+}
+
 type AgentAutocompleteCandidate = {
   pubkey?: string;
   displayName?: string | null;
+  personaName?: string | null;
+  secondaryLabel?: string | null;
   ownerPubkey?: string | null;
   isAgent?: boolean;
   isManagedAgent?: boolean;

@@ -24,9 +24,17 @@ export function buildHomeBadgeFeedItems(
   feed: HomeFeedResponse | undefined,
   extraInboxItems: readonly FeedItem[],
 ): FeedItem[] {
+  // Thread activity is surfaced directly on its channel's hover preview. It
+  // should not also inflate the Inbox numeral, which is reserved for the
+  // Inbox's own high-priority activity.
+  const nonThreadExtraInboxItems = extraInboxItems.filter(
+    (item) => !isThreadReply(item.tags),
+  );
+  // Mentions stay in Alerts. The Inbox numeral counts only explicit approval
+  // requests, so `feed.mentions` is deliberately not folded in here.
   const items = feed
-    ? [...feed.feed.needsAction, ...extraInboxItems]
-    : [...extraInboxItems];
+    ? [...feed.feed.needsAction, ...nonThreadExtraInboxItems]
+    : [...nonThreadExtraInboxItems];
 
   return dedupeFeedItemsById(
     items.filter((item) => item.kind === KIND_APPROVAL_REQUEST),
