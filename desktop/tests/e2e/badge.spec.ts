@@ -108,6 +108,15 @@ test("selected Inbox and Agents rows keep their highlight without bold text", as
 test("hovering a channel keeps its text color", async ({ page }) => {
   await page.goto("/");
   const channel = page.getByTestId("channel-engineering");
+  // Community bootstrap ("Setting up your community…") can outrun the smoke
+  // project's 5s expect timeout, so wait for the row explicitly.
+  await expect(channel).toBeVisible({ timeout: 20_000 });
+
+  // The mock bridge seeds unread items during startup and the row's colour
+  // tracks that read state. Sampling before the seeding settles captures
+  // rgb(58,62,78) rather than the resting rgb(36,41,46), failing the
+  // post-hover comparison against a colour that was never the resting value.
+  await getSettledBadgeState(page);
   const initialColor = await channel.evaluate(
     (element) => getComputedStyle(element).color,
   );

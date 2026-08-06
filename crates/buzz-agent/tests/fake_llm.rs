@@ -390,7 +390,7 @@ async fn unsupported_image_response_recovers_without_replaying_image() {
         .send(
             "session/new",
             json!({
-                "cwd": "/tmp",
+                "cwd": std::env::temp_dir(),
                 "mcpServers": [{
                     "name": "fake",
                     "command": env!("CARGO_BIN_EXE_fake-mcp"),
@@ -484,7 +484,10 @@ async fn unsupported_image_without_image_in_history_fails_instead_of_looping() {
     .await;
     let _ = h.recv().await;
     let session_id = h
-        .send("session/new", json!({ "cwd": "/tmp", "mcpServers": [] }))
+        .send(
+            "session/new",
+            json!({ "cwd": std::env::temp_dir(), "mcpServers": [] }),
+        )
         .await;
     let session = h.recv_until(|v| v["id"] == json!(session_id)).await;
     let sid = session["result"]["sessionId"].as_str().unwrap();
@@ -630,7 +633,7 @@ async fn session_new_rejects_oversized_system_prompt() {
     let id = h
         .send(
             "session/new",
-            json!({"cwd":"/tmp","mcpServers":[],"systemPrompt": big_prompt}),
+            json!({"cwd": std::env::temp_dir(),"mcpServers":[],"systemPrompt": big_prompt}),
         )
         .await;
     let r = h.recv_until(|v| v["id"] == json!(id)).await;
@@ -667,7 +670,7 @@ async fn system_prompt_reaches_llm_system_role() {
     let sn_id = h
         .send(
             "session/new",
-            json!({"cwd":"/tmp","mcpServers":[],"systemPrompt": canary}),
+            json!({"cwd": std::env::temp_dir(),"mcpServers":[],"systemPrompt": canary}),
         )
         .await;
     let r = h.recv_until(|v| v["id"] == json!(sn_id)).await;
@@ -735,7 +738,10 @@ async fn system_prompt_absent_no_canary() {
 
     // session/new WITHOUT systemPrompt field.
     let sn_id = h
-        .send("session/new", json!({"cwd":"/tmp","mcpServers":[]}))
+        .send(
+            "session/new",
+            json!({"cwd": std::env::temp_dir(),"mcpServers":[]}),
+        )
         .await;
     let r = h.recv_until(|v| v["id"] == json!(sn_id)).await;
     let sid = r["result"]["sessionId"].as_str().unwrap().to_owned();
