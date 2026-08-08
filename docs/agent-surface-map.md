@@ -65,12 +65,17 @@ historical event.
 3. Subsequent NIP-29 channel-add authorization permits the declared owner and
    continues to reject unrelated users. This is an operator bootstrap path, not
    a browser or ordinary member command.
+4. A managed deployment that has already reconciled the private channel sets
+   `BUZZ_ACP_SKIP_PRIVATE_OWNER_BOOTSTRAP=true`. The agent entrypoint still
+   resolves and subscribes to that channel, but does not repeat the privileged
+   owner-role write as the agent's bot identity.
 
 Primary files:
 
 - `crates/buzz-admin/src/main.rs`
 - `crates/buzz-db/src/user.rs`
 - `crates/buzz-db/src/lib.rs`
+- `deploy/compose/agent-entrypoint.sh`
 
 ### Edit a hosted agent
 
