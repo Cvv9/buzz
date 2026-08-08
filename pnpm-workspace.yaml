@@ -18,6 +18,9 @@ overrides:
   # 5.0.1 / 5.0.2 respectively; pin >=5.0.2 to cover both. Removable once
   # markdown-it resolves linkify-it >=5.0.2 on its own.
   linkify-it: "^5.0.2"
+  # postcss pulls nanoid 3.x through Vite. Versions before 3.3.17 can loop
+  # indefinitely for a zero-length custom generator (GHSA-2v37-7h3g-55p8).
+  nanoid@<3.3.17: 3.3.17
 patchedDependencies:
   isomorphic-git: patches/isomorphic-git.patch
   virtua@0.49.3: patches/virtua@0.49.3.patch

@@ -489,10 +489,32 @@ async function expectIntroActionsShareRow(
 }
 
 test.beforeEach(async ({ page }, testInfo) => {
+  if (testInfo.tags.includes(CACHED_PROFILE_LABELS_TAG)) {
+    await page.addInitScript(
+      ({ alicePubkey }) => {
+        window.localStorage.setItem(
+          "buzz-user-labels.v1:ws://localhost:3000",
+          JSON.stringify({
+            version: 1,
+            updatedAt: Date.now(),
+            profiles: {
+              [alicePubkey]: {
+                displayName: "Cached Alice",
+                name: "alice",
+                nip05Handle: null,
+                updatedAt: Date.now(),
+              },
+            },
+          }),
+        );
+      },
+      { alicePubkey: TEST_IDENTITIES.alice.pubkey },
+    );
+  }
   await installMockBridge(
     page,
     testInfo.tags.includes(CACHED_PROFILE_LABELS_TAG)
-      ? { usersBatchDelayMs: 10_000 }
+      ? { relayAgents: [], usersBatchDelayMs: 10_000 }
       : undefined,
   );
 });
@@ -524,26 +546,6 @@ test("sidebar shows all channel types", async ({ page }) => {
 test("shows cached profile labels while relay profiles revalidate", {
   tag: CACHED_PROFILE_LABELS_TAG,
 }, async ({ page }) => {
-  await page.addInitScript(
-    ({ alicePubkey }) => {
-      window.localStorage.setItem(
-        "buzz-user-labels.v1:ws://localhost:3000",
-        JSON.stringify({
-          version: 1,
-          updatedAt: Date.now(),
-          profiles: {
-            [alicePubkey]: {
-              displayName: "Cached Alice",
-              name: "alice",
-              nip05Handle: null,
-            },
-          },
-        }),
-      );
-    },
-    { alicePubkey: TEST_IDENTITIES.alice.pubkey },
-  );
-
   await page.goto("/");
   await page.getByTestId("channel-general").click();
 
