@@ -158,7 +158,8 @@ async function submitEmptyEdit(
   await expect(detail.getByTestId("edit-target")).toBeVisible();
   const input = detail.getByTestId("message-input");
   await expect(input).not.toBeEmpty();
-  await input.fill("");
+  await input.press("ControlOrMeta+A");
+  await input.press("Backspace");
   await expect(input).toBeEmpty();
   await page.keyboard.press("Enter");
 }
@@ -189,6 +190,10 @@ test("editing an immediate attachment reply preserves its media tags", async ({
     ],
   });
   await page.goto("/");
+  // Mention-category items live on Alerts in this fork; the approval Inbox
+  // carries only explicit approval requests. The list itself is the shared
+  // home-inbox surface, so only the navigation differs from upstream.
+  await page.getByTestId("open-alerts-view").click();
   await expect(page.getByTestId("home-inbox-list")).toBeVisible();
   await page.waitForFunction(
     () =>
@@ -325,6 +330,10 @@ test("Inbox offers a working Edit action only for manageable messages", async ({
 }) => {
   await installMockBridge(page);
   await page.goto("/");
+  // Mention-category items live on Alerts in this fork; the approval Inbox
+  // carries only explicit approval requests. The list itself is the shared
+  // home-inbox surface, so only the navigation differs from upstream.
+  await page.getByTestId("open-alerts-view").click();
   await expect(page.getByTestId("home-inbox-list")).toBeVisible();
   await page.waitForFunction(
     () =>
@@ -448,6 +457,10 @@ test("empty edit confirms deletion of the edited non-selected Inbox row", async 
 }) => {
   await installMockBridge(page);
   await page.goto("/");
+  // Mention-category items live on Alerts in this fork; the approval Inbox
+  // carries only explicit approval requests. The list itself is the shared
+  // home-inbox surface, so only the navigation differs from upstream.
+  await page.getByTestId("open-alerts-view").click();
   await expect(page.getByTestId("home-inbox-list")).toBeVisible();
   const { detail, rootRow } = await seedEmptyDeleteThread(page);
   const selectedReplyRow = detail.locator(
@@ -483,6 +496,10 @@ test("cancelling an empty Inbox edit deletion preserves content and edit mode", 
 }) => {
   await installMockBridge(page);
   await page.goto("/");
+  // Mention-category items live on Alerts in this fork; the approval Inbox
+  // carries only explicit approval requests. The list itself is the shared
+  // home-inbox surface, so only the navigation differs from upstream.
+  await page.getByTestId("open-alerts-view").click();
   await expect(page.getByTestId("home-inbox-list")).toBeVisible();
   const { detail, rootRow } = await seedEmptyDeleteThread(page);
   const editsBefore = await editCommandCount(page);
@@ -523,6 +540,10 @@ test("cold Inbox open drops an edit that was itself deleted", async ({
 }) => {
   await installMockBridge(page);
   await page.goto("/");
+  // Mention-category items live on Alerts in this fork; the approval Inbox
+  // carries only explicit approval requests. The list itself is the shared
+  // home-inbox surface, so only the navigation differs from upstream.
+  await page.getByTestId("open-alerts-view").click();
   await expect(page.getByTestId("home-inbox-list")).toBeVisible();
   await page.waitForFunction(() => {
     const win = window as MockWindow;
