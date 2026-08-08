@@ -411,14 +411,16 @@ pub async fn validate_admin_event(
             // therefore this has to be enforced here, before the event is
             // stored. Without it a former member could store a no-op 9000 whose
             // database side effect subsequently failed.
-            if channel.visibility == "private"
-                && !actor_is_community_elevated
-                && !actor_role.is_some_and(|r| r.is_elevated())
-                && !(target_pubkey == actor_bytes && actor_role.is_some())
-            {
-                return Err(anyhow::anyhow!(
-                    "only owners/admins may add private-channel members"
-                ));
+            if channel.visibility == "private" {
+                let is_idempotent_self_add = target_pubkey == actor_bytes && actor_role.is_some();
+                if !actor_is_community_elevated
+                    && !actor_role.is_some_and(|r| r.is_elevated())
+                    && !is_idempotent_self_add
+                {
+                    return Err(anyhow::anyhow!(
+                        "only owners/admins may add private-channel members"
+                    ));
+                }
             }
 
             // Changing an ACTIVE existing member's role is privileged in both

@@ -864,6 +864,7 @@ fn validate_catalog_section(section: &str) -> Result<&str, CliError> {
     Ok(section)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn cmd_update_channel(
     client: &BuzzClient,
     channel_id: &str,

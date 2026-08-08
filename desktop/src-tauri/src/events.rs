@@ -178,6 +178,7 @@ pub fn build_leave(channel_id: Uuid) -> Result<EventBuilder, String> {
 /// Kind 9002 — update channel name/description/visibility/ttl.
 /// `ttl`: outer `None` leaves it unchanged; `Some(Some(secs))` sets the
 /// ephemeral timeout; `Some(None)` clears it (emits `["ttl", ""]`).
+#[allow(dead_code)]
 pub fn build_update_channel(
     channel_id: Uuid,
     name: Option<&str>,
