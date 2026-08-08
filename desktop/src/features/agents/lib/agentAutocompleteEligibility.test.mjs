@@ -3,12 +3,16 @@ import test from "node:test";
 
 import {
   coalesceAgentAutocompleteCandidates,
+  filterCachedAgentSuggestions,
   getMentionableAgentPubkeys,
   getSharedChannelIds,
   isAgentIdentityInKnownDirectories,
+  isAgentMentionChannelType,
+  relayAgentCanRespondInChannel,
   relayAgentIsSharedWithUser,
   resolveAgentMentionDisplayName,
   shouldHideAgentFromMentions,
+  uniqueAutocompleteLabels,
 } from "./agentAutocompleteEligibility.ts";
 
 const CURRENT_PUBKEY = "a".repeat(64);
@@ -89,6 +93,31 @@ test("relayAgentIsSharedWithUser: accepts anyone agents before their first share
     ),
     true,
   );
+});
+
+test("relayAgentIsSharedWithUser: an explicit allowlist outranks hosted visibility", () => {
+  // The relay marks hosted agents community/shared by default, so a
+  // shared-but-allowlisted agent must still be hidden from people the
+  // allowlist does not name.
+  const allowlisted = {
+    accessTier: "shared",
+    audience: "community",
+    respondTo: "allowlist",
+    respondToAllowlist: [CURRENT_PUBKEY],
+    channelIds: [],
+    ownerPubkey: OTHER_OWNER_PUBKEY,
+  };
+
+  assert.equal(
+    relayAgentIsSharedWithUser(allowlisted, new Set(), CURRENT_PUBKEY),
+    true,
+  );
+  assert.equal(
+    relayAgentIsSharedWithUser(allowlisted, new Set(), OTHER_OWNER_PUBKEY),
+    false,
+  );
+  // Unknown viewer fails closed.
+  assert.equal(relayAgentIsSharedWithUser(allowlisted, new Set(), null), false);
 });
 
 test("relayAgentIsSharedWithUser: uses hosted visibility even when response policy is stale", () => {
@@ -192,6 +221,7 @@ test("getMentionableAgentPubkeys: keeps managed and community-wide relay agents"
   const result = getMentionableAgentPubkeys({
     managedAgentPubkeys: [PUB_A],
     currentPubkey: CURRENT_PUBKEY,
+    eligibilityScope: { type: "community" },
     relayAgents: [
       {
         pubkey: PUB_B,
@@ -337,7 +367,7 @@ test("shouldHideAgentFromMentions: normalizes the pubkey before lookup", () => {
   );
 });
 
-test("coalesceAgentAutocompleteCandidates: merges agents with the same persona id", () => {
+test("coalesceAgentAutocompleteCandidates: keeps agents with the same persona id distinct", () => {
   const first = makeAgent({ pubkey: PUB_A, personaId: "pinky" });
   const second = makeAgent({
     pubkey: PUB_B,
@@ -345,10 +375,10 @@ test("coalesceAgentAutocompleteCandidates: merges agents with the same persona i
     isMember: true,
   });
 
-  assert.deepEqual(coalesce([first, second]), [second]);
+  assert.deepEqual(coalesce([first, second]), [first, second]);
 });
 
-test("coalesceAgentAutocompleteCandidates: merges agents with the same owner and name", () => {
+test("coalesceAgentAutocompleteCandidates: keeps agents with the same owner and name distinct", () => {
   const first = makeAgent({ pubkey: PUB_A, ownerPubkey: OWNER_PUBKEY });
   const second = makeAgent({
     pubkey: PUB_B,
@@ -356,7 +386,7 @@ test("coalesceAgentAutocompleteCandidates: merges agents with the same owner and
     isMember: true,
   });
 
-  assert.deepEqual(coalesce([first, second]), [second]);
+  assert.deepEqual(coalesce([first, second]), [first, second]);
 });
 
 test("coalesceAgentAutocompleteCandidates: keeps same-name agents with different owners distinct", () => {
@@ -383,12 +413,22 @@ test("coalesceAgentAutocompleteCandidates: keeps owner-less managed same-name ag
   assert.deepEqual(coalesce([first, second]), [first, second]);
 });
 
-test("coalesceAgentAutocompleteCandidates: merges current-owner same-name agents", () => {
+test("coalesceAgentAutocompleteCandidates: keeps current-owner same-name agents distinct", () => {
   const first = makeAgent({ pubkey: PUB_A, ownerPubkey: CURRENT_PUBKEY });
   const second = makeAgent({
     pubkey: PUB_B,
     ownerPubkey: CURRENT_PUBKEY,
     isManagedAgent: true,
+  });
+
+  assert.deepEqual(coalesce([first, second]), [first, second]);
+});
+
+test("coalesceAgentAutocompleteCandidates: coalesces repeated source rows for the same pubkey", () => {
+  const first = makeAgent({ pubkey: PUB_A });
+  const second = makeAgent({
+    pubkey: PUB_A.toUpperCase(),
+    isMember: true,
   });
 
   assert.deepEqual(coalesce([first, second]), [second]);
@@ -399,4 +439,92 @@ test("coalesceAgentAutocompleteCandidates: leaves non-agents alone", () => {
   const second = makeAgent({ pubkey: PUB_B, isAgent: false });
 
   assert.deepEqual(coalesce([first, second]), [first, second]);
+});
+
+test("relayAgentCanRespondInChannel: requires exact channel membership and viewer access", () => {
+  const agent = {
+    respondTo: "allowlist",
+    respondToAllowlist: [CURRENT_PUBKEY],
+    channelIds: ["general"],
+  };
+
+  assert.equal(
+    relayAgentCanRespondInChannel(agent, "general", CURRENT_PUBKEY),
+    true,
+  );
+  assert.equal(
+    relayAgentCanRespondInChannel(agent, "other", CURRENT_PUBKEY),
+    false,
+  );
+  assert.equal(
+    relayAgentCanRespondInChannel(agent, "general", OTHER_OWNER_PUBKEY),
+    false,
+  );
+});
+
+test("getMentionableAgentPubkeys: scopes channel composers and fails closed without context", () => {
+  const relayAgents = [
+    {
+      pubkey: PUB_B,
+      respondTo: "allowlist",
+      respondToAllowlist: [CURRENT_PUBKEY],
+      channelIds: ["general"],
+    },
+  ];
+  const base = {
+    currentPubkey: CURRENT_PUBKEY,
+    managedAgentPubkeys: [PUB_A],
+    relayAgents,
+    sharedChannelIds: new Set(["general"]),
+  };
+
+  assert.deepEqual(
+    getMentionableAgentPubkeys({
+      ...base,
+      eligibilityScope: { type: "channel", channelId: "general" },
+    }),
+    new Set([PUB_A, PUB_B]),
+  );
+  assert.deepEqual(
+    getMentionableAgentPubkeys({
+      ...base,
+      eligibilityScope: { type: "channel", channelId: "other" },
+    }),
+    new Set([PUB_A]),
+  );
+  assert.deepEqual(
+    getMentionableAgentPubkeys({
+      ...base,
+      eligibilityScope: { type: "managed-only" },
+    }),
+    new Set([PUB_A]),
+  );
+});
+
+test("autocomplete helper extraction preserves safe filtering and labels", () => {
+  assert.equal(isAgentMentionChannelType("stream"), true);
+  assert.equal(isAgentMentionChannelType("forum"), true);
+  assert.equal(isAgentMentionChannelType("dm"), false);
+  assert.equal(isAgentMentionChannelType(null), false);
+
+  assert.deepEqual(
+    uniqueAutocompleteLabels([
+      { displayName: " Alice ", personaName: "alice" },
+      { displayName: null, secondaryLabel: "Bob" },
+      { displayName: "BOB" },
+    ]),
+    ["Alice", "Bob"],
+  );
+
+  const person = { pubkey: PUB_A, isAgent: false };
+  const admittedAgent = { pubkey: PUB_B.toUpperCase(), isAgent: true };
+  const removedAgent = { pubkey: PUB_C, isAgent: true };
+  const persona = { isAgent: true };
+  assert.deepEqual(
+    filterCachedAgentSuggestions(
+      [person, admittedAgent, removedAgent, persona],
+      [{ pubkey: PUB_B, isAgent: true }],
+    ),
+    [person, admittedAgent, persona],
+  );
 });

@@ -1,3 +1,9 @@
 {
-  "extends": ["../biome.json"]
+  "extends": ["../biome.json"],
+  "overrides": [
+    {
+      "includes": ["src/shared/theme/generated-desktop-theme-catalog.ts"],
+      "formatter": { "enabled": false }
+    }
+  ]
 }

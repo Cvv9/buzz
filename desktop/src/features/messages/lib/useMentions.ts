@@ -14,11 +14,13 @@ import type { MentionSuggestion } from "@/features/messages/ui/MentionAutocomple
 import {
   coalesceAgentAutocompleteCandidates,
   coalesceAutocompleteCandidatesByKey,
+  filterCachedAgentSuggestions,
   getMentionableAgentPubkeys,
   getSharedChannelIds,
   isAgentIdentityInKnownDirectories,
   resolveAgentMentionDisplayName,
   shouldHideAgentFromMentions,
+  uniqueAutocompleteLabels,
 } from "@/features/agents/lib/agentAutocompleteEligibility";
 import { localRosterForHostedCommunity } from "@/features/agents/lib/hostedAgentView";
 import {
@@ -95,7 +97,6 @@ export function useMentions(
   const mentionMapRef = React.useRef<Map<string, string>>(new Map());
   const personaMentionMapRef = React.useRef<Map<string, string>>(new Map());
   const previousSuggestionsRef = React.useRef<MentionSuggestion[]>([]);
-  void options?.channelType;
   const mentionSearchQuery = mentionQuery?.trim() ?? "";
   const canSearchGlobalPeople = mentionSearchQuery.length > 0;
   const identityQuery = useIdentityQuery();
@@ -194,10 +195,16 @@ export function useMentions(
     () => getSharedChannelIds(channelsQuery.data),
     [channelsQuery.data],
   );
+  // Community scope, not upstream's per-channel scope. Hosted VarVik agents are
+  // pre-registered in the relay directory and must be mentionable across the
+  // community before they have joined any channel — upstream's "channel" scope
+  // requires prior channel membership and its "managed-only" fallback drops
+  // relay agents entirely, both of which hide the hosted fleet.
   const mentionableAgentPubkeys = React.useMemo(
     () =>
       getMentionableAgentPubkeys({
         currentPubkey,
+        eligibilityScope: { type: "community" },
         managedAgentPubkeys,
         relayAgents: relayAgentsQuery.data,
         sharedChannelIds,
@@ -473,26 +480,10 @@ export function useMentions(
     enabled: ownerPubkeys.length > 0,
   });
 
-  const searchableNames = React.useMemo<string[]>(() => {
-    const names: string[] = [];
-    const seen = new Set<string>();
-
-    for (const candidate of mentionCandidatesWithTeams) {
-      for (const name of [
-        candidate.displayName,
-        candidate.personaName,
-        candidate.secondaryLabel,
-      ]) {
-        const trimmed = name?.trim();
-        if (trimmed && !seen.has(trimmed.toLowerCase())) {
-          names.push(trimmed);
-          seen.add(trimmed.toLowerCase());
-        }
-      }
-    }
-
-    return names;
-  }, [mentionCandidatesWithTeams]);
+  const searchableNames = React.useMemo(
+    () => uniqueAutocompleteLabels(mentionCandidatesWithTeams),
+    [mentionCandidatesWithTeams],
+  );
 
   const highlightNames = React.useMemo<string[]>(() => {
     const names: string[] = [];
@@ -624,11 +615,19 @@ export function useMentions(
     }
 
     if (userSearchQuery.isFetching) {
-      return previousSuggestionsRef.current;
+      return filterCachedAgentSuggestions(
+        previousSuggestionsRef.current,
+        mentionCandidatesWithTeams,
+      );
     }
 
     return [];
-  }, [matchingSuggestions, mentionQuery, userSearchQuery.isFetching]);
+  }, [
+    matchingSuggestions,
+    mentionCandidatesWithTeams,
+    mentionQuery,
+    userSearchQuery.isFetching,
+  ]);
 
   React.useEffect(() => {
     if (mentionQuery === null) {

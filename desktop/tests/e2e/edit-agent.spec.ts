@@ -18,7 +18,7 @@ const BAKED_DEFAULTS = [
 // pre-existing spec rather than one written alongside it.
 //
 // Mock-boundary caveat: the e2eBridge `update_managed_agent` handler echoes
-// name/avatar/model/systemPrompt/envVars/respondTo/respondToAllowlist into the
+// name/model/systemPrompt/envVars/respondTo/respondToAllowlist into the
 // mock store — it does NOT
 // model the diff-based partial-update wire semantics (change-detected-or-omit,
 // tri-state provider, harnessOverride derivation), and it ignores
@@ -78,7 +78,81 @@ async function pickDropdownOption(
   await page.getByRole("menuitemradio", { name: optionName }).click();
 }
 
+test.describe("agent definition dialog", () => {
+  test("owner-only-access build shows disabled agent access with an explanation", async ({
+    page,
+  }) => {
+    await installMockBridge(page, {
+      ownerOnlyAccessBuild: true,
+      bakedBuildEnv: BAKED_DEFAULTS,
+    });
+    await page.goto("/");
+    await page.getByTestId("open-agents-view").click();
+    await page.getByTestId("new-agent-card").click();
+
+    const dialog = page.getByRole("dialog");
+    await dialog.getByRole("button", { name: "Advanced", exact: true }).click();
+
+    await expect(dialog.getByTestId("agent-respond-to")).toBeVisible();
+    await expect(dialog.locator("#agent-respond-to")).toBeDisabled();
+    await expect(dialog.locator("#agent-respond-to")).toContainText(
+      "Only me (default)",
+    );
+    await expect(
+      dialog.getByTestId("agent-respond-to-disabled-reason"),
+    ).toHaveText("This build disallows changing this setting.");
+  });
+});
+
 test.describe("edit agent dialog", () => {
+  test("owner-only-access build shows a disabled owner-only access control with an explanation", async ({
+    page,
+  }) => {
+    await installMockBridge(page, {
+      ownerOnlyAccessBuild: true,
+      bakedBuildEnv: BAKED_DEFAULTS,
+      managedAgents: [
+        {
+          pubkey: AGENT_PUBKEY,
+          name: AGENT_NAME,
+          status: "stopped",
+          channelNames: ["agents"],
+          respondTo: "anyone",
+        },
+      ],
+    });
+
+    await openEditDialog(page);
+
+    const accessControl = page.getByTestId("agent-respond-to");
+    await expect(accessControl).toBeVisible();
+    await expect(page.locator("#agent-respond-to")).toBeDisabled();
+    await expect(page.locator("#agent-respond-to")).toContainText(
+      "Only me (default)",
+    );
+    await expect(
+      page.getByTestId("agent-respond-to-disabled-reason"),
+    ).toHaveText("This build disallows changing this setting.");
+  });
+
+  test("OSS build keeps the managed-agent access control", async ({ page }) => {
+    await installMockBridge(page, {
+      bakedBuildEnv: BAKED_DEFAULTS,
+      managedAgents: [
+        {
+          pubkey: AGENT_PUBKEY,
+          name: AGENT_NAME,
+          status: "stopped",
+          channelNames: ["agents"],
+        },
+      ],
+    });
+
+    await openEditDialog(page);
+
+    await expect(page.getByTestId("agent-respond-to")).toBeVisible();
+  });
+
   test("makes agent editing available from the profile settings menu", async ({
     page,
   }) => {

@@ -124,8 +124,6 @@ export function ChannelManagementSheet({
   const deleteChannelMutation = useDeleteChannelMutation(channelId);
   const joinChannelMutation = useJoinChannelMutation(channelId);
   const leaveChannelMutation = useLeaveChannelMutation(channelId);
-  const channelIdRef = React.useRef(channelId);
-  channelIdRef.current = channelId;
 
   const detail = detailsQuery.data ?? channel;
   const members = React.useMemo(() => {
@@ -160,6 +158,7 @@ export function ChannelManagementSheet({
 
   const [nameDraft, setNameDraft] = React.useState("");
   const [descriptionDraft, setDescriptionDraft] = React.useState("");
+  const [catalogSectionDraft, setCatalogSectionDraft] = React.useState("");
   const [isPrivateDraft, setIsPrivateDraft] = React.useState(false);
   const [isEphemeralDraft, setIsEphemeralDraft] = React.useState(false);
   const [ttlSecondsDraft, setTtlSecondsDraft] = React.useState(
@@ -167,8 +166,6 @@ export function ChannelManagementSheet({
   );
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = React.useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = React.useState(false);
-  const [isConvertingVisibility, setIsConvertingVisibility] =
-    React.useState(false);
   const [hasUserEditedChannelDraft, setHasUserEditedChannelDraft] =
     React.useState(false);
   const [activeView, setActiveView] = React.useState<"summary" | "canvas">(
@@ -199,6 +196,7 @@ export function ChannelManagementSheet({
 
     setNameDraft(detail.name);
     setDescriptionDraft(detail.description);
+    setCatalogSectionDraft(detail.catalogSection ?? "");
     setIsPrivateDraft(detail.visibility === "private");
     setIsEphemeralDraft(detail.ttlSeconds !== null);
     setTtlSecondsDraft(detail.ttlSeconds ?? DEFAULT_EPHEMERAL_TTL_SECONDS);
@@ -250,8 +248,12 @@ export function ChannelManagementSheet({
   const nameDirty = nameDraft.trim() !== resolvedChannel.name.trim();
   const descriptionDirty =
     descriptionDraft.trim() !== resolvedChannel.description.trim();
+  const catalogSectionDirty =
+    catalogSectionDraft.trim() !==
+    (resolvedChannel.catalogSection ?? "").trim();
   const isSavingChannelEdits = updateChannelDetailsMutation.isPending;
-  const hasChannelEditChanges = nameDirty || descriptionDirty || lifecycleDirty;
+  const hasChannelEditChanges =
+    nameDirty || descriptionDirty || catalogSectionDirty || lifecycleDirty;
   const canSaveChannelEdits =
     nameDraft.trim().length > 0 &&
     hasUserEditedChannelDraft &&
@@ -268,6 +270,8 @@ export function ChannelManagementSheet({
     if (!next) {
       setNameDraft(resolvedChannel.name);
       setDescriptionDraft(resolvedChannel.description);
+      setCatalogSectionDraft(resolvedChannel.catalogSection ?? "");
+      setIsPrivateDraft(currentVisibility === "private");
       setIsEphemeralDraft(currentTtlSeconds !== null);
       setTtlSecondsDraft(currentTtlSeconds ?? DEFAULT_EPHEMERAL_TTL_SECONDS);
       setHasUserEditedChannelDraft(false);
@@ -278,8 +282,16 @@ export function ChannelManagementSheet({
 
   async function handleSaveChannelEdits() {
     try {
-      if (nameDirty || descriptionDirty || lifecycleDirty) {
+      if (
+        nameDirty ||
+        descriptionDirty ||
+        catalogSectionDirty ||
+        lifecycleDirty
+      ) {
         await updateChannelDetailsMutation.mutateAsync({
+          catalogSection: catalogSectionDirty
+            ? catalogSectionDraft.trim() || null
+            : undefined,
           description: descriptionDirty ? descriptionDraft.trim() : undefined,
           name: nameDirty ? nameDraft.trim() : undefined,
           ttlSeconds:
@@ -295,25 +307,6 @@ export function ChannelManagementSheet({
       setIsEditDialogOpen(false);
     } catch {
       // React Query stores mutation errors; keep the dialog open and render them.
-    }
-  }
-
-  async function handleConvertVisibility(visibility: "open" | "private") {
-    if (visibility === currentVisibility) {
-      return;
-    }
-    setIsConvertingVisibility(true);
-    try {
-      const updatedChannel = await updateChannelDetailsMutation.mutateAsync({
-        visibility,
-      });
-      if (channelIdRef.current === updatedChannel.id) {
-        setIsPrivateDraft(visibility === "private");
-      }
-    } catch {
-      // React Query stores mutation errors; keep the dialog open and render them.
-    } finally {
-      setIsConvertingVisibility(false);
     }
   }
 
@@ -441,7 +434,7 @@ export function ChannelManagementSheet({
             <div className="flex max-h-[85vh] flex-col">
               <DialogHeader className="shrink-0 border-b border-border/60 px-6 py-5 pr-14">
                 <DialogTitle>
-                  Edit {currentVisibility === "private" ? "private" : "public"}{" "}
+                  Edit {nextVisibility === "private" ? "private" : "public"}{" "}
                   channel
                 </DialogTitle>
               </DialogHeader>
@@ -502,6 +495,40 @@ export function ChannelManagementSheet({
                       />
                     </div>
                   </div>
+                  <div className="space-y-1.5">
+                    <label
+                      className="text-sm font-medium text-foreground"
+                      htmlFor="channel-catalog-section"
+                    >
+                      Catalog section
+                    </label>
+                    <div
+                      className={cn(
+                        "flex min-h-11 items-center px-3",
+                        CHANNEL_FORM_FIELD_SHELL_CLASS,
+                      )}
+                    >
+                      <Input
+                        className={cn(
+                          "h-8 px-0 py-0 leading-6",
+                          CHANNEL_FORM_FIELD_CONTROL_CLASS,
+                        )}
+                        data-testid="channel-management-catalog-section"
+                        disabled={isSavingChannelEdits}
+                        id="channel-catalog-section"
+                        maxLength={80}
+                        onChange={(event) => {
+                          setCatalogSectionDraft(event.target.value);
+                          setHasUserEditedChannelDraft(true);
+                        }}
+                        placeholder="e.g. Command Center"
+                        value={catalogSectionDraft}
+                      />
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Shared with the web workspace. Leave blank for no section.
+                    </p>
+                  </div>
                 </div>
 
                 {resolvedChannel.channelType !== "dm" ? (
@@ -525,10 +552,10 @@ export function ChannelManagementSheet({
                     />
                     <ChannelPermissionsSettings
                       disabled={isSavingChannelEdits}
-                      isPending={isConvertingVisibility}
-                      onVisibilityChange={(visibility) =>
-                        void handleConvertVisibility(visibility)
-                      }
+                      onVisibilityChange={(visibility) => {
+                        setIsPrivateDraft(visibility === "private");
+                        setHasUserEditedChannelDraft(true);
+                      }}
                       testIdPrefix="channel-management"
                       visibility={isPrivateDraft ? "private" : "open"}
                     />

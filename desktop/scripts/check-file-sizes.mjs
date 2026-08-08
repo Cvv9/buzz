@@ -9,6 +9,14 @@ const MAX_LINES = 1000;
 
 const rules = [
   { root: "src-tauri/src", extensions: new Set([".rs"]), maxLines: MAX_LINES },
+  // Workspace member crates. Without this the ratchet's only Rust root is
+  // `src-tauri/src`, and a crate under `src-tauri/crates/` is born outside the
+  // repo's one size discipline -- silently, since the check still exits 0.
+  {
+    root: "src-tauri/crates",
+    extensions: new Set([".rs"]),
+    maxLines: MAX_LINES,
+  },
   {
     root: "src/app",
     extensions: new Set([".ts", ".tsx"]),
@@ -63,12 +71,25 @@ const overrides = new Map([
   // Persisted workspace/project groups and alert routing extend the sidebar's
   // composition layer. Sorting and group partitioning remain split into
   // defaultChannelGroups, with the broader sidebar decomposition still queued.
-  ["src/features/sidebar/ui/AppSidebar.tsx", 1166],
+  // +5 from the 2026-08-06 upstream sync (HuddleProfileControl mount and the
+  // activity-overflow labels). Still queued for the sidebar decomposition.
+  ["src/features/sidebar/ui/AppSidebar.tsx", 1171],
   // Hosted-agent identity resolution now covers directory-backed candidates,
   // exact-name mentions, and explicit relay-agent routing in one existing
   // composition hook. Keep the ratchet exact while that hook is split into a
   // pure mention-resolution module in the follow-up decomposition.
-  ["src/features/messages/lib/useMentions.ts", 1087],
+  // +1 from the 2026-08-06 upstream sync: managedAgentPubkeys rejoins the
+  // mentionCandidates dependency list now that directory-backed eligibility
+  // reads both the managed and relay sets.
+  ["src/features/messages/lib/useMentions.ts", 1088],
+  // Crossed the limit during the 2026-08-06 upstream sync, not by fork work:
+  // the Inbox/Alerts split meets upstream's reminder and drafts routes here.
+  // Queued for a split alongside the rest of this list.
+  ["src/features/home/ui/HomeView.tsx", 1043],
+  // Crossed the limit during the 2026-08-06 upstream sync: upstream's deferred
+  // media-upload flow (uploads now resolve at send time) lands in the existing
+  // send-flow hook. Queued for a split.
+  ["src/features/messages/ui/useMentionSendFlow.ts", 1029],
   // Native Builderlab auth/community commands add a small registration surface
   // to the existing Tauri composition root. The implementation lives in
   // builderlab.rs; this narrowly ratchets the command wiring while lib.rs is
@@ -465,7 +486,8 @@ const overrides = new Map([
   // Hosted-agent presentation and edit authorization add the profile-level
   // bridge for relay agents. The dialog implementation remains split out in
   // HostedAgentEditDialog; this file only owns the profile integration seam.
-  ["src/features/profile/ui/UserProfilePanel.tsx", 1029],
+  // +1 from the 2026-08-06 upstream sync (entity-link preview plumbing).
+  ["src/features/profile/ui/UserProfilePanel.tsx", 1030],
   // PersistBackend enum + marker-on-keyring-success plumbing and its three
   // fail-closed regression tests (silent identity rotation on keyring outage).
   // A small overage from load-bearing security plumbing on a file already at
