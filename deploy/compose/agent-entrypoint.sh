@@ -166,10 +166,15 @@ if [ -n "${BUZZ_ACP_PRIVATE_CHANNEL_NAME:-}" ]; then
     exit 1
   fi
 
-  buzz channels add-member \
-    --channel "${private_channel_id}" \
-    --pubkey "${BUZZ_ACP_PROFILE_OWNER_PUBKEY}" \
-    --role owner
+  # Managed deployments reconcile the private channel owner before agents are
+  # started. Do not make the agent repeat that privileged write: a bot can read
+  # its assigned private channel but cannot grant the owner role there.
+  if [ "${BUZZ_ACP_SKIP_PRIVATE_OWNER_BOOTSTRAP:-false}" != "true" ]; then
+    buzz channels add-member \
+      --channel "${private_channel_id}" \
+      --pubkey "${BUZZ_ACP_PROFILE_OWNER_PUBKEY}" \
+      --role owner
+  fi
 
   # Personal agents subscribe only to their private channel. Their scheduled
   # work also writes only to this channel.
