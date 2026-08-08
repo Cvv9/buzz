@@ -98,3 +98,18 @@
     font-family: "Inter Variable", Inter, "Avenir Next", "Segoe UI", sans-serif;
   }
 }
+
+/*
+ * Buzz has the GitHub light/dark content palette with a branded sidebar
+ * gradient. The desktop provider marks this same state with data-buzz-theme;
+ * keep the browser shell on that contract instead of a separate web palette.
+ */
+:root[data-buzz-theme="buzz"] [data-testid="workspace-sidebar"] {
+  background-color: transparent;
+  background-image: linear-gradient(to bottom, #e6e6b6, #c4d0da);
+}
+
+:root[data-buzz-theme="buzz-dark"] [data-testid="workspace-sidebar"] {
+  background-color: transparent;
+  background-image: linear-gradient(to bottom, #4a4616, #0a1423);
+}

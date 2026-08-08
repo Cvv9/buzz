@@ -19,6 +19,7 @@ export type Channel = {
   isMember: boolean;
   ttlSeconds: number | null;
   ttlDeadline: string | null;
+  catalogSection: string | null;
 };
 
 export type ChannelDetail = Channel & {
@@ -48,6 +49,7 @@ export type CreateChannelInput = {
   visibility: ChannelVisibility;
   description?: string;
   ttlSeconds?: number;
+  catalogSection?: string;
 };
 
 export type OpenDmInput = {
@@ -61,6 +63,8 @@ export type UpdateChannelInput = {
   visibility?: ChannelVisibility;
   /** Omit to leave unchanged, `null` to clear (permanent), or a positive number of seconds to set. */
   ttlSeconds?: number | null;
+  /** Omit to leave unchanged, `null` to clear, or a section label to set. */
+  catalogSection?: string | null;
 };
 
 export type SetChannelTopicInput = {

@@ -301,6 +301,37 @@ async fn actor_owns_any_owner_agent(
     Ok(false)
 }
 
+/// Community owners and admins retain control over every channel. This is
+/// intentionally distinct from channel membership: it permits recovery of a
+/// private channel whose original owner is unavailable without making the
+/// steward a visible member of every channel.
+async fn actor_is_community_owner_or_admin(
+    state: &Arc<AppState>,
+    community_id: buzz_core::CommunityId,
+    actor_bytes: &[u8],
+) -> anyhow::Result<bool> {
+    let member = state
+        .db
+        .get_relay_member(community_id, &hex::encode(actor_bytes))
+        .await?;
+    Ok(member.is_some_and(|member| member.role == "owner" || member.role == "admin"))
+}
+
+/// Normalize the compact, shared channel-catalog section. Empty is an
+/// explicit clear; tags never carry client-specific section state.
+fn normalize_catalog_section(raw: &str) -> anyhow::Result<Option<String>> {
+    let section = raw.trim();
+    if section.is_empty() {
+        return Ok(None);
+    }
+    if section.chars().count() > 80 {
+        return Err(anyhow::anyhow!(
+            "catalog_section must be at most 80 characters"
+        ));
+    }
+    Ok(Some(section.to_string()))
+}
+
 /// Validate an admin kind event BEFORE storage.
 pub async fn validate_admin_event(
     tenant: &TenantContext,
@@ -308,8 +339,18 @@ pub async fn validate_admin_event(
     event: &Event,
     state: &Arc<AppState>,
 ) -> anyhow::Result<()> {
-    // CREATE_GROUP doesn't need an existing channel — skip h-tag extraction
+    // CREATE_GROUP doesn't need an existing channel — skip h-tag extraction.
+    // Validate the shared catalog metadata before the ingest path creates the
+    // backing channel row.
     if kind == 9007 {
+        for tag in event.tags.iter() {
+            if tag.kind().to_string() == "catalog_section" {
+                let value = tag
+                    .content()
+                    .ok_or_else(|| anyhow::anyhow!("catalog_section tag must have a value"))?;
+                normalize_catalog_section(value)?;
+            }
+        }
         return Ok(());
     }
 
@@ -318,6 +359,8 @@ pub async fn validate_admin_event(
         extract_h_tag_channel(event).ok_or_else(|| anyhow::anyhow!("missing or invalid h tag"))?;
 
     let actor_bytes = event.pubkey.to_bytes().to_vec();
+    let actor_is_community_elevated =
+        actor_is_community_owner_or_admin(state, tenant.community(), &actor_bytes).await?;
 
     // Reject mutations on archived channels — except kind:9002 with archived=false
     // (unarchive), which must be allowed through so the channel can be restored.
@@ -362,15 +405,16 @@ pub async fn validate_admin_event(
             // channels only let owners/admins add another identity; otherwise
             // any compromised member could extend access to channel history.
             //
-            // A self-targeted add skips this check so an idempotent re-add
-            // still works. That is not a way into a private channel: ingest's
-            // `check_channel_membership` rejects a non-member (and a
-            // soft-removed member) before this validator runs, and `add_member`
-            // independently requires the self-inviter to hold an active role.
-            // Self-promotion is caught by the role-change guard below.
+            // A self-targeted add is only idempotent for an active member. 9000
+            // deliberately bypasses the generic membership gate so channel
+            // owners can manage agent channels they do not join themselves;
+            // therefore this has to be enforced here, before the event is
+            // stored. Without it a former member could store a no-op 9000 whose
+            // database side effect subsequently failed.
             if channel.visibility == "private"
-                && target_pubkey != actor_bytes
+                && !actor_is_community_elevated
                 && !actor_role.is_some_and(|r| r.is_elevated())
+                && !(target_pubkey == actor_bytes && actor_role.is_some())
             {
                 return Err(anyhow::anyhow!(
                     "only owners/admins may add private-channel members"
@@ -395,7 +439,7 @@ pub async fn validate_admin_event(
                 .zip(requested_role)
                 .filter(|(m, role)| m.role != role.as_str())
             {
-                if !actor_role.is_some_and(|r| r.is_elevated()) {
+                if !actor_is_community_elevated && !actor_role.is_some_and(|r| r.is_elevated()) {
                     return Err(anyhow::anyhow!(
                         "only owners/admins may change an active member's role"
                     ));
@@ -469,6 +513,9 @@ pub async fn validate_admin_event(
                 Ok(())
             } else {
                 let members = state.db.get_members(tenant.community(), channel_id).await?;
+                if actor_is_community_elevated {
+                    return Ok(());
+                }
                 let actor_member = members.iter().find(|m| m.pubkey == actor_bytes);
                 match actor_member {
                     Some(m) if m.role == "owner" || m.role == "admin" => Ok(()),
@@ -500,6 +547,7 @@ pub async fn validate_admin_event(
                 "purpose",
                 "visibility",
                 "ttl",
+                "catalog_section",
             ];
             let has_recognized = event
                 .tags
@@ -507,7 +555,7 @@ pub async fn validate_admin_event(
                 .any(|t| RECOGNIZED_TAGS.contains(&t.kind().to_string().as_str()));
             if !has_recognized {
                 return Err(anyhow::anyhow!(
-                    "kind:9002 must include at least one metadata tag (name, about, archived, topic, purpose, visibility, ttl)"
+                    "kind:9002 must include at least one metadata tag (name, about, archived, topic, purpose, visibility, ttl, catalog_section)"
                 ));
             }
 
@@ -525,6 +573,17 @@ pub async fn validate_admin_event(
                             return Err(anyhow::anyhow!("archived tag must have a value"));
                         }
                     }
+                }
+            }
+
+            // Empty catalog_section is the explicit clear operation. A bare
+            // tag is ambiguous and rejected rather than silently clearing.
+            for t in event.tags.iter() {
+                if t.kind().to_string() == "catalog_section" {
+                    let value = t
+                        .content()
+                        .ok_or_else(|| anyhow::anyhow!("catalog_section tag must have a value"))?;
+                    normalize_catalog_section(value)?;
                 }
             }
 
@@ -586,13 +645,22 @@ pub async fn validate_admin_event(
                 }
             }
 
-            // name/about/archived/visibility/ttl require owner/admin;
+            // name/about/archived/visibility/ttl/catalog_section require
+            // channel owner/admin or community owner/admin;
             // topic/purpose allow any member.
             let has_privileged_tag = event.tags.iter().any(|t| {
                 let k = t.kind().to_string();
-                k == "name" || k == "about" || k == "archived" || k == "visibility" || k == "ttl"
+                k == "name"
+                    || k == "about"
+                    || k == "archived"
+                    || k == "visibility"
+                    || k == "ttl"
+                    || k == "catalog_section"
             });
             if has_privileged_tag {
+                if actor_is_community_elevated {
+                    return Ok(());
+                }
                 let members = state.db.get_members(tenant.community(), channel_id).await?;
                 let actor_member = members.iter().find(|m| m.pubkey == actor_bytes);
                 match actor_member {
@@ -716,7 +784,11 @@ pub async fn validate_admin_event(
             }
         }
         9008 => {
-            // DELETE_GROUP: owner only, or the owning human of the channel's agent-owner.
+            // DELETE_GROUP: channel owner, community owner/admin, or the
+            // owning human of the channel's agent-owner.
+            if actor_is_community_elevated {
+                return Ok(());
+            }
             let members = state.db.get_members(tenant.community(), channel_id).await?;
             let actor_member = members.iter().find(|m| m.pubkey == actor_bytes);
             match actor_member {
@@ -1122,6 +1194,9 @@ pub async fn emit_group_discovery_events(
         if let Some(ref deadline) = channel.ttl_deadline {
             tags.push(Tag::parse(["ttl_deadline", &deadline.to_rfc3339()])?);
         }
+        if let Some(ref section) = channel.catalog_section {
+            tags.push(Tag::parse(["catalog_section", section])?);
+        }
         emit_addressable_discovery_event(
             tenant,
             state,
@@ -1493,6 +1568,20 @@ async fn handle_edit_metadata(
                         )
                         .await?;
                 }
+                "catalog_section" => {
+                    let section = normalize_catalog_section(val)?;
+                    state
+                        .db
+                        .update_channel(
+                            tenant.community(),
+                            channel_id,
+                            buzz_db::channel::ChannelUpdate {
+                                catalog_section: Some(section),
+                                ..Default::default()
+                            },
+                        )
+                        .await?;
+                }
                 "topic" => {
                     state
                         .db
@@ -1812,7 +1901,11 @@ async fn handle_create_group(
     // inaccessible, so the counter correctly records a new creation. For the
     // no-h-tag path, ingest never creates the channel, so this is the sole
     // increment.
-    let channel = if let Some(client_uuid) = extract_h_tag_channel(event) {
+    let catalog_section = extract_tag_value(event, "catalog_section")
+        .as_deref()
+        .map(normalize_catalog_section)
+        .transpose()?;
+    let mut channel = if let Some(client_uuid) = extract_h_tag_channel(event) {
         match state.db.get_channel(tenant.community(), client_uuid).await {
             Ok(ch) => ch,
             Err(_) => {
@@ -1860,6 +1953,23 @@ async fn handle_create_group(
         .increment(1);
         ch
     };
+
+    // The ingest pre-create path intentionally handles only the core NIP-29
+    // fields. Persist our additional shared metadata here before emitting the
+    // relay-signed discovery head.
+    if let Some(section) = catalog_section {
+        channel = state
+            .db
+            .update_channel(
+                tenant.community(),
+                channel.id,
+                buzz_db::channel::ChannelUpdate {
+                    catalog_section: Some(section),
+                    ..Default::default()
+                },
+            )
+            .await?;
+    }
 
     // Creator becomes owner — evict any stale negative membership lookup.
     state.invalidate_membership(tenant, channel.id, &actor_bytes);

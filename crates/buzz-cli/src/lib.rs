@@ -601,7 +601,7 @@ pub enum ChannelsCmd {
     },
     /// Create a new channel
     #[command(
-        after_help = "Examples:\n  buzz channels create --name general --type stream --visibility open\n  buzz channels create --name design --type forum --visibility open --description \"Design discussions\"\n  buzz channels create --name standup --type stream --visibility open --ttl 3600  # ephemeral, archived after 1h idle\n  buzz channels create --name project-x --template \"Buzz Team\"  # type/visibility/canvas/roster from the template; explicit flags override"
+        after_help = "Examples:\n  buzz channels create --name general --type stream --visibility open\n  buzz channels create --name operations --type stream --visibility private --catalog-section \"Command Center\"\n  buzz channels create --name design --type forum --visibility open --description \"Design discussions\"\n  buzz channels create --name standup --type stream --visibility open --ttl 3600  # ephemeral, archived after 1h idle\n  buzz channels create --name project-x --template \"Buzz Team\"  # type/visibility/canvas/roster from the template; explicit flags override"
     )]
     Create {
         /// Channel name
@@ -616,6 +616,9 @@ pub enum ChannelsCmd {
         /// Channel description
         #[arg(long)]
         description: Option<String>,
+        /// Shared workspace catalog section (for example, "Command Center").
+        #[arg(long, value_name = "SECTION")]
+        catalog_section: Option<String>,
         /// Make the channel ephemeral: lifetime in seconds. The relay archives
         /// it once this many seconds pass without a new message.
         #[arg(long, value_name = "SECONDS")]
@@ -648,6 +651,13 @@ pub enum ChannelsCmd {
         /// Clear an existing TTL, making the channel permanent.
         #[arg(long)]
         no_ttl: bool,
+        /// Move the channel into this shared workspace catalog section.
+        #[arg(long, value_name = "SECTION", conflicts_with = "clear_catalog_section")]
+        catalog_section: Option<String>,
+        /// Clear the shared catalog section and return the channel to the
+        /// uncategorized channel list.
+        #[arg(long, conflicts_with = "catalog_section")]
+        clear_catalog_section: bool,
     },
     /// Set the channel topic
     Topic {
@@ -2104,6 +2114,58 @@ mod tests {
     #[test]
     fn cli_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn channel_catalog_section_flags_parse() {
+        assert!(Cli::try_parse_from([
+            "buzz",
+            "channels",
+            "create",
+            "--name",
+            "operations",
+            "--type",
+            "stream",
+            "--visibility",
+            "private",
+            "--catalog-section",
+            "Command Center"
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from([
+            "buzz",
+            "channels",
+            "update",
+            "--channel",
+            "00000000-0000-0000-0000-000000000000",
+            "--catalog-section",
+            "General"
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from([
+            "buzz",
+            "channels",
+            "update",
+            "--channel",
+            "00000000-0000-0000-0000-000000000000",
+            "--clear-catalog-section"
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn channel_catalog_section_set_and_clear_conflict() {
+        assert!(Cli::try_parse_from([
+            "buzz",
+            "channels",
+            "update",
+            "--channel",
+            "00000000-0000-0000-0000-000000000000",
+            "--catalog-section",
+            "General",
+            "--clear-catalog-section"
+        ])
+        .is_err());
     }
 
     #[test]

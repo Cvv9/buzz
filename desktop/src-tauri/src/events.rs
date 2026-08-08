@@ -147,6 +147,28 @@ pub fn build_create_channel(
     about: Option<&str>,
     ttl_seconds: Option<i32>,
 ) -> Result<EventBuilder, String> {
+    build_create_channel_with_catalog_section(
+        channel_id,
+        name,
+        visibility,
+        channel_type,
+        about,
+        ttl_seconds,
+        None,
+    )
+}
+
+/// Kind 9007 — create a channel with shared catalog metadata.
+#[allow(clippy::too_many_arguments)]
+pub fn build_create_channel_with_catalog_section(
+    channel_id: Uuid,
+    name: &str,
+    visibility: &str,
+    channel_type: &str,
+    about: Option<&str>,
+    ttl_seconds: Option<i32>,
+    catalog_section: Option<&str>,
+) -> Result<EventBuilder, String> {
     let name = buzz_sdk_pkg::canonical_channel_name(name);
     if name.trim().is_empty() {
         return Err("channel name is required".into());
@@ -162,6 +184,9 @@ pub fn build_create_channel(
     }
     if let Some(ttl) = ttl_seconds {
         tags.push(tag(vec!["ttl", &ttl.to_string()])?);
+    }
+    if let Some(section) = catalog_section {
+        tags.push(tag(vec!["catalog_section", section.trim()])?);
     }
     Ok(EventBuilder::new(Kind::Custom(9007), "").tags(tags))
 }
@@ -188,8 +213,29 @@ pub fn build_update_channel(
     visibility: Option<&str>,
     ttl: Option<Option<i32>>,
 ) -> Result<EventBuilder, String> {
-    if name.is_none() && about.is_none() && visibility.is_none() && ttl.is_none() {
-        return Err("at least one of name, about, visibility, or ttl must be provided".into());
+    build_update_channel_with_catalog_section(channel_id, name, about, visibility, ttl, None)
+}
+
+/// Kind 9002 — update channel metadata including the relay-backed catalog
+/// section. `Some(None)` clears the section with an empty tag value.
+pub fn build_update_channel_with_catalog_section(
+    channel_id: Uuid,
+    name: Option<&str>,
+    about: Option<&str>,
+    visibility: Option<&str>,
+    ttl: Option<Option<i32>>,
+    catalog_section: Option<Option<&str>>,
+) -> Result<EventBuilder, String> {
+    if name.is_none()
+        && about.is_none()
+        && visibility.is_none()
+        && ttl.is_none()
+        && catalog_section.is_none()
+    {
+        return Err(
+            "at least one of name, about, visibility, ttl, or catalog_section must be provided"
+                .into(),
+        );
     }
     if let Some(v) = visibility {
         if v != "open" && v != "private" {
@@ -215,6 +261,9 @@ pub fn build_update_channel(
             Some(secs) => tags.push(tag(vec!["ttl", &secs.to_string()])?),
             None => tags.push(tag(vec!["ttl", ""])?),
         }
+    }
+    if let Some(section) = catalog_section {
+        tags.push(tag(vec!["catalog_section", section.unwrap_or("").trim()])?);
     }
     Ok(EventBuilder::new(Kind::Custom(9002), "").tags(tags))
 }

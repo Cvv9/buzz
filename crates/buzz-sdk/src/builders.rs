@@ -642,9 +642,30 @@ pub fn build_update_channel(
     visibility: Option<&str>,
     ttl: Option<Option<i32>>,
 ) -> Result<EventBuilder, SdkError> {
-    if name.is_none() && about.is_none() && visibility.is_none() && ttl.is_none() {
+    build_update_channel_with_catalog_section(channel_id, name, about, visibility, ttl, None)
+}
+
+/// Build a NIP-29 edit-metadata event including the shared channel catalog section.
+///
+/// `catalog_section`: outer `None` leaves it unchanged; `Some(Some(section))`
+/// sets it; `Some(None)` clears it with an empty `catalog_section` tag.
+pub fn build_update_channel_with_catalog_section(
+    channel_id: Uuid,
+    name: Option<&str>,
+    about: Option<&str>,
+    visibility: Option<&str>,
+    ttl: Option<Option<i32>>,
+    catalog_section: Option<Option<&str>>,
+) -> Result<EventBuilder, SdkError> {
+    if name.is_none()
+        && about.is_none()
+        && visibility.is_none()
+        && ttl.is_none()
+        && catalog_section.is_none()
+    {
         return Err(SdkError::InvalidTag(
-            "at least one of name, about, visibility, or ttl must be provided".into(),
+            "at least one of name, about, visibility, ttl, or catalog_section must be provided"
+                .into(),
         ));
     }
     if let Some(v) = visibility {
@@ -678,6 +699,15 @@ pub fn build_update_channel(
             Some(secs) => tags.push(tag(&["ttl", &secs.to_string()])?),
             None => tags.push(tag(&["ttl", ""])?),
         }
+    }
+    if let Some(section) = catalog_section {
+        let section = section.map(str::trim).unwrap_or("");
+        if section.chars().count() > 80 {
+            return Err(SdkError::InvalidTag(
+                "catalog_section must be at most 80 characters".into(),
+            ));
+        }
+        tags.push(tag(&["catalog_section", section])?);
     }
     Ok(EventBuilder::new(Kind::Custom(9002), "").tags(tags))
 }
@@ -713,6 +743,28 @@ pub fn build_create_channel(
     about: Option<&str>,
     ttl: Option<i32>,
 ) -> Result<EventBuilder, SdkError> {
+    build_create_channel_with_catalog_section(
+        channel_id,
+        name,
+        visibility,
+        channel_type,
+        about,
+        ttl,
+        None,
+    )
+}
+
+/// Build a NIP-29 create-group event with a shared catalog section (kind 9007).
+#[allow(clippy::too_many_arguments)]
+pub fn build_create_channel_with_catalog_section(
+    channel_id: Uuid,
+    name: &str,
+    visibility: Option<Visibility>,
+    channel_type: Option<ChannelKind>,
+    about: Option<&str>,
+    ttl: Option<i32>,
+    catalog_section: Option<&str>,
+) -> Result<EventBuilder, SdkError> {
     let name = buzz_core::channel::canonical_channel_name(name);
     if name.trim().is_empty() {
         return Err(SdkError::InvalidTag("channel name is required".into()));
@@ -729,6 +781,20 @@ pub fn build_create_channel(
     }
     if let Some(secs) = ttl {
         tags.push(tag(&["ttl", &secs.to_string()])?);
+    }
+    if let Some(section) = catalog_section {
+        let section = section.trim();
+        if section.is_empty() {
+            return Err(SdkError::InvalidTag(
+                "catalog_section must not be empty on create".into(),
+            ));
+        }
+        if section.chars().count() > 80 {
+            return Err(SdkError::InvalidTag(
+                "catalog_section must be at most 80 characters".into(),
+            ));
+        }
+        tags.push(tag(&["catalog_section", section])?);
     }
     Ok(EventBuilder::new(Kind::Custom(9007), "").tags(tags))
 }
@@ -2934,6 +3000,45 @@ mod tests {
     }
 
     #[test]
+    fn update_channel_sets_and_clears_catalog_section() {
+        let cid = uuid();
+        let set = sign(
+            build_update_channel_with_catalog_section(
+                cid,
+                None,
+                None,
+                None,
+                None,
+                Some(Some("  Command Center  ")),
+            )
+            .unwrap(),
+        );
+        assert_eq!(set.kind.as_u16(), 9002);
+        assert!(has_tag(&set, "catalog_section", "Command Center"));
+        let clear = sign(
+            build_update_channel_with_catalog_section(cid, None, None, None, None, Some(None))
+                .unwrap(),
+        );
+        assert!(has_tag(&clear, "catalog_section", ""));
+    }
+
+    #[test]
+    fn update_channel_rejects_oversized_catalog_section() {
+        let section = "x".repeat(81);
+        assert!(matches!(
+            build_update_channel_with_catalog_section(
+                uuid(),
+                None,
+                None,
+                None,
+                None,
+                Some(Some(&section))
+            ),
+            Err(SdkError::InvalidTag(_))
+        ));
+    }
+
+    #[test]
     fn update_channel_invalid_visibility_rejected() {
         let cid = uuid();
         assert!(matches!(
@@ -2986,6 +3091,24 @@ mod tests {
         assert!(has_tag(&ev, "visibility", "open"));
         assert!(has_tag(&ev, "channel_type", "stream"));
         assert!(has_tag(&ev, "about", "General chat"));
+    }
+
+    #[test]
+    fn create_channel_sets_catalog_section() {
+        let ev = sign(
+            build_create_channel_with_catalog_section(
+                uuid(),
+                "operations",
+                Some(Visibility::Private),
+                Some(ChannelKind::Stream),
+                None,
+                None,
+                Some("  Command Center  "),
+            )
+            .unwrap(),
+        );
+        assert_eq!(ev.kind.as_u16(), 9007);
+        assert!(has_tag(&ev, "catalog_section", "Command Center"));
     }
 
     #[test]

@@ -63,6 +63,8 @@ pub struct ChannelRecord {
     pub ttl_seconds: Option<i32>,
     /// Deadline by which a new message must arrive or the channel is auto-archived.
     pub ttl_deadline: Option<DateTime<Utc>>,
+    /// Shared catalog section used by all clients to group this channel.
+    pub catalog_section: Option<String>,
 }
 
 /// A channel membership row as returned from the database.
@@ -153,7 +155,7 @@ pub async fn create_channel(
                nip29_group_id, topic_required, max_members,
                topic, topic_set_by, topic_set_at,
                purpose, purpose_set_by, purpose_set_at,
-               ttl_seconds, ttl_deadline
+               ttl_seconds, ttl_deadline, catalog_section
         FROM channels WHERE community_id = $1 AND id = $2
         "#,
     )
@@ -253,7 +255,7 @@ pub async fn create_channel_with_id(
                nip29_group_id, topic_required, max_members,
                topic, topic_set_by, topic_set_at,
                purpose, purpose_set_by, purpose_set_at,
-               ttl_seconds, ttl_deadline
+               ttl_seconds, ttl_deadline, catalog_section
         FROM channels WHERE community_id = $1 AND id = $2
         "#,
     )
@@ -281,7 +283,7 @@ pub async fn get_channel(
                nip29_group_id, topic_required, max_members,
                topic, topic_set_by, topic_set_at,
                purpose, purpose_set_by, purpose_set_at,
-               ttl_seconds, ttl_deadline
+               ttl_seconds, ttl_deadline, catalog_section
         FROM channels WHERE community_id = $1 AND id = $2 AND deleted_at IS NULL
         "#,
     )
@@ -374,8 +376,8 @@ async fn acquire_channel_membership_lock(
 /// - Private channels: requires an `invited_by` who is an active owner/admin, the channel
 ///   creator bootstrapping their own first membership, or the target adding themselves
 ///   (idempotent re-add — an active member's *role* still cannot change this way).
-/// - Elevated roles (`Owner`, `Admin`) may only be granted by an existing owner/admin,
-///   even on open channels.
+/// - Elevated roles (`Owner`, `Admin`) may only be granted by an existing channel
+///   owner/admin or a community owner/admin, even on open channels.
 ///
 /// The entire check-then-insert sequence runs inside a transaction to prevent TOCTOU
 /// races (e.g. the inviter being removed between the role check and the INSERT).
@@ -400,6 +402,14 @@ pub async fn add_member(
     // sequence against concurrent membership writes on this channel.
     acquire_channel_membership_lock(&mut tx, community_id, channel_id).await?;
 
+    // Community stewardship is mutable authorization state. Read and lock the
+    // actor's relay-members row in this same transaction so a concurrent
+    // demotion/removal cannot race a privileged channel mutation.
+    let inviter_is_community_elevated = match invited_by {
+        Some(inviter) => is_community_owner_or_admin_tx(&mut tx, community_id, inviter).await?,
+        None => false,
+    };
+
     let channel = get_channel_tx(&mut tx, community_id, channel_id).await?;
 
     let effective_role = if channel.visibility == "private" {
@@ -410,7 +420,7 @@ pub async fn add_member(
         // Bootstrap: channel creator may add themselves as the first member.
         let is_creator_bootstrap = inviter == pubkey && inviter == channel.created_by.as_slice();
 
-        if !is_creator_bootstrap {
+        if !is_creator_bootstrap && !inviter_is_community_elevated {
             let inviter_role_str = get_active_role_tx(&mut tx, community_id, channel_id, inviter)
                 .await?
                 .ok_or_else(|| {
@@ -442,8 +452,8 @@ pub async fn add_member(
                 Some(inv) => get_active_role_tx(&mut tx, community_id, channel_id, inv).await?,
                 None => None,
             };
-            match granter_role.as_deref() {
-                Some("owner") | Some("admin") => role,
+            match (inviter_is_community_elevated, granter_role.as_deref()) {
+                (true, _) | (_, Some("owner") | Some("admin")) => role,
                 _ => {
                     return Err(DbError::AccessDenied(
                         "only owners/admins may grant elevated roles".to_string(),
@@ -478,7 +488,7 @@ pub async fn add_member(
             None => None,
         };
         let actor_role: Option<MemberRole> = actor_role.and_then(|r| r.parse().ok());
-        if !actor_role.is_some_and(|r| r.is_elevated()) {
+        if !inviter_is_community_elevated && !actor_role.is_some_and(|r| r.is_elevated()) {
             return Err(DbError::AccessDenied(
                 "only owners/admins may change an active member's role".to_string(),
             ));
@@ -542,8 +552,8 @@ pub async fn add_member(
 
 /// Remove a member from a channel (soft delete).
 ///
-/// `actor_pubkey` must be an active owner/admin, the agent's owner, or the member
-/// removing themselves.
+/// `actor_pubkey` must be an active channel owner/admin, a community owner/admin,
+/// the agent's owner, or the member removing themselves.
 ///
 /// Returns `Err(DbError::MemberNotFound)` if the target is not an active member.
 ///
@@ -576,7 +586,6 @@ pub async fn remove_member(
     } else {
         crate::user::is_agent_owner(pool, community_id, pubkey, actor_pubkey).await?
     };
-
     let mut tx = pool.begin().await?;
 
     // First statement: serialize the actor-role check, the last-owner count and
@@ -584,7 +593,13 @@ pub async fn remove_member(
     // as `add_member`).
     acquire_channel_membership_lock(&mut tx, community_id, channel_id).await?;
 
-    if !is_self_remove {
+    // See `add_member`: a community role is mutable authority, so it must be
+    // resolved under the mutation transaction rather than from a stale pool
+    // read before acquiring the channel lock.
+    let actor_is_community_elevated =
+        is_community_owner_or_admin_tx(&mut tx, community_id, actor_pubkey).await?;
+
+    if !is_self_remove && !actor_is_community_elevated {
         let actor_role_str = get_active_role_tx(&mut tx, community_id, channel_id, actor_pubkey)
             .await?
             .ok_or_else(|| DbError::AccessDenied("actor is not an active member".to_string()))?;
@@ -794,7 +809,7 @@ pub async fn list_channels(
                    nip29_group_id, topic_required, max_members,
                    topic, topic_set_by, topic_set_at,
                    purpose, purpose_set_by, purpose_set_at,
-                   ttl_seconds, ttl_deadline
+                   ttl_seconds, ttl_deadline, catalog_section
             FROM channels
             WHERE community_id = $1 AND deleted_at IS NULL AND visibility::text = $2
             ORDER BY created_at DESC
@@ -814,7 +829,7 @@ pub async fn list_channels(
                    nip29_group_id, topic_required, max_members,
                    topic, topic_set_by, topic_set_at,
                    purpose, purpose_set_by, purpose_set_at,
-                   ttl_seconds, ttl_deadline
+                   ttl_seconds, ttl_deadline, catalog_section
             FROM channels
             WHERE community_id = $1 AND deleted_at IS NULL
             ORDER BY created_at DESC
@@ -848,6 +863,31 @@ async fn get_active_role_tx(
     Ok(row.map(|r| r.try_get("role")).transpose()?)
 }
 
+/// Transactional community-role lookup used by membership mutations.
+///
+/// Relay membership stores public keys as lower-case hex, whereas channel
+/// membership uses compressed bytes, so the conversion intentionally lives at
+/// this storage boundary. `FOR UPDATE` serializes a channel mutation with a
+/// concurrent role change or removal for this identity.
+async fn is_community_owner_or_admin_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    community_id: CommunityId,
+    pubkey: &[u8],
+) -> Result<bool> {
+    let pubkey_hex = pubkey
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let role: Option<String> = sqlx::query_scalar(
+        "SELECT role FROM relay_members WHERE community_id = $1 AND pubkey = $2 FOR UPDATE",
+    )
+    .bind(community_id.as_uuid())
+    .bind(pubkey_hex)
+    .fetch_optional(&mut **tx)
+    .await?;
+    Ok(matches!(role.as_deref(), Some("owner" | "admin")))
+}
+
 /// Transaction-aware variant of [`get_channel`].
 async fn get_channel_tx(
     tx: &mut Transaction<'_, Postgres>,
@@ -862,7 +902,7 @@ async fn get_channel_tx(
                nip29_group_id, topic_required, max_members,
                topic, topic_set_by, topic_set_at,
                purpose, purpose_set_by, purpose_set_at,
-               ttl_seconds, ttl_deadline
+               ttl_seconds, ttl_deadline, catalog_section
         FROM channels WHERE community_id = $1 AND id = $2 AND deleted_at IS NULL
         "#,
     )
@@ -964,7 +1004,7 @@ pub async fn get_accessible_channels(
                c.nip29_group_id, c.topic_required, c.max_members,
                c.topic, c.topic_set_by, c.topic_set_at,
                c.purpose, c.purpose_set_by, c.purpose_set_at,
-               c.ttl_seconds, c.ttl_deadline,
+               c.ttl_seconds, c.ttl_deadline, c.catalog_section,
                (cm.channel_id IS NOT NULL) AS is_member
         FROM channels c
         LEFT JOIN channel_members cm
@@ -1101,6 +1141,7 @@ fn row_to_channel_record(row: sqlx::postgres::PgRow) -> Result<ChannelRecord> {
     let purpose_set_at: Option<DateTime<Utc>> = row.try_get("purpose_set_at").unwrap_or(None);
     let ttl_seconds: Option<i32> = row.try_get("ttl_seconds").unwrap_or(None);
     let ttl_deadline: Option<DateTime<Utc>> = row.try_get("ttl_deadline").unwrap_or(None);
+    let catalog_section: Option<String> = row.try_get("catalog_section").unwrap_or(None);
 
     Ok(ChannelRecord {
         id,
@@ -1125,6 +1166,7 @@ fn row_to_channel_record(row: sqlx::postgres::PgRow) -> Result<ChannelRecord> {
         purpose_set_at,
         ttl_seconds,
         ttl_deadline,
+        catalog_section,
     })
 }
 
@@ -1155,6 +1197,9 @@ pub struct ChannelUpdate {
     /// ephemeral TTL (channel becomes permanent), `Some(Some(secs))` sets it.
     /// On any change the `ttl_deadline` is reset to `NOW() + ttl_seconds`.
     pub ttl_seconds: Option<Option<i32>>,
+    /// Shared catalog section. Outer `None` leaves it unchanged; `Some(None)`
+    /// clears it and returns the channel to the uncategorized list.
+    pub catalog_section: Option<Option<String>>,
 }
 
 /// Updates channel metadata dynamically.
@@ -1171,6 +1216,7 @@ pub async fn update_channel(
         && updates.description.is_none()
         && updates.visibility.is_none()
         && updates.ttl_seconds.is_none()
+        && updates.catalog_section.is_none()
     {
         return Err(DbError::InvalidData(
             "at least one field must be provided for update".to_string(),
@@ -1212,6 +1258,10 @@ pub async fn update_channel(
             None => set_parts.push("ttl_deadline = NULL".to_string()),
         }
     }
+    if updates.catalog_section.is_some() {
+        set_parts.push(format!("catalog_section = ${param_idx}"));
+        param_idx += 1;
+    }
     let channel_param_idx = param_idx + 1;
     let sql = format!(
         "UPDATE channels SET {}, updated_at = NOW() WHERE community_id = ${param_idx} AND id = ${channel_param_idx} AND deleted_at IS NULL",
@@ -1230,6 +1280,9 @@ pub async fn update_channel(
     }
     if let Some(ref ttl) = updates.ttl_seconds {
         q = q.bind(*ttl);
+    }
+    if let Some(ref section) = updates.catalog_section {
+        q = q.bind(section.as_deref());
     }
     q = q.bind(community_id.as_uuid());
     q = q.bind(channel_id);

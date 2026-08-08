@@ -7,6 +7,8 @@ import {
 import { truncatePubkey } from "@/shared/lib/pubkey";
 import { relayHttpBaseUrl, relayWsUrl } from "@/shared/lib/relay-url";
 import { verifyEvent } from "nostr-tools";
+import { hostedDirectoryEvents } from "./workspace-agent-directory-policy";
+import { canDiscoverPrivateWorkspaceChannels } from "./workspace-channel-discovery-policy";
 
 export const KIND_PROFILE = 0;
 export const KIND_DELETION = 5;
@@ -24,6 +26,10 @@ export const KIND_SYSTEM_MESSAGE = 40099;
 export const KIND_MANAGED_AGENT = 30177;
 export const KIND_HOSTED_AGENT_CONFIG = 30179;
 export const KIND_NIP29_DELETE = 9005;
+export const KIND_NIP29_PUT_USER = 9000;
+export const KIND_NIP29_REMOVE_USER = 9001;
+export const KIND_NIP29_EDIT_METADATA = 9002;
+export const KIND_NIP29_DELETE_GROUP = 9008;
 
 const HOSTED_AGENT_CONFIG_SCHEMA = "buzz.hosted-agent-config.v1";
 
@@ -53,6 +59,27 @@ export type WorkspaceChannel = {
   visibility: "public" | "private";
   role: string;
   memberPubkeys: string[];
+  /** Relay-backed, shared catalog section. Empty/unset is uncategorized. */
+  catalogSection: string;
+};
+
+/** A partial NIP-29 metadata update. Omitted fields are intentionally preserved. */
+export type WorkspaceChannelUpdate = {
+  name?: string;
+  about?: string;
+  visibility?: "public" | "private";
+  /** `null` clears the shared section. */
+  catalogSection?: string | null;
+};
+
+export type WorkspaceChannelMember = {
+  pubkey: string;
+  role: "owner" | "admin" | "member" | "guest" | "bot";
+};
+
+export type WorkspaceCommunityMember = {
+  pubkey: string;
+  role: "owner" | "admin" | "member";
 };
 
 export type WorkspaceProfile = {
@@ -242,12 +269,18 @@ function parseMessage(event: NostrEvent): WorkspaceMessage {
 export async function listWorkspaceChannels(
   pubkey: string,
 ): Promise<WorkspaceChannel[]> {
-  const memberships = dedupeReplaceable(
-    await queryEvents(relayWsUrl(), {
+  const [membershipEvents, communityMembers] = await Promise.all([
+    queryEvents(relayWsUrl(), {
       kinds: [KIND_CHANNEL_MEMBERS],
       "#p": [pubkey],
       limit: 500,
     }),
+    listWorkspaceCommunityMembers(),
+  ]);
+  const memberships = dedupeReplaceable(membershipEvents);
+  const canDiscoverPrivate = canDiscoverPrivateWorkspaceChannels(
+    pubkey,
+    communityMembers,
   );
   const channelIds = [
     ...new Set(
@@ -256,21 +289,39 @@ export async function listWorkspaceChannels(
         .filter((value): value is string => Boolean(value)),
     ),
   ];
-  if (channelIds.length === 0) return [];
+  if (channelIds.length === 0 && !canDiscoverPrivate) return [];
   const metadata = dedupeReplaceable(
     await queryEvents(relayWsUrl(), {
       kinds: [KIND_CHANNEL_METADATA],
-      "#d": channelIds,
+      ...(canDiscoverPrivate ? {} : { "#d": channelIds }),
       limit: 500,
     }),
   );
+  const discoveredChannelIds = metadata
+    .map((event) => firstTag(event, "d"))
+    .filter((value): value is string => Boolean(value));
+  const projectedMemberships = canDiscoverPrivate
+    ? dedupeReplaceable(
+        await queryEvents(relayWsUrl(), {
+          kinds: [KIND_CHANNEL_MEMBERS],
+          "#d": discoveredChannelIds,
+          limit: 500,
+        }),
+      )
+    : memberships;
   const membershipByChannel = new Map(
-    memberships.map((event) => [firstTag(event, "d"), event]),
+    projectedMemberships.map((event) => [firstTag(event, "d"), event]),
   );
   return metadata
     .map((event): WorkspaceChannel | null => {
       const id = firstTag(event, "d");
-      if (!id || firstTag(event, "archived") === "true") return null;
+      if (
+        !id ||
+        firstTag(event, "archived") === "true" ||
+        event.tags.some((tag) => tag[0] === "hidden")
+      ) {
+        return null;
+      }
       const membership = membershipByChannel.get(id);
       const memberTags = membership ? allTags(membership, "p") : [];
       const ownTag = memberTags.find((tag) => tag[1] === pubkey);
@@ -288,6 +339,7 @@ export async function listWorkspaceChannels(
         memberPubkeys: memberTags
           .map((tag) => tag[1])
           .filter((value): value is string => Boolean(value)),
+        catalogSection: firstTag(event, "catalog_section") || "",
       };
     })
     .filter((channel): channel is WorkspaceChannel => channel !== null)
@@ -361,13 +413,75 @@ export async function listProfiles(
   return profiles;
 }
 
+/** Read the signed relay community membership list for channel invite pickers. */
+export async function listWorkspaceCommunityMembers(): Promise<
+  WorkspaceCommunityMember[]
+> {
+  const events = dedupeReplaceable(
+    await queryEvents(relayWsUrl(), {
+      kinds: [KIND_COMMUNITY_MEMBERS],
+      limit: 50,
+    }),
+  );
+  const latest = events.sort(
+    (left, right) =>
+      right.created_at - left.created_at || right.id.localeCompare(left.id),
+  )[0];
+  if (!latest) return [];
+  return latest.tags
+    .filter(
+      (tag) =>
+        tag[0] === "member" &&
+        typeof tag[1] === "string" &&
+        (tag[2] === "owner" || tag[2] === "admin" || tag[2] === "member"),
+    )
+    .map((tag) => ({
+      pubkey: tag[1].toLowerCase(),
+      role: tag[2] as WorkspaceCommunityMember["role"],
+    }));
+}
+
+/** Read a channel's current NIP-29 role projection, not a local member cache. */
+export async function listWorkspaceChannelMembers(
+  channelId: string,
+): Promise<WorkspaceChannelMember[]> {
+  const events = dedupeReplaceable(
+    await queryEvents(relayWsUrl(), {
+      kinds: [KIND_CHANNEL_MEMBERS],
+      "#d": [channelId],
+      limit: 20,
+    }),
+  );
+  const event = events.sort(
+    (left, right) =>
+      right.created_at - left.created_at || right.id.localeCompare(left.id),
+  )[0];
+  if (!event) return [];
+  return allTags(event, "p")
+    .filter(
+      (tag): tag is [string, string, ...string[]] => typeof tag[1] === "string",
+    )
+    .map((tag) => ({
+      pubkey: tag[1].toLowerCase(),
+      role: (["owner", "admin", "member", "guest", "bot"].includes(tag[3])
+        ? tag[3]
+        : ["owner", "admin", "member", "guest", "bot"].includes(tag[2])
+          ? tag[2]
+          : "member") as WorkspaceChannelMember["role"],
+    }));
+}
+
 export async function listAgents(
   viewerPubkey: string,
 ): Promise<WorkspaceProfile[]> {
   const [agentEvents, configEvents, membershipEvents, archivedPubkeys] =
     await Promise.all([
       queryEvents(relayWsUrl(), {
-        kinds: [KIND_AGENT_PROFILE, KIND_MANAGED_AGENT],
+        // Kind 30177 is a managed-agent projection, not a hosted directory
+        // entry. Treating every projection as hosted produced the stale
+        // Bumble/Fizz/Honey roster in web workspaces. The compatibility form
+        // remains accepted only below as an authorized config overlay.
+        kinds: [KIND_AGENT_PROFILE],
         limit: 200,
       }),
       queryEvents(relayWsUrl(), {
@@ -380,19 +494,11 @@ export async function listAgents(
       }),
       listArchivedIdentities(),
     ]);
-  const events = dedupeReplaceable(agentEvents).filter(
-    (event) => !isHostedAgentConfigEvent(event),
-  );
-  const agentPubkeys = events.map(
-    (event) =>
-      (event.kind === KIND_MANAGED_AGENT && firstTag(event, "d")) ||
-      event.pubkey,
-  );
+  const events = hostedDirectoryEvents(agentEvents);
+  const agentPubkeys = events.map((event) => event.pubkey);
   const profiles = await listProfiles(agentPubkeys);
   for (const event of events) {
-    const pubkey =
-      (event.kind === KIND_MANAGED_AGENT && firstTag(event, "d")) ||
-      event.pubkey;
+    const pubkey = event.pubkey;
     let content: Record<string, unknown> = {};
     try {
       content = JSON.parse(event.content) as Record<string, unknown>;
@@ -554,32 +660,113 @@ export function sendWorkspaceMessage(
 export function createWorkspaceChannel(
   name: string,
   about: string,
+  options: {
+    visibility?: "public" | "private";
+    catalogSection?: string;
+    type?: "stream" | "forum";
+  } = {},
 ): Promise<NostrEvent> {
+  const catalogSection = options.catalogSection?.trim();
   return publishEvent(relayWsUrl(), {
     kind: 9007,
     content: "",
     tags: [
       ["h", crypto.randomUUID()],
       ["name", name.trim().replace(/^#+/, "")],
-      ["visibility", "open"],
-      ["channel_type", "stream"],
+      ["visibility", options.visibility === "private" ? "private" : "open"],
+      ["channel_type", options.type ?? "stream"],
       ...(about.trim() ? [["about", about.trim()]] : []),
+      ...(catalogSection ? [["catalog_section", catalogSection]] : []),
     ],
+  });
+}
+
+export function updateWorkspaceChannel(
+  channelId: string,
+  input: WorkspaceChannelUpdate,
+): Promise<NostrEvent> {
+  const tags: string[][] = [["h", channelId]];
+  if (input.name !== undefined) tags.push(["name", input.name.trim()]);
+  if (input.about !== undefined) tags.push(["about", input.about.trim()]);
+  if (input.visibility !== undefined) {
+    tags.push([
+      "visibility",
+      input.visibility === "private" ? "private" : "open",
+    ]);
+  }
+  if (input.catalogSection !== undefined) {
+    tags.push(["catalog_section", input.catalogSection?.trim() ?? ""]);
+  }
+  return publishEvent(relayWsUrl(), {
+    kind: KIND_NIP29_EDIT_METADATA,
+    content: "",
+    tags,
+  });
+}
+
+export function archiveWorkspaceChannel(
+  channelId: string,
+): Promise<NostrEvent> {
+  return publishEvent(relayWsUrl(), {
+    kind: KIND_NIP29_EDIT_METADATA,
+    content: "",
+    tags: [
+      ["h", channelId],
+      ["archived", "true"],
+    ],
+  });
+}
+
+export function unarchiveWorkspaceChannel(
+  channelId: string,
+): Promise<NostrEvent> {
+  return publishEvent(relayWsUrl(), {
+    kind: KIND_NIP29_EDIT_METADATA,
+    content: "",
+    tags: [
+      ["h", channelId],
+      ["archived", "false"],
+    ],
+  });
+}
+
+export function deleteWorkspaceChannel(channelId: string): Promise<NostrEvent> {
+  return publishEvent(relayWsUrl(), {
+    kind: KIND_NIP29_DELETE_GROUP,
+    content: "",
+    tags: [["h", channelId]],
   });
 }
 
 export function addWorkspaceMember(
   channelId: string,
   pubkey: string,
-  role: "member" | "bot" = "member",
+  role: Exclude<WorkspaceChannelMember["role"], "owner"> = "member",
 ): Promise<NostrEvent> {
   return publishEvent(relayWsUrl(), {
-    kind: 9000,
+    kind: KIND_NIP29_PUT_USER,
     content: "",
     tags: [
       ["h", channelId],
       ["p", pubkey],
       ["role", role],
+    ],
+  });
+}
+
+/** NIP-29 role changes use the same PUT_USER event as invitations. */
+export const changeWorkspaceMemberRole = addWorkspaceMember;
+
+export function removeWorkspaceMember(
+  channelId: string,
+  pubkey: string,
+): Promise<NostrEvent> {
+  return publishEvent(relayWsUrl(), {
+    kind: KIND_NIP29_REMOVE_USER,
+    content: "",
+    tags: [
+      ["h", channelId],
+      ["p", pubkey],
     ],
   });
 }

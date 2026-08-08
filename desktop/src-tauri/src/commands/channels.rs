@@ -550,6 +550,7 @@ pub async fn create_channel(
     visibility: String,
     description: Option<String>,
     ttl_seconds: Option<i32>,
+    catalog_section: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<ChannelInfo, String> {
     let channel_uuid = uuid::Uuid::new_v4();
@@ -563,13 +564,14 @@ pub async fn create_channel(
         other => return Err(format!("invalid channel_type: {other}")),
     };
 
-    let builder = events::build_create_channel(
+    let builder = events::build_create_channel_with_catalog_section(
         channel_uuid,
         &name,
         vis,
         ct,
         description.as_deref(),
         ttl_seconds,
+        catalog_section.as_deref(),
     )?;
 
     // Capture the signing identity before submission so the pending-owner
@@ -695,6 +697,9 @@ pub struct UpdateChannelInput {
     /// Absent = leave unchanged, `null` = clear (permanent), seconds = set.
     #[serde(default, deserialize_with = "crate::util::double_option")]
     pub ttl_seconds: Option<Option<i32>>,
+    /// Absent = leave unchanged, `null` = clear the section, value = set it.
+    #[serde(default, deserialize_with = "crate::util::double_option")]
+    pub catalog_section: Option<Option<String>>,
 }
 
 #[tauri::command]
@@ -703,12 +708,16 @@ pub async fn update_channel(
     state: State<'_, AppState>,
 ) -> Result<ChannelDetailInfo, String> {
     let uuid = parse_channel_uuid(&input.channel_id)?;
-    let builder = events::build_update_channel(
+    let builder = events::build_update_channel_with_catalog_section(
         uuid,
         input.name.as_deref(),
         input.description.as_deref(),
         input.visibility.as_deref(),
         input.ttl_seconds,
+        input
+            .catalog_section
+            .as_ref()
+            .map(|section| section.as_deref()),
     )?;
     submit_event(builder, &state).await?;
 

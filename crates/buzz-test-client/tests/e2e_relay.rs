@@ -2402,6 +2402,48 @@ async fn test_private_channel_non_member_cannot_invite() {
         .expect("disconnect outsider");
 }
 
+/// A former/non-member cannot persist a self-targeted 9000 for a private
+/// channel. 9000 bypasses the generic membership gate for owner recovery, so
+/// this must fail in the pre-storage validator rather than later in the DB side
+/// effect path.
+#[tokio::test]
+#[ignore]
+async fn test_private_channel_non_member_cannot_self_add_before_storage() {
+    let url = relay_url();
+    let owner_keys = Keys::generate();
+    let outsider_keys = Keys::generate();
+
+    let mut owner_client = BuzzTestClient::connect(&url, &owner_keys)
+        .await
+        .expect("connect as owner");
+    let channel_id = create_private_channel_ws(&mut owner_client, &owner_keys).await;
+    let mut outsider_client = BuzzTestClient::connect(&url, &outsider_keys)
+        .await
+        .expect("connect as outsider");
+
+    let (accepted, message) = add_member_ws(
+        &mut outsider_client,
+        &channel_id,
+        &outsider_keys.public_key().to_hex(),
+        &outsider_keys,
+    )
+    .await;
+    assert!(
+        !accepted,
+        "non-member self-add must be rejected before storage: {message}"
+    );
+    assert!(
+        message.contains("owners/admins"),
+        "pre-storage rejection should identify the private-channel authority requirement: {message}"
+    );
+
+    owner_client.disconnect().await.expect("disconnect owner");
+    outsider_client
+        .disconnect()
+        .await
+        .expect("disconnect outsider");
+}
+
 /// Regular members cannot grant elevated roles (owner/admin) in private channels.
 #[tokio::test]
 #[ignore]
