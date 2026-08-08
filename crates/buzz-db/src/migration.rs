@@ -923,15 +923,23 @@ mod tests {
         assert!(heartbeat.contains("epoch"));
         assert!(heartbeat.contains("INSERT INTO replica_heartbeat (id) VALUES (1)"));
         assert!(heartbeat.contains("_operator_global_tables"));
-        // Channel-id lookup index (0027): serves the tenant-independent
+        // Production migration 0027 predates the upstream channel-index
+        // lineage and must retain its deployed checksum.
+        assert_eq!(migrations[26].version, 27);
+        assert!(migrations[26]
+            .sql
+            .as_str()
+            .contains("workflow_owner_mentions"));
+
+        // Channel-id lookup index (0031): serves the tenant-independent
         // `channels` lookups that carry no community_id predicate, which no
         // community_id-leading index can satisfy. Covering + partial so the
         // planner can go index-only; asserted NOT UNIQUE because `id` alone is
         // not unique in this table (the same channel id may exist under more
         // than one community), so a unique index would encode a false
         // constraint and fail to build on such a database.
-        assert_eq!(migrations[26].version, 27);
-        let channel_id_index = migrations[26].sql.as_str();
+        assert_eq!(migrations[30].version, 31);
+        let channel_id_index = migrations[30].sql.as_str();
         assert!(channel_id_index.contains("idx_channels_id_live"));
         assert!(channel_id_index.contains("INCLUDE (community_id)"));
         assert!(channel_id_index.contains("WHERE deleted_at IS NULL"));
