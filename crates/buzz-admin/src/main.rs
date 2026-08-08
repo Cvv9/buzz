@@ -76,6 +76,20 @@ enum Command {
     GenerateKey,
     /// Run pending database migrations.
     Migrate,
+    /// Bind an agent to its immutable owner and restrict channel adds to that owner.
+    ///
+    /// This operator-only command writes directly to the configured relay
+    /// database. Both principals are ensured and the owner/policy change is one
+    /// transaction. Repeating the same binding is safe; replacing an owner is
+    /// rejected.
+    SetAgentOwner {
+        /// Agent Nostr public key — bech32 npub or 64-char hex.
+        #[arg(long)]
+        agent_pubkey: String,
+        /// Owner Nostr public key — bech32 npub or 64-char hex.
+        #[arg(long)]
+        owner_pubkey: String,
+    },
     /// Inspect deployment-wide Buzz product feedback.
     ProductFeedback {
         #[command(subcommand)]
@@ -142,6 +156,10 @@ async fn run(cli: Cli) -> Result<i32> {
             println!("Database migrations complete.");
             Ok(0)
         }
+        Command::SetAgentOwner {
+            agent_pubkey,
+            owner_pubkey,
+        } => cmd_set_agent_owner(agent_pubkey, owner_pubkey).await,
         Command::AddMember { pubkey, role } => cmd_add_member(pubkey, role).await,
         Command::RemoveMember { pubkey, role } => cmd_remove_member(pubkey, role).await,
         Command::ListMembers => cmd_list_members().await,
@@ -153,6 +171,43 @@ async fn run(cli: Cli) -> Result<i32> {
             Ok(0)
         }
     }
+}
+
+/// Bind an agent to an owner and set `channel_add_policy=owner_only` atomically.
+async fn cmd_set_agent_owner(agent_arg: String, owner_arg: String) -> Result<i32> {
+    let (agent, owner) = parse_agent_owner_pair(&agent_arg, &owner_arg)?;
+
+    let db = connect_db().await?;
+    let tenant = resolve_admin_tenant(&db).await?;
+    let newly_bound = db
+        .bind_agent_owner_owner_only(tenant.community(), agent.as_bytes(), owner.as_bytes())
+        .await?;
+    let status = if newly_bound {
+        "bound"
+    } else {
+        "already bound"
+    };
+    println!(
+        "{status} agent {} to owner {}; channel_add_policy=owner_only",
+        agent.to_hex(),
+        owner.to_hex()
+    );
+    Ok(0)
+}
+
+/// Validate and parse a distinct agent/owner public-key pair.
+fn parse_agent_owner_pair(
+    agent_arg: &str,
+    owner_arg: &str,
+) -> Result<(nostr::PublicKey, nostr::PublicKey)> {
+    let agent = nostr::PublicKey::parse(agent_arg)
+        .map_err(|e| anyhow::anyhow!("invalid agent pubkey '{agent_arg}': {e}"))?;
+    let owner = nostr::PublicKey::parse(owner_arg)
+        .map_err(|e| anyhow::anyhow!("invalid owner pubkey '{owner_arg}': {e}"))?;
+    if agent == owner {
+        anyhow::bail!("agent and owner pubkeys must differ");
+    }
+    Ok((agent, owner))
 }
 
 async fn cmd_add_member(pubkey_arg: String, role: String) -> Result<i32> {
@@ -581,4 +636,39 @@ async fn reconcile_channels(relay_key_arg: Option<String>) -> Result<()> {
         channels.len()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_agent_owner_help_surface_parses() {
+        let agent = Keys::generate().public_key().to_hex();
+        let owner = Keys::generate().public_key().to_hex();
+        let cli = Cli::try_parse_from([
+            "buzz-admin",
+            "set-agent-owner",
+            "--agent-pubkey",
+            &agent,
+            "--owner-pubkey",
+            &owner,
+        ])
+        .expect("valid command");
+        assert!(matches!(cli.command, Command::SetAgentOwner { .. }));
+        assert!(
+            Cli::try_parse_from(["buzz-admin", "set-agent-owner", "--agent-pubkey", &agent])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn agent_owner_pair_validates_both_keys_and_distinctness() {
+        let agent = Keys::generate().public_key().to_hex();
+        let owner = Keys::generate().public_key().to_hex();
+        assert!(parse_agent_owner_pair(&agent, &owner).is_ok());
+        assert!(parse_agent_owner_pair("not-a-key", &owner).is_err());
+        assert!(parse_agent_owner_pair(&agent, "not-a-key").is_err());
+        assert!(parse_agent_owner_pair(&agent, &agent).is_err());
+    }
 }

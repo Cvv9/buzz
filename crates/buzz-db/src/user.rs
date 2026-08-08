@@ -398,6 +398,65 @@ pub async fn set_channel_add_policy(
     Ok(())
 }
 
+/// Atomically bind an agent to its immutable owner and restrict channel adds
+/// to that owner.
+///
+/// Both user rows are ensured inside the transaction. Repeating the operation
+/// for the same pair is idempotent; attempting to replace an existing owner
+/// fails without changing either ownership or policy.
+pub async fn bind_agent_owner_owner_only(
+    pool: &PgPool,
+    community_id: CommunityId,
+    agent_pubkey: &[u8],
+    owner_pubkey: &[u8],
+) -> Result<bool> {
+    if agent_pubkey == owner_pubkey {
+        return Err(crate::error::DbError::InvalidData(
+            "agent and owner pubkeys must differ".into(),
+        ));
+    }
+
+    let mut tx = pool.begin().await?;
+    for pubkey in [agent_pubkey, owner_pubkey] {
+        sqlx::query(
+            "INSERT INTO users (community_id, pubkey) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        )
+        .bind(community_id.as_uuid())
+        .bind(pubkey)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    let existing_owner: Option<Vec<u8>> = sqlx::query_scalar(
+        "SELECT agent_owner_pubkey FROM users WHERE community_id = $1 AND pubkey = $2 FOR UPDATE",
+    )
+    .bind(community_id.as_uuid())
+    .bind(agent_pubkey)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    if existing_owner
+        .as_deref()
+        .is_some_and(|owner| owner != owner_pubkey)
+    {
+        return Err(crate::error::DbError::InvalidData(
+            "agent already belongs to a different owner".into(),
+        ));
+    }
+    let newly_bound = existing_owner.is_none();
+
+    sqlx::query(
+        "UPDATE users SET agent_owner_pubkey = COALESCE(agent_owner_pubkey, $1), channel_add_policy = 'owner_only'::channel_add_policy WHERE community_id = $2 AND pubkey = $3",
+    )
+    .bind(owner_pubkey)
+    .bind(community_id.as_uuid())
+    .bind(agent_pubkey)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(newly_bound)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -507,6 +566,67 @@ mod tests {
             .expect("should be Some");
         assert_eq!(policy, "anyone");
         assert!(owner.is_none());
+    }
+
+    /// The operator binding helper creates both principals, is idempotent for
+    /// the same owner, and rejects replacement without weakening the policy.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn test_bind_agent_owner_owner_only_is_atomic_and_immutable() {
+        let db = setup_db().await;
+        let community = make_community(&db.pool).await;
+        let agent = random_pubkey();
+        let owner = random_pubkey();
+        let other_owner = random_pubkey();
+
+        assert!(
+            bind_agent_owner_owner_only(&db.pool, community, &agent, &owner)
+                .await
+                .expect("first bind")
+        );
+        assert!(
+            !bind_agent_owner_owner_only(&db.pool, community, &agent, &owner)
+                .await
+                .expect("idempotent bind")
+        );
+        assert!(
+            bind_agent_owner_owner_only(&db.pool, community, &agent, &other_owner)
+                .await
+                .is_err()
+        );
+
+        let (policy, stored_owner) = get_agent_channel_policy(&db.pool, community, &agent)
+            .await
+            .expect("read binding")
+            .expect("agent exists");
+        assert_eq!(policy, "owner_only");
+        assert_eq!(stored_owner, Some(owner));
+    }
+
+    /// Competing owner bootstrap attempts serialize on the agent row; exactly
+    /// one owner wins and the loser cannot overwrite it.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn test_concurrent_agent_owner_bind_has_one_immutable_winner() {
+        let db = setup_db().await;
+        let community = make_community(&db.pool).await;
+        let agent = random_pubkey();
+        let owner_a = random_pubkey();
+        let owner_b = random_pubkey();
+
+        let (result_a, result_b) = tokio::join!(
+            bind_agent_owner_owner_only(&db.pool, community, &agent, &owner_a),
+            bind_agent_owner_owner_only(&db.pool, community, &agent, &owner_b),
+        );
+        assert_ne!(result_a.is_ok(), result_b.is_ok());
+
+        let (policy, stored_owner) = get_agent_channel_policy(&db.pool, community, &agent)
+            .await
+            .expect("read binding")
+            .expect("agent exists");
+        assert_eq!(policy, "owner_only");
+        let winner = if result_a.is_ok() { owner_a } else { owner_b };
+        assert_eq!(stored_owner, Some(winner));
     }
 
     /// get_agent_channel_policy should return None for a pubkey that has

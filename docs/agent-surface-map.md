@@ -35,6 +35,7 @@ historical event.
 | Hosted admin override | kind `30179` (`KIND_HOSTED_AGENT_CONFIG`) | Community owner/admin or declared agent owner | Current hosted name, avatar, and desired model. Newest authorized head wins over kind `10100` and kind `0`. |
 | Channel membership | NIP-29 membership events; channel state uses `h` tags, membership addressables use `d` tags | Channel owner/admin | Determines whether an agent is already in a channel. It does not determine whether a shared agent is discoverable before its first invitation. |
 | Channel catalog section | Relay `channels.catalog_section`, emitted as kind `39000` `catalog_section` tag | Channel owner/admin or community owner/admin via kind `9007`/`9002` | Shared web/desktop organization. It is not a local sidebar preference. An empty value explicitly clears the section. |
+| Agent channel-add admission | Community-scoped `users.agent_owner_pubkey` plus `users.channel_add_policy` | Relay-authenticated agent or root operator | Owner mapping is immutable. `buzz-admin set-agent-owner` atomically ensures both principals, binds the owner, and sets `owner_only`; it never opens an `anyone` window. |
 | Message author | message event `pubkey` | Sender | Stable identity reference for timeline and Inbox. Presentation is resolved at render time. |
 | Local managed record | desktop encrypted/local managed-agent store | Agent owner | Runtime command, secrets, environment, lifecycle and local instance fields that must never enter public projections. |
 | Global agent defaults | desktop local configuration | Current desktop user | Defaults only. Per-agent settings override them. |
@@ -52,6 +53,24 @@ historical event.
 | Channel invocation | Mention send flow adds an eligible missing agent with role `bot`, then sends a message carrying its `p` tag. Other users' private agents must not be suggested or added. |
 
 ## Write flows
+
+### Bind a deployed agent to its owner
+
+1. A root operator runs `buzz-admin set-agent-owner --agent-pubkey <key>
+   --owner-pubkey <key>` against the relay's configured community.
+2. `buzz-db::bind_agent_owner_owner_only` ensures both user rows, locks the
+   agent row, preserves an existing identical owner, rejects owner replacement,
+   and commits the owner plus `channel_add_policy=owner_only` in one database
+   transaction.
+3. Subsequent NIP-29 channel-add authorization permits the declared owner and
+   continues to reject unrelated users. This is an operator bootstrap path, not
+   a browser or ordinary member command.
+
+Primary files:
+
+- `crates/buzz-admin/src/main.rs`
+- `crates/buzz-db/src/user.rs`
+- `crates/buzz-db/src/lib.rs`
 
 ### Edit a hosted agent
 
