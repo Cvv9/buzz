@@ -1,4 +1,13 @@
-import { ChevronLeft, Hash, Lock, Menu, Star, Users, X } from "lucide-react";
+import {
+  ChevronLeft,
+  Hash,
+  Lock,
+  Menu,
+  Settings2,
+  Star,
+  Users,
+  X,
+} from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import * as React from "react";
@@ -14,6 +23,8 @@ import { WorkspaceGuide } from "./WorkspaceGuide";
 import { WorkspaceSettings } from "./WorkspaceSettings";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 import { WorkspaceMessageRow } from "./WorkspaceMessageRow";
+import { WorkspaceChannelSettings } from "./WorkspaceChannelSettings";
+import { shouldMountWorkspaceTheme } from "../workspace-theme-mount-policy";
 import { useAgentMentionDelivery } from "../useAgentMentionDelivery";
 import { useWorkspaceIdentity } from "../useWorkspaceIdentity";
 import {
@@ -36,6 +47,7 @@ import {
 } from "@/features/workspace/workspace-messages";
 import { useWorkspaceReactions } from "@/features/workspace/useWorkspaceReactions";
 import { useWorkspaceReadState } from "@/features/workspace/workspace-read-state";
+import { CommunityThemeController } from "@/shared/theme/CommunityThemeController";
 
 type WorkspaceView = "agents" | "alerts" | "channel" | "inbox";
 
@@ -93,6 +105,11 @@ export function WorkspacePage() {
   const [createChannelOpen, setCreateChannelOpen] = React.useState(false);
   const [channelName, setChannelName] = React.useState("");
   const [channelAbout, setChannelAbout] = React.useState("");
+  const [channelCatalogSection, setChannelCatalogSection] = React.useState("");
+  const [channelVisibility, setChannelVisibility] = React.useState<
+    "public" | "private"
+  >("public");
+  const [channelSettingsOpen, setChannelSettingsOpen] = React.useState(false);
   const [editingMessage, setEditingMessage] =
     React.useState<TimelineMessage | null>(null);
 
@@ -257,11 +274,17 @@ export function WorkspacePage() {
   }, [channels.length, identity, queryClient]);
 
   const createChannelMutation = useMutation({
-    mutationFn: () => createWorkspaceChannel(channelName, channelAbout),
+    mutationFn: () =>
+      createWorkspaceChannel(channelName, channelAbout, {
+        catalogSection: channelCatalogSection,
+        visibility: channelVisibility,
+      }),
     onSuccess: async () => {
       setCreateChannelOpen(false);
       setChannelName("");
       setChannelAbout("");
+      setChannelCatalogSection("");
+      setChannelVisibility("public");
       await new Promise((resolve) => window.setTimeout(resolve, 350));
       await channelsQuery.refetch();
     },
@@ -321,18 +344,28 @@ export function WorkspacePage() {
     (!channelsQuery.isPending && channels.length === 0)
   ) {
     return (
-      <EmptyMembership
-        onJoined={async () => {
-          await channelsQuery.refetch();
-        }}
-      />
+      <>
+        {shouldMountWorkspaceTheme(identity.pubkey) ? (
+          <CommunityThemeController pubkey={identity.pubkey} />
+        ) : null}
+        <EmptyMembership
+          onJoined={async () => {
+            await channelsQuery.refetch();
+          }}
+        />
+      </>
     );
   }
   if (channelsQuery.isPending) {
     return (
-      <div className="flex min-h-[100dvh] items-center justify-center bg-[#f4f5ee] text-black/45 dark:bg-[#151713] dark:text-white/40">
-        Connecting to VarVik Studios…
-      </div>
+      <>
+        {shouldMountWorkspaceTheme(identity.pubkey) ? (
+          <CommunityThemeController pubkey={identity.pubkey} />
+        ) : null}
+        <div className="flex min-h-[100dvh] items-center justify-center bg-[#f4f5ee] text-black/45 dark:bg-[#151713] dark:text-white/40">
+          Connecting to VarVik Studios…
+        </div>
+      </>
     );
   }
 
@@ -391,9 +424,12 @@ export function WorkspacePage() {
 
   return (
     <div
-      className="flex h-dvh min-h-0 overflow-hidden bg-[#f8f9f4] text-[#292c25] dark:bg-[#141612] dark:text-[#e6e8dc]"
+      className="flex h-dvh min-h-0 overflow-hidden bg-background text-foreground"
       data-testid="workspace-shell"
     >
+      {shouldMountWorkspaceTheme(identity.pubkey) ? (
+        <CommunityThemeController pubkey={identity.pubkey} />
+      ) : null}
       <WorkspaceSidebar
         activeChannelId={activeChannelId}
         agents={agentsQuery.data ?? []}
@@ -514,6 +550,16 @@ export function WorkspacePage() {
                           <Star
                             className={`size-4 ${starredChannelIds.has(activeChannel.id) ? "fill-current text-[#8b8c00] dark:text-[#e4e55e]" : ""}`}
                           />
+                        </button>
+                      ) : null}
+                      {activeChannel.type !== "dm" ? (
+                        <button
+                          aria-label={`Manage ${activeChannel.name}`}
+                          className="rounded-lg p-2 text-black/35 hover:bg-black/5 hover:text-black/65 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a5a500] dark:text-white/30 dark:hover:bg-white/5 dark:hover:text-white/65"
+                          type="button"
+                          onClick={() => setChannelSettingsOpen(true)}
+                        >
+                          <Settings2 className="size-4" />
                         </button>
                       ) : null}
                     </div>
@@ -756,6 +802,36 @@ export function WorkspacePage() {
             />
             <label
               className="mb-2 mt-4 block text-sm font-medium"
+              htmlFor="new-channel-section"
+            >
+              Catalog section
+            </label>
+            <Input
+              id="new-channel-section"
+              maxLength={80}
+              placeholder="e.g. Command Center"
+              value={channelCatalogSection}
+              onChange={(event) => setChannelCatalogSection(event.target.value)}
+            />
+            <label
+              className="mb-2 mt-4 block text-sm font-medium"
+              htmlFor="new-channel-visibility"
+            >
+              Visibility
+            </label>
+            <select
+              className="h-10 w-full rounded-md border border-input bg-transparent px-3 text-sm"
+              id="new-channel-visibility"
+              value={channelVisibility}
+              onChange={(event) =>
+                setChannelVisibility(event.target.value as "public" | "private")
+              }
+            >
+              <option value="public">Public</option>
+              <option value="private">Private</option>
+            </select>
+            <label
+              className="mb-2 mt-4 block text-sm font-medium"
               htmlFor="new-channel-description"
             >
               Description
@@ -834,6 +910,17 @@ export function WorkspacePage() {
             lockIdentity();
             setSettingsOpen(false);
             queryClient.clear();
+          }}
+        />
+      ) : null}
+
+      {channelSettingsOpen && activeChannel ? (
+        <WorkspaceChannelSettings
+          channel={activeChannel}
+          viewerPubkey={identity.pubkey}
+          onClose={() => setChannelSettingsOpen(false)}
+          onUpdated={async () => {
+            return (await channelsQuery.refetch()).data ?? [];
           }}
         />
       ) : null}

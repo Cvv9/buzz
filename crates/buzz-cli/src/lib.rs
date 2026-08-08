@@ -2,6 +2,7 @@ pub mod agent_management;
 mod client;
 mod commands;
 mod error;
+mod links;
 mod validate;
 
 use clap::{Parser, Subcommand};
@@ -331,8 +332,10 @@ pub enum AgentsCmd {
     },
     /// Submit a NIP-IA archive request for an identity (kind 9035)
     #[command(
-        after_help = "The relay chooses the consent path (self / admin / owner) from the \
-submitted request; this command does not retry with a different shape.\n\n\
+        after_help = "Auth flow: when target != signer, the CLI fetches the target's kind:0 and \
+attaches its owner-auth tag. On extraction failure it retries once (common cause: profile \
+republish in progress). If the retry also fails, the command exits with an error — use \
+--admin to bypass this guard when your key is a relay admin.\n\n\
 Suggested --reason codes (unknown values are allowed): rotated, retired, \
 bot-rebuilt, left-organization, spam\n\n\
 Archiving a third-party identity is a human owner/admin action: an agent \
@@ -355,10 +358,21 @@ buzz agents archive <PUBKEY> --reason bot-rebuilt --replaced-by <NEW_PUBKEY>"
         /// Optional human-readable note (not parsed for authorization)
         #[arg(long, default_value = "")]
         content: String,
+        /// Allow sending without owner-auth attestation after extraction fails
+        /// (relay-admin path). Use only when your key is a relay admin; ordinary
+        /// owners do not need this flag. Without it, auth-extraction failure after
+        /// one automatic retry is a hard error rather than a silent bare send.
+        #[arg(long, default_value_t = false)]
+        admin: bool,
     },
     /// Submit a NIP-IA unarchive request for an identity (kind 9036)
-    #[command(after_help = "Examples:\n  \
-buzz agents unarchive <PUBKEY> --reason returned")]
+    #[command(
+        after_help = "Auth flow: same as `archive` — retries kind:0 fetch once on \
+extraction failure, then exits with an error if still unresolvable. Use --admin to bypass \
+for relay-admin callers.\n\n\
+Examples:\n  \
+buzz agents unarchive <PUBKEY> --reason returned"
+    )]
     Unarchive {
         /// Target identity pubkey (hex)
         target_pubkey: String,
@@ -368,6 +382,12 @@ buzz agents unarchive <PUBKEY> --reason returned")]
         /// Optional human-readable note (not parsed for authorization)
         #[arg(long, default_value = "")]
         content: String,
+        /// Allow sending without owner-auth attestation after extraction fails
+        /// (relay-admin path). Use only when your key is a relay admin; ordinary
+        /// owners do not need this flag. Without it, auth-extraction failure after
+        /// one automatic retry is a hard error rather than a silent bare send.
+        #[arg(long, default_value_t = false)]
+        admin: bool,
     },
     /// Read the relay's current NIP-IA archive snapshot (kind 13535)
     #[command(
@@ -581,7 +601,7 @@ pub enum ChannelsCmd {
     },
     /// Create a new channel
     #[command(
-        after_help = "Examples:\n  buzz channels create --name general --type stream --visibility open\n  buzz channels create --name design --type forum --visibility open --description \"Design discussions\"\n  buzz channels create --name standup --type stream --visibility open --ttl 3600  # ephemeral, archived after 1h idle\n  buzz channels create --name project-x --template \"Buzz Team\"  # type/visibility/canvas/roster from the template; explicit flags override"
+        after_help = "Examples:\n  buzz channels create --name general --type stream --visibility open\n  buzz channels create --name operations --type stream --visibility private --catalog-section \"Command Center\"\n  buzz channels create --name design --type forum --visibility open --description \"Design discussions\"\n  buzz channels create --name standup --type stream --visibility open --ttl 3600  # ephemeral, archived after 1h idle\n  buzz channels create --name project-x --template \"Buzz Team\"  # type/visibility/canvas/roster from the template; explicit flags override"
     )]
     Create {
         /// Channel name
@@ -596,6 +616,9 @@ pub enum ChannelsCmd {
         /// Channel description
         #[arg(long)]
         description: Option<String>,
+        /// Shared workspace catalog section (for example, "Command Center").
+        #[arg(long, value_name = "SECTION")]
+        catalog_section: Option<String>,
         /// Make the channel ephemeral: lifetime in seconds. The relay archives
         /// it once this many seconds pass without a new message.
         #[arg(long, value_name = "SECONDS")]
@@ -628,6 +651,13 @@ pub enum ChannelsCmd {
         /// Clear an existing TTL, making the channel permanent.
         #[arg(long)]
         no_ttl: bool,
+        /// Move the channel into this shared workspace catalog section.
+        #[arg(long, value_name = "SECTION", conflicts_with = "clear_catalog_section")]
+        catalog_section: Option<String>,
+        /// Clear the shared catalog section and return the channel to the
+        /// uncategorized channel list.
+        #[arg(long, conflicts_with = "catalog_section")]
+        clear_catalog_section: bool,
     },
     /// Set the channel topic
     Topic {
@@ -2084,6 +2114,58 @@ mod tests {
     #[test]
     fn cli_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn channel_catalog_section_flags_parse() {
+        assert!(Cli::try_parse_from([
+            "buzz",
+            "channels",
+            "create",
+            "--name",
+            "operations",
+            "--type",
+            "stream",
+            "--visibility",
+            "private",
+            "--catalog-section",
+            "Command Center"
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from([
+            "buzz",
+            "channels",
+            "update",
+            "--channel",
+            "00000000-0000-0000-0000-000000000000",
+            "--catalog-section",
+            "General"
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from([
+            "buzz",
+            "channels",
+            "update",
+            "--channel",
+            "00000000-0000-0000-0000-000000000000",
+            "--clear-catalog-section"
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn channel_catalog_section_set_and_clear_conflict() {
+        assert!(Cli::try_parse_from([
+            "buzz",
+            "channels",
+            "update",
+            "--channel",
+            "00000000-0000-0000-0000-000000000000",
+            "--catalog-section",
+            "General",
+            "--clear-catalog-section"
+        ])
+        .is_err());
     }
 
     #[test]

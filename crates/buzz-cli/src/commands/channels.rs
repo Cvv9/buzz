@@ -14,10 +14,12 @@ use crate::error::CliError;
 use crate::validate::{parse_uuid, read_or_stdin, validate_hex64, validate_uuid};
 
 fn extract_channel_metadata(e: &serde_json::Value) -> serde_json::Value {
+    let catalog_section = extract_tag_value(e, "catalog_section");
     serde_json::json!({
         "channel_id": extract_d_tag(e),
         "name": extract_tag_value(e, "name"),
         "description": extract_tag_value(e, "about"),
+        "catalog_section": (!catalog_section.is_empty()).then_some(catalog_section),
         "created_at": e.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0),
     })
 }
@@ -161,6 +163,7 @@ struct ChannelSummary {
     about: Option<String>,
     topic: Option<String>,
     purpose: Option<String>,
+    catalog_section: Option<String>,
 }
 
 impl ChannelSummary {
@@ -176,6 +179,7 @@ impl ChannelSummary {
         let mut about: Option<String> = None;
         let mut topic: Option<String> = None;
         let mut purpose: Option<String> = None;
+        let mut catalog_section: Option<String> = None;
 
         for tag in tags {
             let Some(tag_arr) = tag.as_array() else {
@@ -194,6 +198,9 @@ impl ChannelSummary {
                 "about" => about = val.map(str::to_string),
                 "topic" => topic = val.map(str::to_string),
                 "purpose" => purpose = val.map(str::to_string),
+                "catalog_section" => {
+                    catalog_section = val.filter(|v| !v.is_empty()).map(str::to_string)
+                }
                 "archived" => archived = val == Some("true"),
                 _ => {}
             }
@@ -208,6 +215,7 @@ impl ChannelSummary {
             about,
             topic,
             purpose,
+            catalog_section,
         })
     }
 }
@@ -286,6 +294,7 @@ pub async fn cmd_create_channel(
     visibility: &str,
     description: Option<&str>,
     ttl: Option<i64>,
+    catalog_section: Option<&str>,
 ) -> Result<(), CliError> {
     match channel_type {
         "stream" | "forum" => {}
@@ -305,6 +314,7 @@ pub async fn cmd_create_channel(
     }
 
     let ttl = ttl.map(validate_ttl_seconds).transpose()?;
+    let catalog_section = catalog_section.map(validate_catalog_section).transpose()?;
 
     let channel_uuid = Uuid::new_v4();
 
@@ -318,9 +328,16 @@ pub async fn cmd_create_channel(
         "forum" => buzz_sdk::ChannelKind::Forum,
         _ => unreachable!(),
     };
-    let builder =
-        buzz_sdk::build_create_channel(channel_uuid, name, Some(vis), Some(ct), description, ttl)
-            .map_err(|e| CliError::Other(format!("build_create_channel failed: {e}")))?;
+    let builder = buzz_sdk::build_create_channel_with_catalog_section(
+        channel_uuid,
+        name,
+        Some(vis),
+        Some(ct),
+        description,
+        ttl,
+        catalog_section,
+    )
+    .map_err(|e| CliError::Other(format!("build_create_channel failed: {e}")))?;
 
     let event = client.sign_event(builder)?;
     let resp = client.submit_event(event).await?;
@@ -661,6 +678,7 @@ pub async fn cmd_create_channel_from_template(
     visibility_override: Option<&str>,
     description: Option<&str>,
     ttl: Option<i64>,
+    catalog_section: Option<&str>,
 ) -> Result<(), CliError> {
     let templates_path = channel_templates::resolve_templates_path(templates_file)?;
     let template: ChannelTemplateRecord =
@@ -685,6 +703,7 @@ pub async fn cmd_create_channel_from_template(
         }
     }
     let ttl = ttl.map(validate_ttl_seconds).transpose()?;
+    let catalog_section = catalog_section.map(validate_catalog_section).transpose()?;
 
     // Owner invariant (F1): the auth-tag owner (already verified against the
     // signer at startup) if present, else the signing pubkey. No sole-author
@@ -708,13 +727,14 @@ pub async fn cmd_create_channel_from_template(
         _ => unreachable!(),
     };
     let effective_description = description.or(template.description.as_deref());
-    let builder = buzz_sdk::build_create_channel(
+    let builder = buzz_sdk::build_create_channel_with_catalog_section(
         channel_uuid,
         name,
         Some(vis),
         Some(ct),
         effective_description,
         ttl,
+        catalog_section,
     )
     .map_err(|e| CliError::Other(format!("build_create_channel failed: {e}")))?;
     let event = client.sign_event(builder)?;
@@ -829,6 +849,22 @@ fn validate_ttl_seconds(secs: i64) -> Result<i32, CliError> {
         .map_err(|_| CliError::Usage(format!("--ttl is too large (max {} seconds)", i32::MAX)))
 }
 
+fn validate_catalog_section(section: &str) -> Result<&str, CliError> {
+    let section = section.trim();
+    if section.is_empty() {
+        return Err(CliError::Usage(
+            "--catalog-section cannot be empty; use --clear-catalog-section when updating".into(),
+        ));
+    }
+    if section.chars().count() > 80 {
+        return Err(CliError::Usage(
+            "--catalog-section must be at most 80 characters".into(),
+        ));
+    }
+    Ok(section)
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn cmd_update_channel(
     client: &BuzzClient,
     channel_id: &str,
@@ -836,6 +872,8 @@ pub async fn cmd_update_channel(
     description: Option<&str>,
     ttl: Option<i64>,
     no_ttl: bool,
+    catalog_section: Option<&str>,
+    clear_catalog_section: bool,
 ) -> Result<(), CliError> {
     // Outer Option: None leaves TTL unchanged. Inner: Some(secs) sets it,
     // None (from --no-ttl) clears it, making the channel permanent.
@@ -845,15 +883,38 @@ pub async fn cmd_update_channel(
         (None, false) => None,
     };
 
-    if name.is_none() && description.is_none() && ttl_change.is_none() {
+    let catalog_section_change: Option<Option<&str>> =
+        match (catalog_section, clear_catalog_section) {
+            (Some(section), false) => Some(Some(validate_catalog_section(section)?)),
+            (None, true) => Some(None),
+            (None, false) => None,
+            (Some(_), true) => {
+                return Err(CliError::Usage(
+                    "--catalog-section conflicts with --clear-catalog-section".into(),
+                ));
+            }
+        };
+
+    if name.is_none()
+        && description.is_none()
+        && ttl_change.is_none()
+        && catalog_section_change.is_none()
+    {
         return Err(CliError::Usage(
-            "at least one field required (--name, --description, --ttl, --no-ttl)".into(),
+            "at least one field required (--name, --description, --ttl, --no-ttl, --catalog-section, --clear-catalog-section)".into(),
         ));
     }
     let channel_uuid = parse_uuid(channel_id)?;
 
-    let builder = buzz_sdk::build_update_channel(channel_uuid, name, description, None, ttl_change)
-        .map_err(|e| CliError::Other(format!("build_update_channel failed: {e}")))?;
+    let builder = buzz_sdk::build_update_channel_with_catalog_section(
+        channel_uuid,
+        name,
+        description,
+        None,
+        ttl_change,
+        catalog_section_change,
+    )
+    .map_err(|e| CliError::Other(format!("build_update_channel failed: {e}")))?;
 
     let event = client.sign_event(builder)?;
     let resp = client.submit_event(event).await?;
@@ -1090,6 +1151,7 @@ pub async fn dispatch(
             channel_type,
             visibility,
             description,
+            catalog_section,
             ttl,
             template,
             templates_file,
@@ -1104,6 +1166,7 @@ pub async fn dispatch(
                     visibility.as_ref().map(|v| v.to_string()).as_deref(),
                     description.as_deref(),
                     ttl,
+                    catalog_section.as_deref(),
                 )
                 .await
             } else {
@@ -1120,6 +1183,7 @@ pub async fn dispatch(
                     &visibility.to_string(),
                     description.as_deref(),
                     ttl,
+                    catalog_section.as_deref(),
                 )
                 .await
             }
@@ -1130,6 +1194,8 @@ pub async fn dispatch(
             description,
             ttl,
             no_ttl,
+            catalog_section,
+            clear_catalog_section,
         } => {
             cmd_update_channel(
                 client,
@@ -1138,6 +1204,8 @@ pub async fn dispatch(
                 description.as_deref(),
                 ttl,
                 no_ttl,
+                catalog_section.as_deref(),
+                clear_catalog_section,
             )
             .await
         }
@@ -1177,9 +1245,9 @@ pub async fn dispatch_canvas(cmd: crate::CanvasCmd, client: &BuzzClient) -> Resu
 mod tests {
     use super::{
         apply_cardinality_rule, build_template_report, cmd_set_add_policy,
-        finalize_roster_resolution, name_matches, resolve_roster_with_archive_filter,
-        validate_ttl_seconds, ArchivedExclusion, ChannelSummary, ResolvedAgent, RosterResolution,
-        SkippedSlug,
+        extract_channel_metadata, finalize_roster_resolution, name_matches,
+        resolve_roster_with_archive_filter, validate_ttl_seconds, ArchivedExclusion,
+        ChannelSummary, ResolvedAgent, RosterResolution, SkippedSlug,
     };
     use crate::client::BuzzClient;
     use crate::CliError;
@@ -1199,6 +1267,7 @@ mod tests {
             ["about", "About text"],
             ["topic", "Composer work"],
             ["purpose", "Track UI for the composer"],
+            ["catalog_section", "General"],
         ]));
         let s = ChannelSummary::from_event(&ev).expect("parse");
         assert_eq!(s.channel_id, "11111111-1111-1111-1111-111111111111");
@@ -1209,6 +1278,23 @@ mod tests {
         assert_eq!(s.about.as_deref(), Some("About text"));
         assert_eq!(s.topic.as_deref(), Some("Composer work"));
         assert_eq!(s.purpose.as_deref(), Some("Track UI for the composer"));
+        assert_eq!(s.catalog_section.as_deref(), Some("General"));
+    }
+
+    #[test]
+    fn list_and_get_projection_include_nullable_catalog_section() {
+        let with_section = extract_channel_metadata(&event(json!([
+            ["d", "11111111-1111-1111-1111-111111111111"],
+            ["name", "market-intelligence"],
+            ["catalog_section", "General"],
+        ])));
+        assert_eq!(with_section["catalog_section"], "General");
+
+        let without_section = extract_channel_metadata(&event(json!([
+            ["d", "22222222-2222-2222-2222-222222222222"],
+            ["name", "uncategorized"],
+        ])));
+        assert!(without_section["catalog_section"].is_null());
     }
 
     #[test]

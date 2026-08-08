@@ -34,6 +34,7 @@ historical event.
 | Team catalog | kind `30178` (`KIND_TEAM_CATALOG`) | Owner | Shareable team projection with embedded public persona projections. |
 | Hosted admin override | kind `30179` (`KIND_HOSTED_AGENT_CONFIG`) | Community owner/admin or declared agent owner | Current hosted name, avatar, and desired model. Newest authorized head wins over kind `10100` and kind `0`. |
 | Channel membership | NIP-29 membership events; channel state uses `h` tags, membership addressables use `d` tags | Channel owner/admin | Determines whether an agent is already in a channel. It does not determine whether a shared agent is discoverable before its first invitation. |
+| Channel catalog section | Relay `channels.catalog_section`, emitted as kind `39000` `catalog_section` tag | Channel owner/admin or community owner/admin via kind `9007`/`9002` | Shared web/desktop organization. It is not a local sidebar preference. An empty value explicitly clears the section. |
 | Message author | message event `pubkey` | Sender | Stable identity reference for timeline and Inbox. Presentation is resolved at render time. |
 | Local managed record | desktop encrypted/local managed-agent store | Agent owner | Runtime command, secrets, environment, lifecycle and local instance fields that must never enter public projections. |
 | Global agent defaults | desktop local configuration | Current desktop user | Defaults only. Per-agent settings override them. |
@@ -107,6 +108,38 @@ Primary files:
 6. The web client mirrors this in `useAgentMentionDelivery.ts` using
    `addWorkspaceMember` and `sendWorkspaceMessage`.
 
+### Manage channel catalog and membership
+
+1. Channel creation publishes kind `9007`; optional `catalog_section` is
+   validated and persisted by the relay.
+2. Rename, description, visibility, archive/unarchive, and section edits
+   publish kind `9002`; delete publishes kind `9008`.
+3. Invite, remove, and role change publish the established kind `9000`/`9001`
+   NIP-29 events. Channel owners/admins control their own channel; relay
+   community owners/admins retain global recovery control.
+4. The relay emits the updated relay-signed kind `39000`/`39002` discovery
+   heads. Desktop and web refetch those heads, so neither client owns a second
+   catalog.
+5. Agent automation uses `buzz channels create --catalog-section <section>`
+   and `buzz channels update --catalog-section <section>`. An update can
+   explicitly remove the assignment with `--clear-catalog-section`; these CLI
+   paths build the same kinds `9007`/`9002` through `buzz-sdk`.
+
+Primary files:
+
+- `crates/buzz-relay/src/handlers/side_effects.rs`
+- `crates/buzz-db/src/channel.rs`
+- `crates/buzz-cli/src/commands/channels.rs`
+- `crates/buzz-sdk/src/builders.rs`
+- `desktop/src/features/channels/ui/ChannelManagementSheet.tsx`
+- `web/src/features/workspace/ui/WorkspaceChannelSettings.tsx`
+- `web/src/features/workspace/ui/WorkspaceSidebar.tsx`
+
+Catalog limitation: sections are metadata tags on channels, not standalone
+entities. A section with no channels cannot be retained or displayed after its
+last channel moves/deletes. Introduce a dedicated catalog event only if empty
+section management becomes a product requirement.
+
 ### Route an item to Inbox
 
 Inbox is a decision queue, not a copy of chat. The cross-client contract is:
@@ -130,6 +163,24 @@ Primary files:
 - `desktop/src/features/home/ui/HomeView.tsx`
 - `web/src/features/workspace/workspace-read-state.ts`
 - `web/src/features/workspace/ui/WorkspaceInbox.tsx`
+
+### Sync a community appearance
+
+1. Desktop persists the active per-user, per-relay appearance locally and
+   publishes its encrypted NIP-78 kind `30078` event with `d=community-theme`.
+2. Web queries and subscribes to that exact author/tag coordinate after the
+   browser identity is unlocked, validates/decrypts the newest event, and
+   applies the contained appearance to its root theme provider.
+3. The event is encrypted to the author. A browser identity with a different
+   pubkey cannot read it and must keep the default appearance rather than
+   inheriting a different user's look.
+
+Primary files:
+
+- `desktop/src/shared/theme/communityThemePreference.ts`
+- `desktop/src/shared/theme/communityThemeSync.ts`
+- `web/src/shared/theme/CommunityThemeController.tsx`
+- `web/src/shared/theme/community-theme.ts`
 
 ## Consumer matrix
 
@@ -202,6 +253,7 @@ mention delivery must therefore update and test both clients explicitly.
 | Channel members/details | Membership and member presentation | Add/remove role changes and managed identity edits. |
 | Web `['workspace-agents', viewerPubkey]` | Merged browser agent directory | Hosted config publication and identity/community change. |
 | Web `['workspace-channels', viewerPubkey]` | Membership projection | Agent auto-add and explicit add/remove. |
+| Web/desktop channel detail and list queries | Relay kind `39000` channel metadata, including `catalog_section` | Channel metadata, catalog section, archive/visibility, and membership mutations. |
 
 Community switching remounts the React tree, but module-level caches must also
 be reset in `resetCommunityState()` as described in the root `AGENTS.md`.
@@ -244,6 +296,16 @@ be reset in `resetCommunityState()` as described in the root `AGENTS.md`.
 - Verify a failed add blocks the message with human-readable feedback.
 - Verify channel and profile membership lists refresh immediately.
 
+### Channel catalog or permissions
+
+- Publish only NIP-29 kinds `9007`, `9000`, `9001`, `9002`, or `9008`; do not
+  add a local-only catalog or endpoint-specific HTTP API.
+- Verify the relay-signed kind `39000` exposes the new metadata to desktop and
+  web, and both sidebars group from that tag rather than a channel-name list.
+- Verify a channel owner/admin can manage that channel, a community owner/admin
+  can recover any channel, and an ordinary member only receives the existing
+  open-channel/self-service permissions.
+
 ### Release
 
 - Run the affected pure tests and browser test first.
@@ -283,6 +345,10 @@ The following seams remain intentionally visible here until removed:
 5. The web composer detects typed names rather than providing the desktop's
    structured autocomplete. It uses the current merged directory, but parity
    should eventually share generated policy fixtures.
+6. Web hosted-agent roster discovery is kind `10100` only. Kind `30177` remains
+   a managed projection and may be used only as the namespaced compatibility
+   form of an authorized hosted configuration overlay; it must not create a
+   shared roster entry by itself.
 
 Do not hide these gaps with surface-specific fallbacks. Either use the
 canonical helper named above or update this map as part of consolidating the

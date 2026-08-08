@@ -24,28 +24,9 @@ import type {
 } from "@/features/workspace/workspace-api";
 import type { BrowserIdentity } from "@/shared/lib/browser-identity";
 
-const PROJECT_CHANNEL_NAMES = new Set([
-  "aaral-pms",
-  "ashrayu-media",
-  "atelier-crm",
-  "bidwave",
-  "factoryos",
-  "fzine",
-  "hrr-capital",
-  "nuve",
-  "project-dukaan",
-  "renderboard",
-  "sylars-control",
-  "ummidvar",
-  "vakeelos",
-  "varvik-suite",
-  "varvik-website",
-  "zup-coffee",
-]);
-
 const SECTION_STORAGE_PREFIX = "buzz-web:channel-sections:v1";
 
-type ChannelSectionId = "favorites" | "workspace" | "projects";
+type ChannelSectionId = string;
 type AgentSectionId = "hostedAgents" | "privateAgents" | "sharedAgents";
 type CollapsibleSectionId = ChannelSectionId | AgentSectionId;
 type CollapsedSections = Record<CollapsibleSectionId, boolean>;
@@ -57,8 +38,6 @@ function sectionStorageKey(pubkey: string): string {
 function readCollapsedSections(pubkey: string): CollapsedSections {
   const fallback = {
     favorites: false,
-    workspace: false,
-    projects: false,
     hostedAgents: false,
     privateAgents: false,
     sharedAgents: false,
@@ -66,25 +45,20 @@ function readCollapsedSections(pubkey: string): CollapsedSections {
   try {
     const stored = window.localStorage.getItem(sectionStorageKey(pubkey));
     if (!stored) return fallback;
-    const parsed = JSON.parse(stored) as Partial<CollapsedSections>;
-    return {
-      favorites: parsed.favorites === true,
-      workspace: parsed.workspace === true,
-      projects: parsed.projects === true,
-      hostedAgents: parsed.hostedAgents === true,
-      privateAgents: parsed.privateAgents === true,
-      sharedAgents: parsed.sharedAgents === true,
-    };
+    const parsed = JSON.parse(stored) as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries({ ...fallback, ...parsed }).map(([section, collapsed]) => [
+        section,
+        collapsed === true,
+      ]),
+    );
   } catch {
     return fallback;
   }
 }
 
 export function isProjectChannel(channel: WorkspaceChannel): boolean {
-  return (
-    PROJECT_CHANNEL_NAMES.has(channel.name.toLowerCase()) ||
-    channel.name.toLowerCase().startsWith("project-")
-  );
+  return Boolean(channel.catalogSection.trim());
 }
 
 export function profileInitials(name: string): string {
@@ -235,14 +209,15 @@ export function WorkspaceSidebar({
   const favoriteChannels = streams.filter((channel) =>
     starredChannelIds.has(channel.id),
   );
-  const workspaceChannels = streams.filter(
-    (channel) =>
-      !starredChannelIds.has(channel.id) && !isProjectChannel(channel),
-  );
-  const projectChannels = streams.filter(
-    (channel) =>
-      !starredChannelIds.has(channel.id) && isProjectChannel(channel),
-  );
+  const catalogSections = [...streams]
+    .filter((channel) => !starredChannelIds.has(channel.id))
+    .reduce<Map<string, WorkspaceChannel[]>>((sections, channel) => {
+      const section = channel.catalogSection.trim() || "Channels";
+      const entries = sections.get(section) ?? [];
+      entries.push(channel);
+      sections.set(section, entries);
+      return sections;
+    }, new Map());
   const privateAgents = agents.filter(
     (agent) => agent.accessTier === "personal" || agent.accessTier === "admin",
   );
@@ -269,9 +244,8 @@ export function WorkspaceSidebar({
       (channel) => channel.id === activeChannelId,
     );
     if (!activeChannel) return;
-    const section: ChannelSectionId = isProjectChannel(activeChannel)
-      ? "projects"
-      : "workspace";
+    const section: ChannelSectionId =
+      activeChannel.catalogSection.trim() || "Channels";
     setCollapsedSections((current) =>
       current[section] ? { ...current, [section]: false } : current,
     );
@@ -302,25 +276,25 @@ export function WorkspaceSidebar({
       <aside
         data-testid="workspace-sidebar"
         className={cn(
-          "fixed inset-y-0 left-0 z-40 flex h-dvh min-h-0 w-[17rem] flex-col border-r border-black/10 bg-[#eef0e8] text-[#272a23] transition-transform md:static md:h-full md:translate-x-0 dark:border-white/8 dark:bg-[#171916] dark:text-[#e8eadd]",
+          "fixed inset-y-0 left-0 z-40 flex h-dvh min-h-0 w-[17rem] flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-transform md:static md:h-full md:translate-x-0",
           open ? "translate-x-0" : "-translate-x-full",
         )}
       >
-        <header className="flex h-16 items-center justify-between border-b border-black/8 px-4 dark:border-white/8">
+        <header className="flex h-16 items-center justify-between border-b border-sidebar-border px-4">
           <div className="flex min-w-0 items-center gap-3">
-            <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-[#d7d72e] font-black text-[#171912]">
+            <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary font-black text-primary-foreground">
               V
             </div>
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold">VarVik Studios</p>
-              <p className="truncate text-xs text-black/45 dark:text-white/40">
+              <p className="truncate text-xs text-muted-foreground">
                 {identity.displayName}
               </p>
             </div>
           </div>
           <button
             aria-label="Close navigation"
-            className="rounded-lg p-2 hover:bg-black/5 md:hidden dark:hover:bg-white/5"
+            className="rounded-lg p-2 hover:bg-sidebar-accent md:hidden"
             type="button"
             onClick={onClose}
           >
@@ -342,8 +316,8 @@ export function WorkspaceSidebar({
               className={cn(
                 "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
                 selectedView === "inbox"
-                  ? "bg-[#d7d72e]/35 font-medium text-[#363600] dark:text-[#f1f29e]"
-                  : "text-black/65 hover:bg-black/5 dark:text-white/60 dark:hover:bg-white/5",
+                  ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
+                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent",
               )}
               data-testid="workspace-inbox-button"
               type="button"
@@ -369,8 +343,8 @@ export function WorkspaceSidebar({
               className={cn(
                 "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
                 selectedView === "alerts"
-                  ? "bg-[#d7d72e]/35 font-medium text-[#363600] dark:text-[#f1f29e]"
-                  : "text-black/65 hover:bg-black/5 dark:text-white/60 dark:hover:bg-white/5",
+                  ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
+                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent",
               )}
               data-testid="workspace-alerts-button"
               type="button"
@@ -391,8 +365,8 @@ export function WorkspaceSidebar({
               className={cn(
                 "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
                 selectedView === "agents"
-                  ? "bg-[#d7d72e]/35 font-medium text-[#363600] dark:text-[#f1f29e]"
-                  : "text-black/65 hover:bg-black/5 dark:text-white/60 dark:hover:bg-white/5",
+                  ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
+                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent",
               )}
               data-testid="workspace-agents-button"
               type="button"
@@ -407,12 +381,12 @@ export function WorkspaceSidebar({
           </div>
           <div className="mb-6">
             <div className="mb-2 flex items-center justify-between px-2">
-              <p className="text-xs font-semibold text-black/45 dark:text-white/40">
+              <p className="text-xs font-semibold text-muted-foreground">
                 Channels
               </p>
               <button
                 aria-label="Create channel"
-                className="rounded-md p-1 hover:bg-black/6 dark:hover:bg-white/7"
+                className="rounded-md p-1 hover:bg-sidebar-accent"
                 type="button"
                 onClick={onCreateChannel}
               >
@@ -434,38 +408,29 @@ export function WorkspaceSidebar({
                   unreadChannelIds={unreadChannelIds}
                 />
               ) : null}
-              <ChannelSection
-                activeChannelId={activeChannelId}
-                channels={workspaceChannels}
-                collapsed={collapsedSections.workspace}
-                id="workspace"
-                label="Workspace"
-                onSelectChannel={selectChannel}
-                onToggle={() => toggleSection("workspace")}
-                onToggleStar={onToggleStar}
-                starredChannelIds={starredChannelIds}
-                unreadChannelIds={unreadChannelIds}
-              />
-              {projectChannels.length ? (
-                <ChannelSection
-                  activeChannelId={activeChannelId}
-                  channels={projectChannels}
-                  collapsed={collapsedSections.projects}
-                  id="projects"
-                  label="Projects"
-                  onSelectChannel={selectChannel}
-                  onToggle={() => toggleSection("projects")}
-                  onToggleStar={onToggleStar}
-                  starredChannelIds={starredChannelIds}
-                  unreadChannelIds={unreadChannelIds}
-                />
-              ) : null}
+              {[...catalogSections.entries()].map(
+                ([section, sectionChannels]) => (
+                  <ChannelSection
+                    activeChannelId={activeChannelId}
+                    channels={sectionChannels}
+                    collapsed={collapsedSections[section] === true}
+                    id={section}
+                    key={section}
+                    label={section}
+                    onSelectChannel={selectChannel}
+                    onToggle={() => toggleSection(section)}
+                    onToggleStar={onToggleStar}
+                    starredChannelIds={starredChannelIds}
+                    unreadChannelIds={unreadChannelIds}
+                  />
+                ),
+              )}
             </div>
           </div>
 
           {directMessages.length ? (
             <div className="mb-6">
-              <p className="mb-2 px-2 text-xs font-semibold text-black/45 dark:text-white/40">
+              <p className="mb-2 px-2 text-xs font-semibold text-muted-foreground">
                 Direct messages
               </p>
               <div className="space-y-0.5">
@@ -552,24 +517,24 @@ export function WorkspaceSidebar({
           </section>
         </nav>
 
-        <footer className="border-t border-black/8 p-3 dark:border-white/8">
+        <footer className="border-t border-sidebar-border p-3">
           <button
-            className="mb-1 flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left text-sm text-black/60 hover:bg-black/5 dark:text-white/55 dark:hover:bg-white/5"
+            className="mb-1 flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left text-sm text-sidebar-foreground/70 hover:bg-sidebar-accent"
             type="button"
             onClick={onOpenGuide}
           >
-            <div className="flex size-8 items-center justify-center rounded-lg bg-[#d7d72e]/20 text-[#7d7e00]">
+            <div className="flex size-8 items-center justify-center rounded-lg bg-primary/15 text-primary">
               <BookOpen className="size-4" />
             </div>
             <div className="min-w-0 flex-1">
               <p className="font-medium">Buzz Guide</p>
-              <p className="text-xs text-black/40 dark:text-white/35">
+              <p className="text-xs text-muted-foreground">
                 Agents, briefs, and safety rules
               </p>
             </div>
           </button>
           <button
-            className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left hover:bg-black/5 dark:hover:bg-white/5"
+            className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left hover:bg-sidebar-accent"
             type="button"
             onClick={onOpenSettings}
           >
@@ -578,11 +543,11 @@ export function WorkspaceSidebar({
               <p className="truncate text-sm font-medium">
                 {identity.displayName}
               </p>
-              <p className="truncate text-[0.6875rem] text-black/40 dark:text-white/35">
+              <p className="truncate text-[0.6875rem] text-muted-foreground">
                 {truncatePubkey(identity.pubkey)}
               </p>
             </div>
-            <Settings className="size-4 text-black/35 dark:text-white/30" />
+            <Settings className="size-4 text-muted-foreground" />
           </button>
         </footer>
       </aside>
@@ -762,8 +727,8 @@ function ChannelButton({
       className={cn(
         "group/channel flex w-full items-center rounded-lg text-sm transition-colors",
         active
-          ? "bg-[#d7d72e]/35 font-medium text-[#363600] dark:text-[#f1f29e]"
-          : "text-black/65 hover:bg-black/5 dark:text-white/60 dark:hover:bg-white/5",
+          ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
+          : "text-sidebar-foreground/70 hover:bg-sidebar-accent",
       )}
     >
       <button

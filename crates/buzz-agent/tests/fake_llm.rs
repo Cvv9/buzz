@@ -57,6 +57,11 @@ async fn spawn_fake_llm(responses: Vec<Value>) -> String {
     url
 }
 
+struct CannedResponse {
+    status: u16,
+    body: Value,
+}
+
 /// Like `spawn_fake_llm` but also captures the full JSON request body from each
 /// incoming HTTP request. Returns (url, captured_requests).
 async fn spawn_capturing_fake_llm(responses: Vec<Value>) -> (String, Arc<Mutex<Vec<Value>>>) {
@@ -65,6 +70,26 @@ async fn spawn_capturing_fake_llm(responses: Vec<Value>) -> (String, Arc<Mutex<V
 
 async fn spawn_capturing_fake_llm_with_delay(
     responses: Vec<Value>,
+    response_delay: Duration,
+) -> (String, Arc<Mutex<Vec<Value>>>) {
+    spawn_capturing_fake_llm_with_statuses_and_delay(
+        responses
+            .into_iter()
+            .map(|body| CannedResponse { status: 200, body })
+            .collect(),
+        response_delay,
+    )
+    .await
+}
+
+async fn spawn_capturing_fake_llm_with_statuses(
+    responses: Vec<CannedResponse>,
+) -> (String, Arc<Mutex<Vec<Value>>>) {
+    spawn_capturing_fake_llm_with_statuses_and_delay(responses, Duration::ZERO).await
+}
+
+async fn spawn_capturing_fake_llm_with_statuses_and_delay(
+    responses: Vec<CannedResponse>,
     response_delay: Duration,
 ) -> (String, Arc<Mutex<Vec<Value>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -129,15 +154,22 @@ async fn spawn_capturing_fake_llm_with_delay(
                 }
 
                 // Send canned response.
-                let body = queue
-                    .lock()
-                    .await
-                    .pop_front()
-                    .unwrap_or_else(|| json!({ "error": "no canned response" }));
-                let body_s = serde_json::to_string(&body).unwrap();
+                let response = queue.lock().await.pop_front().unwrap_or(CannedResponse {
+                    status: 500,
+                    body: json!({ "error": "no canned response" }),
+                });
+                let body_s = serde_json::to_string(&response.body).unwrap();
+                let reason = if response.status == 200 {
+                    "OK"
+                } else {
+                    "Error"
+                };
                 let resp = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body_s.len(), body_s,
+                    "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response.status,
+                    reason,
+                    body_s.len(),
+                    body_s,
                 );
                 tokio::time::sleep(response_delay).await;
                 let _ = sock.write_all(resp.as_bytes()).await;
@@ -328,6 +360,167 @@ async fn tool_call_then_end_turn() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unsupported_image_response_recovers_without_replaying_image() {
+    let responses = vec![
+        CannedResponse {
+            status: 200,
+            body: openai_tool_call("call_image", "fake__tool_0", json!({})),
+        },
+        CannedResponse {
+            status: 404,
+            body: json!({
+                "error": { "message": "No endpoints found that support image input" }
+            }),
+        },
+        CannedResponse {
+            status: 200,
+            body: openai_text("recovered"),
+        },
+    ];
+    let (url, captures) = spawn_capturing_fake_llm_with_statuses(responses).await;
+    let mut h = Harness::spawn(&url).await;
+
+    h.send(
+        "initialize",
+        json!({"protocolVersion":2,"clientCapabilities":{}}),
+    )
+    .await;
+    let _ = h.recv().await;
+    let session_id = h
+        .send(
+            "session/new",
+            json!({
+                "cwd": std::env::temp_dir(),
+                "mcpServers": [{
+                    "name": "fake",
+                    "command": env!("CARGO_BIN_EXE_fake-mcp"),
+                    "args": [],
+                    "env": [{ "name": "FAKE_MCP_IMAGE_RESULT", "value": "1" }],
+                }],
+            }),
+        )
+        .await;
+    let session = h.recv_until(|v| v["id"] == json!(session_id)).await;
+    let sid = session["result"]["sessionId"].as_str().unwrap();
+
+    let prompt_id = h
+        .send(
+            "session/prompt",
+            json!({
+                "sessionId": sid,
+                "prompt": [{"type":"text","text":"inspect the image"}],
+            }),
+        )
+        .await;
+    loop {
+        let message = h.recv().await;
+        if message.get("method") == Some(&json!("session/request_permission")) {
+            h.write(json!({
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": { "outcome": { "outcome": "selected", "optionId": "allow" } },
+            }))
+            .await;
+        } else if message["id"] == json!(prompt_id) {
+            assert_eq!(message["result"]["stopReason"], "end_turn");
+            break;
+        }
+    }
+
+    let requests = captures.lock().await;
+    assert_eq!(
+        requests.len(),
+        3,
+        "expected tool, rejection, recovery requests"
+    );
+    let rejected = requests[1].to_string();
+    assert!(
+        rejected.contains("data:image/png;base64,aW1n"),
+        "second request must contain the MCP image: {rejected}"
+    );
+    let recovered = requests[2].to_string();
+    assert!(
+        !recovered.contains("image_url") && !recovered.contains("data:image"),
+        "recovery request must not replay image input: {recovered}"
+    );
+    assert!(
+        recovered.contains("does not support image input")
+            && recovered.contains("text-based inspection"),
+        "recovery request must give the model actionable guidance: {recovered}"
+    );
+    assert!(
+        recovered.contains("call_image") && recovered.contains("tool_call_id"),
+        "recovery must preserve tool-call/result pairing: {recovered}"
+    );
+    drop(requests);
+    h.shutdown().await;
+}
+
+/// The recovery path must only fire when it actually removed an image. If the
+/// provider emits the unsupported-image phrase while history holds no image
+/// (a misclassification, or a provider that returns the phrase for an
+/// unrelated reason), mutating nothing and continuing would spin the turn loop
+/// forever — `max_rounds` defaults to 0 (unlimited) in production, so nothing
+/// downstream bounds it. The turn must fail with the typed error instead.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unsupported_image_without_image_in_history_fails_instead_of_looping() {
+    // Five rejections but MAX_ROUNDS=4: if the guard is removed the loop
+    // re-requests without ever mutating history and drains the queue.
+    let responses = (0..5)
+        .map(|_| CannedResponse {
+            status: 404,
+            body: json!({
+                "error": { "message": "No endpoints found that support image input" }
+            }),
+        })
+        .collect();
+    let (url, captures) = spawn_capturing_fake_llm_with_statuses(responses).await;
+    let mut h = Harness::spawn(&url).await;
+
+    h.send(
+        "initialize",
+        json!({"protocolVersion":2,"clientCapabilities":{}}),
+    )
+    .await;
+    let _ = h.recv().await;
+    let session_id = h
+        .send(
+            "session/new",
+            json!({ "cwd": std::env::temp_dir(), "mcpServers": [] }),
+        )
+        .await;
+    let session = h.recv_until(|v| v["id"] == json!(session_id)).await;
+    let sid = session["result"]["sessionId"].as_str().unwrap();
+
+    let prompt_id = h
+        .send(
+            "session/prompt",
+            json!({
+                "sessionId": sid,
+                "prompt": [{"type":"text","text":"no image here"}],
+            }),
+        )
+        .await;
+    let reply = h.recv_until(|v| v["id"] == json!(prompt_id)).await;
+
+    assert!(
+        reply.get("result").is_none(),
+        "an unrecoverable image rejection must not complete the turn: {reply}"
+    );
+    let message = reply["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("image input unsupported"),
+        "the typed error must surface to the caller: {reply}"
+    );
+    assert_eq!(
+        captures.lock().await.len(),
+        1,
+        "the loop must not re-request after a rejection it could not repair"
+    );
+    h.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rejects_concurrent_prompts() {
     // Slow first response so the second prompt arrives mid-flight.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -440,7 +633,7 @@ async fn session_new_rejects_oversized_system_prompt() {
     let id = h
         .send(
             "session/new",
-            json!({"cwd":"/tmp","mcpServers":[],"systemPrompt": big_prompt}),
+            json!({"cwd": std::env::temp_dir(),"mcpServers":[],"systemPrompt": big_prompt}),
         )
         .await;
     let r = h.recv_until(|v| v["id"] == json!(id)).await;
@@ -477,7 +670,7 @@ async fn system_prompt_reaches_llm_system_role() {
     let sn_id = h
         .send(
             "session/new",
-            json!({"cwd":"/tmp","mcpServers":[],"systemPrompt": canary}),
+            json!({"cwd": std::env::temp_dir(),"mcpServers":[],"systemPrompt": canary}),
         )
         .await;
     let r = h.recv_until(|v| v["id"] == json!(sn_id)).await;
@@ -545,7 +738,10 @@ async fn system_prompt_absent_no_canary() {
 
     // session/new WITHOUT systemPrompt field.
     let sn_id = h
-        .send("session/new", json!({"cwd":"/tmp","mcpServers":[]}))
+        .send(
+            "session/new",
+            json!({"cwd": std::env::temp_dir(),"mcpServers":[]}),
+        )
         .await;
     let r = h.recv_until(|v| v["id"] == json!(sn_id)).await;
     let sid = r["result"]["sessionId"].as_str().unwrap().to_owned();

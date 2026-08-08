@@ -55,7 +55,13 @@ test("home badge items include only explicit approval requests", () => {
         feedItem("read-agent", "agent_activity"),
       ],
     }),
-    [feedItem("thread-activity"), approval("extra-approval")],
+    [
+      feedItem("thread-activity"),
+      approval("extra-approval"),
+      // Thread replies are surfaced on the channel preview, so even an
+      // approval-kind thread item stays out of the Inbox numeral.
+      { ...approval("thread-approval"), tags: ROOT_TAGS },
+    ],
   );
 
   assert.deepEqual(

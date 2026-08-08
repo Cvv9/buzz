@@ -8,12 +8,15 @@
 //!
 //! Each function validates inputs and returns a nostr::EventBuilder.
 //! Signing and submission happen in relay::submit_event.
-
 use buzz_core_pkg::kind::{KIND_IA_ARCHIVE_REQUEST, KIND_IA_UNARCHIVE_REQUEST};
 use nostr::{EventBuilder, EventId, Kind, Tag};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+mod channel_catalog_events;
+pub use channel_catalog_events::{
+    build_create_channel_with_catalog_section, build_update_channel_with_catalog_section,
+};
 // ── Constants ────────────────────────────────────────────────────────────────
 
 /// Maximum content size — matches buzz-sdk (64 KiB).
@@ -149,23 +152,15 @@ pub fn build_create_channel(
     about: Option<&str>,
     ttl_seconds: Option<i32>,
 ) -> Result<EventBuilder, String> {
-    let name = buzz_sdk_pkg::canonical_channel_name(name);
-    if name.trim().is_empty() {
-        return Err("channel name is required".into());
-    }
-    let mut tags = vec![
-        tag(vec!["h", &channel_id.to_string()])?,
-        tag(vec!["name", name])?,
-        tag(vec!["visibility", visibility])?,
-        tag(vec!["channel_type", channel_type])?,
-    ];
-    if let Some(a) = about {
-        tags.push(tag(vec!["about", a])?);
-    }
-    if let Some(ttl) = ttl_seconds {
-        tags.push(tag(vec!["ttl", &ttl.to_string()])?);
-    }
-    Ok(EventBuilder::new(Kind::Custom(9007), "").tags(tags))
+    build_create_channel_with_catalog_section(
+        channel_id,
+        name,
+        visibility,
+        channel_type,
+        about,
+        ttl_seconds,
+        None,
+    )
 }
 
 /// Kind 9021 — join channel.
@@ -181,9 +176,9 @@ pub fn build_leave(channel_id: Uuid) -> Result<EventBuilder, String> {
 }
 
 /// Kind 9002 — update channel name/description/visibility/ttl.
-///
 /// `ttl`: outer `None` leaves it unchanged; `Some(Some(secs))` sets the
 /// ephemeral timeout; `Some(None)` clears it (emits `["ttl", ""]`).
+#[allow(dead_code)]
 pub fn build_update_channel(
     channel_id: Uuid,
     name: Option<&str>,
@@ -191,35 +186,7 @@ pub fn build_update_channel(
     visibility: Option<&str>,
     ttl: Option<Option<i32>>,
 ) -> Result<EventBuilder, String> {
-    if name.is_none() && about.is_none() && visibility.is_none() && ttl.is_none() {
-        return Err("at least one of name, about, visibility, or ttl must be provided".into());
-    }
-    if let Some(v) = visibility {
-        if v != "open" && v != "private" {
-            return Err("visibility must be \"open\" or \"private\"".into());
-        }
-    }
-    let name = name.map(buzz_sdk_pkg::canonical_channel_name);
-    if name.is_some_and(|name| name.trim().is_empty()) {
-        return Err("channel name is required".into());
-    }
-    let mut tags = vec![tag(vec!["h", &channel_id.to_string()])?];
-    if let Some(n) = name {
-        tags.push(tag(vec!["name", n])?);
-    }
-    if let Some(a) = about {
-        tags.push(tag(vec!["about", a])?);
-    }
-    if let Some(v) = visibility {
-        tags.push(tag(vec!["visibility", v])?);
-    }
-    if let Some(ttl) = ttl {
-        match ttl {
-            Some(secs) => tags.push(tag(vec!["ttl", &secs.to_string()])?),
-            None => tags.push(tag(vec!["ttl", ""])?),
-        }
-    }
-    Ok(EventBuilder::new(Kind::Custom(9002), "").tags(tags))
+    build_update_channel_with_catalog_section(channel_id, name, about, visibility, ttl, None)
 }
 
 /// Kind 9002 — set topic.
@@ -296,6 +263,7 @@ pub fn build_remove_member(channel_id: Uuid, target_pubkey: &str) -> Result<Even
 // ── Messages ─────────────────────────────────────────────────────────────────
 
 /// Kind 9 — stream message.
+#[allow(clippy::too_many_arguments)]
 pub fn build_message(
     channel_id: Uuid,
     content: &str,
@@ -304,6 +272,8 @@ pub fn build_message(
     media_tags: &[Vec<String>],
     custom_emoji_tags: &[Vec<String>],
     mention_ref_tags: &[Vec<String>],
+    link_preview_tags: &[Vec<String>],
+    relay_base: &str,
 ) -> Result<EventBuilder, String> {
     build_message_with_client_tags(
         channel_id,
@@ -313,6 +283,8 @@ pub fn build_message(
         media_tags,
         custom_emoji_tags,
         mention_ref_tags,
+        link_preview_tags,
+        relay_base,
         &[],
     )
 }
@@ -331,6 +303,8 @@ pub fn build_message_with_client_tags(
     media_tags: &[Vec<String>],
     custom_emoji_tags: &[Vec<String>],
     mention_ref_tags: &[Vec<String>],
+    link_preview_tags: &[Vec<String>],
+    relay_base: &str,
     client_tags: &[Vec<String>],
 ) -> Result<EventBuilder, String> {
     check_content(content)?;
@@ -342,6 +316,7 @@ pub fn build_message_with_client_tags(
     imeta_tags(media_tags, &mut tags)?;
     emoji_tags(custom_emoji_tags, &mut tags)?;
     mention_reference_tags(mention_ref_tags, &mut tags)?;
+    crate::link_preview_tags::append(link_preview_tags, relay_base, &mut tags)?;
     append_client_tags(client_tags, &mut tags)?;
     Ok(EventBuilder::new(Kind::Custom(9), content).tags(tags))
 }
@@ -397,18 +372,8 @@ pub fn build_forum_comment(
     Ok(EventBuilder::new(Kind::Custom(45003), content).tags(tags))
 }
 
-/// Kind 40003 — edit a message. Carries the full new content AND a fresh
-/// imeta tag set; the receiver overlays the imeta tags onto the original
-/// event so the rendered message reflects exactly the edited state. NIP-30
-/// custom-emoji tags ride along the same way so an edited body's `:shortcode:`s
-/// stay resolvable (the send path attaches these too).
-///
-/// `mentions` carries the pubkeys of mentions that are *newly added* by this
-/// edit (the caller diffs the edited body against the original). Only those get
-/// a `p` tag so the newly-mentioned party is notified/woken, while a typo-fix
-/// edit that leaves the mention set unchanged emits no `p` tags and never
-/// re-wakes anyone. This mirrors the send path's `mention_tags` (dedup +
-/// lowercase); the receiver overlays these onto the original event's audience.
+/// Kind 40003 — edit a message with full content, media, emoji, mentions,
+/// and optional monotonic link-preview suppression.
 pub fn build_message_edit(
     channel_id: Uuid,
     target_event_id: EventId,
@@ -416,6 +381,7 @@ pub fn build_message_edit(
     media_tags: &[Vec<String>],
     custom_emoji_tags: &[Vec<String>],
     mentions: &[&str],
+    suppress_link_previews: bool,
 ) -> Result<EventBuilder, String> {
     check_content(content)?;
     let mut tags = vec![
@@ -425,6 +391,9 @@ pub fn build_message_edit(
     tags.extend(mention_tags(mentions)?);
     imeta_tags(media_tags, &mut tags)?;
     emoji_tags(custom_emoji_tags, &mut tags)?;
+    if suppress_link_previews {
+        tags.push(tag(vec!["link-preview", "none"])?);
+    }
     Ok(EventBuilder::new(Kind::Custom(40003), content).tags(tags))
 }
 
@@ -946,7 +915,8 @@ mod tests {
         let target =
             EventId::from_hex("d24da132115ca0a46233cf4c2ad8338fbf914250cbcaa9181a6dd59533cb5ac1")
                 .unwrap();
-        let builder = build_message_edit(channel, target, "hi @alice", &[], &[], mentions).unwrap();
+        let builder =
+            build_message_edit(channel, target, "hi @alice", &[], &[], mentions, false).unwrap();
         let secret = nostr::SecretKey::from_hex(
             "0000000000000000000000000000000000000000000000000000000000000003",
         )

@@ -98,6 +98,7 @@ CREATE TABLE channels (
     participant_hash BYTEA,
     ttl_seconds     INT,
     ttl_deadline    TIMESTAMPTZ,
+    catalog_section VARCHAR(80),
     PRIMARY KEY (community_id, id),
     CONSTRAINT chk_channels_id_not_nil CHECK (id <> '00000000-0000-0000-0000-000000000000'::uuid)
 );
@@ -112,6 +113,12 @@ CREATE INDEX idx_channels_community_visibility ON channels (community_id, visibi
 CREATE INDEX idx_channels_created_by ON channels (community_id, created_by);
 CREATE INDEX idx_channels_ttl_expiry ON channels (ttl_deadline)
     WHERE ttl_seconds IS NOT NULL AND archived_at IS NULL AND deleted_at IS NULL;
+-- Tenant-independent channel-id → community lookups (Db::communities_of_channels,
+-- Db::community_of_channel) carry no community_id predicate, so no
+-- community_id-leading index can serve them. Covering + partial: index-only scan.
+-- Not UNIQUE — the same channel id may exist under more than one community.
+CREATE INDEX idx_channels_id_live ON channels (id) INCLUDE (community_id)
+    WHERE deleted_at IS NULL;
 
 -- channels.community_id is immutable: a channel can never be re-tenanted.
 -- (Conformance: "Migration lint forbids channel re-tenanting except through an
@@ -533,7 +540,7 @@ CREATE TABLE reactions (
     event_created_at    TIMESTAMPTZ NOT NULL,
     event_id            BYTEA NOT NULL,
     pubkey              BYTEA NOT NULL,
-    emoji               VARCHAR(64) NOT NULL,
+    emoji               VARCHAR(66) NOT NULL,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     removed_at          TIMESTAMPTZ,
     reaction_event_id   BYTEA,

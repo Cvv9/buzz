@@ -131,6 +131,7 @@ pub struct ChannelInfo {
     pub is_member: bool,
     pub ttl_seconds: Option<i32>,
     pub ttl_deadline: Option<String>,
+    pub catalog_section: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -157,6 +158,7 @@ pub struct ChannelDetailInfo {
     pub nip29_group_id: Option<String>,
     pub ttl_seconds: Option<i32>,
     pub ttl_deadline: Option<String>,
+    pub catalog_section: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]

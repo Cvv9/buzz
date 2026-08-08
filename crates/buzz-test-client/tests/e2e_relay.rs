@@ -2201,6 +2201,10 @@ async fn create_private_channel_ws(client: &mut BuzzTestClient, keys: &Keys) -> 
 }
 
 /// Submit a kind:9000 PUT_USER event over WebSocket.
+///
+/// `allow_self_tagging` keeps self-targeted adds working: EventBuilder otherwise
+/// drops a `p` tag matching the signer (nostr-0.44.3 builder.rs:435-449) and the
+/// event fails as "missing p tag" instead of exercising the authority check.
 async fn add_member_ws(
     client: &mut BuzzTestClient,
     channel_id: &str,
@@ -2210,6 +2214,7 @@ async fn add_member_ws(
     let h_tag = Tag::parse(["h", channel_id]).unwrap();
     let p_tag = Tag::parse(["p", target_pubkey_hex]).unwrap();
     let event = EventBuilder::new(Kind::Custom(9000), "")
+        .allow_self_tagging()
         .tags([h_tag, p_tag])
         .sign_with_keys(signer)
         .unwrap();
@@ -2219,6 +2224,8 @@ async fn add_member_ws(
 }
 
 /// Submit a kind:9000 PUT_USER event with a role tag over WebSocket.
+///
+/// See [`add_member_ws`] for why `allow_self_tagging` is required.
 async fn add_member_with_role_ws(
     client: &mut BuzzTestClient,
     channel_id: &str,
@@ -2230,6 +2237,7 @@ async fn add_member_with_role_ws(
     let p_tag = Tag::parse(["p", target_pubkey_hex]).unwrap();
     let role_tag = Tag::parse(["role", role]).unwrap();
     let event = EventBuilder::new(Kind::Custom(9000), "")
+        .allow_self_tagging()
         .tags([h_tag, p_tag, role_tag])
         .sign_with_keys(signer)
         .unwrap();
@@ -2241,10 +2249,10 @@ async fn add_member_with_role_ws(
     (ok.accepted, ok.message)
 }
 
-/// Any member of a private channel can invite another user (Slack model).
+/// Only owners/admins can add another identity to a private channel.
 #[tokio::test]
 #[ignore]
-async fn test_private_channel_any_member_can_invite() {
+async fn test_private_channel_member_cannot_invite() {
     let url = relay_url();
     let owner_keys = Keys::generate();
     let member_keys = Keys::generate();
@@ -2271,7 +2279,7 @@ async fn test_private_channel_any_member_can_invite() {
         .await
         .expect("connect as member");
 
-    // Regular member invites a third user — this should succeed.
+    // Regular member tries to invite a third user.
     let (accepted, msg) = add_member_ws(
         &mut member_client,
         &channel_id,
@@ -2280,12 +2288,74 @@ async fn test_private_channel_any_member_can_invite() {
     )
     .await;
     assert!(
+        !accepted,
+        "regular member must not add another private-channel identity: {msg}"
+    );
+    assert!(
+        msg.contains("owners/admins"),
+        "rejection should name the owner/admin requirement, got: {msg}"
+    );
+
+    // The same member re-adding *themselves* stays idempotent — the huddle
+    // bot-add and kind:9021 paths depend on a self-targeted PUT_USER working.
+    let (accepted, msg) = add_member_ws(
+        &mut member_client,
+        &channel_id,
+        &member_keys.public_key().to_hex(),
+        &member_keys,
+    )
+    .await;
+    assert!(
         accepted,
-        "regular member should be able to invite to private channel, got: {msg}"
+        "self-targeted re-add must stay idempotent, got: {msg}"
     );
 
     owner_client.disconnect().await.expect("disconnect owner");
     member_client.disconnect().await.expect("disconnect member");
+}
+
+/// An admin — not just the owner — can still add to a private channel.
+#[tokio::test]
+#[ignore]
+async fn test_private_channel_admin_can_invite() {
+    let url = relay_url();
+    let owner_keys = Keys::generate();
+    let admin_keys = Keys::generate();
+    let invitee_keys = Keys::generate();
+
+    let mut owner_client = BuzzTestClient::connect(&url, &owner_keys)
+        .await
+        .expect("connect as owner");
+    let channel_id = create_private_channel_ws(&mut owner_client, &owner_keys).await;
+
+    let (accepted, msg) = add_member_with_role_ws(
+        &mut owner_client,
+        &channel_id,
+        &admin_keys.public_key().to_hex(),
+        "admin",
+        &owner_keys,
+    )
+    .await;
+    assert!(accepted, "owner should add an admin, got: {msg}");
+
+    let mut admin_client = BuzzTestClient::connect(&url, &admin_keys)
+        .await
+        .expect("connect as admin");
+
+    let (accepted, msg) = add_member_ws(
+        &mut admin_client,
+        &channel_id,
+        &invitee_keys.public_key().to_hex(),
+        &admin_keys,
+    )
+    .await;
+    assert!(
+        accepted,
+        "admin should be able to add to a private channel, got: {msg}"
+    );
+
+    owner_client.disconnect().await.expect("disconnect owner");
+    admin_client.disconnect().await.expect("disconnect admin");
 }
 
 /// A non-member cannot invite someone to a private channel.
@@ -2321,8 +2391,52 @@ async fn test_private_channel_non_member_cannot_invite() {
         "non-member should NOT be able to invite to private channel, but it was accepted"
     );
     assert!(
-        msg.contains("not authorized") || msg.contains("not a channel member"),
+        msg.contains("not authorized")
+            || msg.contains("not a channel member")
+            || msg.contains("only owners/admins"),
         "rejection should mention authorization or membership, got: {msg}"
+    );
+
+    owner_client.disconnect().await.expect("disconnect owner");
+    outsider_client
+        .disconnect()
+        .await
+        .expect("disconnect outsider");
+}
+
+/// A former/non-member cannot persist a self-targeted 9000 for a private
+/// channel. 9000 bypasses the generic membership gate for owner recovery, so
+/// this must fail in the pre-storage validator rather than later in the DB side
+/// effect path.
+#[tokio::test]
+#[ignore]
+async fn test_private_channel_non_member_cannot_self_add_before_storage() {
+    let url = relay_url();
+    let owner_keys = Keys::generate();
+    let outsider_keys = Keys::generate();
+
+    let mut owner_client = BuzzTestClient::connect(&url, &owner_keys)
+        .await
+        .expect("connect as owner");
+    let channel_id = create_private_channel_ws(&mut owner_client, &owner_keys).await;
+    let mut outsider_client = BuzzTestClient::connect(&url, &outsider_keys)
+        .await
+        .expect("connect as outsider");
+
+    let (accepted, message) = add_member_ws(
+        &mut outsider_client,
+        &channel_id,
+        &outsider_keys.public_key().to_hex(),
+        &outsider_keys,
+    )
+    .await;
+    assert!(
+        !accepted,
+        "non-member self-add must be rejected before storage: {message}"
+    );
+    assert!(
+        message.contains("owners/admins"),
+        "pre-storage rejection should identify the private-channel authority requirement: {message}"
     );
 
     owner_client.disconnect().await.expect("disconnect owner");

@@ -8,7 +8,8 @@ use tracing::{debug, warn};
 use buzz_core::filter::filters_match;
 use buzz_core::kind::{
     is_unshared_gated_event, AUTHOR_ONLY_KINDS, KIND_AGENT_ENGRAM, KIND_AGENT_TURN_METRIC,
-    KIND_DM_VISIBILITY, P_GATED_KINDS, RESULT_GATED_KINDS, SHARED_GATED_KINDS,
+    KIND_DM_VISIBILITY, KIND_NIP29_GROUP_ADMINS, KIND_NIP29_GROUP_MEMBERS,
+    KIND_NIP29_GROUP_METADATA, P_GATED_KINDS, RESULT_GATED_KINDS, SHARED_GATED_KINDS,
 };
 use buzz_core::tenant::TenantContext;
 use buzz_db::EventQuery;
@@ -105,6 +106,50 @@ pub async fn handle_req(
     if let Some(allowed) = token_channel_ids.as_deref() {
         accessible_channels.retain(|channel_id| allowed.contains(channel_id));
     }
+
+    // Community owners/admins may recover a private channel's *catalog*
+    // metadata and membership projection without being added as a channel
+    // member. This deliberately applies only to an exclusively 39000/39001/
+    // 39002 filter; normal messages keep the member-only `accessible_channels`
+    // scope below. It uses the standard Nostr REQ path rather than a parallel
+    // HTTP API so the normal relay authentication and token limits still apply.
+    let discovery_channels = if filters.iter().any(is_admin_channel_discovery_filter) {
+        let is_community_admin = match state
+            .db
+            .get_relay_member(conn.tenant.community(), &hex::encode(&pubkey_bytes))
+            .await
+        {
+            Ok(member) => {
+                member.is_some_and(|member| member.role == "owner" || member.role == "admin")
+            }
+            Err(e) => {
+                warn!(conn_id = %conn_id, "Community role lookup failed: {e}");
+                conn.send(RelayMessage::closed(&sub_id, "error: database error"));
+                return;
+            }
+        };
+        if is_community_admin {
+            match state.db.list_channels(conn.tenant.community(), None).await {
+                Ok(channels) => {
+                    let mut ids: Vec<uuid::Uuid> =
+                        channels.into_iter().map(|channel| channel.id).collect();
+                    if let Some(allowed) = token_channel_ids.as_deref() {
+                        ids.retain(|channel_id| allowed.contains(channel_id));
+                    }
+                    ids
+                }
+                Err(e) => {
+                    warn!(conn_id = %conn_id, "Channel discovery lookup failed: {e}");
+                    conn.send(RelayMessage::closed(&sub_id, "error: database error"));
+                    return;
+                }
+            }
+        } else {
+            Vec::new()
+        }
+    } else {
+        Vec::new()
+    };
 
     let channel_id = extract_channel_id_from_filters(&filters);
 
@@ -264,7 +309,7 @@ pub async fn handle_req(
     let mut total_sent: usize = 0;
 
     // Phase 1 — pure query construction, in filter order.
-    let filter_queries: Vec<(usize, Option<uuid::Uuid>, EventQuery)> = filters
+    let filter_queries: Vec<(usize, Option<uuid::Uuid>, EventQuery, bool)> = filters
         .iter()
         .enumerate()
         .map(|(idx, filter)| {
@@ -286,16 +331,26 @@ pub async fn handle_req(
                     })
                     .or(channel_id)
             };
+            let use_admin_discovery_scope =
+                is_admin_channel_discovery_filter(filter) && !discovery_channels.is_empty();
             let mut params =
                 filter_to_query_params(filter, per_filter_channel, conn.tenant.community());
-            apply_access_scope_to_query(&mut params, per_filter_channel, &accessible_channels);
+            apply_access_scope_to_query(
+                &mut params,
+                per_filter_channel,
+                if use_admin_discovery_scope {
+                    &discovery_channels
+                } else {
+                    &accessible_channels
+                },
+            );
             // Shared-gated visibility pushdown: set reader bytes so query_events
             // appends the SQL visibility clause before ORDER/LIMIT, preventing
             // newer private events from starving older shared ones off the page.
             if filter_can_match_shared_gated_kinds(filter) {
                 params.shared_gated_reader = Some(pubkey_bytes.clone());
             }
-            (idx, per_filter_channel, params)
+            (idx, per_filter_channel, params, use_admin_discovery_scope)
         })
         .collect();
 
@@ -306,18 +361,25 @@ pub async fn handle_req(
     use futures_util::stream::{self, StreamExt};
     let db = state.db.clone();
     let mut results = stream::iter(filter_queries.into_iter().map(
-        |(idx, per_filter_channel, params)| {
+        |(idx, per_filter_channel, params, use_admin_discovery_scope)| {
             let db = db.clone();
             async move {
                 let filter_events = db.query_events_routed("req_historical", &params).await;
-                (idx, per_filter_channel, filter_events)
+                (
+                    idx,
+                    per_filter_channel,
+                    filter_events,
+                    use_admin_discovery_scope,
+                )
             }
         },
     ))
     .buffered(FILTER_QUERY_CONCURRENCY);
 
     // Phase 3 — post-processing, strictly in filter order.
-    while let Some((idx, per_filter_channel, filter_events)) = results.next().await {
+    while let Some((idx, per_filter_channel, filter_events, use_admin_discovery_scope)) =
+        results.next().await
+    {
         let filter = &filters[idx];
         let events = match filter_events {
             Ok(evs) => evs,
@@ -334,7 +396,12 @@ pub async fn handle_req(
         // (B) projection strategy and the missing-lookup ImplBug
         // guard-rail. Skipped silently if `trace_state` is `None` (only
         // happens on malformed pubkey, a separate failure path).
-        if let Some(state_snap) = trace_state.as_ref() {
+        // `tracer.enabled()` short-circuits the whole block on the production
+        // `NoopTracer`: the `communities_of_channels` lookup below is a
+        // `channels` read whose only consumer is `record_read_message_rows`,
+        // and this emit runs once PER FILTER. Gating on `trace_state` alone was
+        // not enough — that is `Some` for every well-formed request.
+        if let Some(state_snap) = trace_state.as_ref().filter(|_| state.tracer.enabled()) {
             let row_channels: Vec<Option<uuid::Uuid>> =
                 events.iter().map(|e| e.channel_id).collect();
             let distinct: Vec<uuid::Uuid> = {
@@ -373,7 +440,12 @@ pub async fn handle_req(
             }
 
             if let Some(ch_id) = stored.channel_id {
-                if !accessible_channels.contains(&ch_id) {
+                let allowed_channels = if use_admin_discovery_scope {
+                    &discovery_channels
+                } else {
+                    &accessible_channels
+                };
+                if !allowed_channels.contains(&ch_id) {
                     continue;
                 }
             }
@@ -659,7 +731,9 @@ async fn handle_search_req(
                 // level isn't bound to a single channel filter, the
                 // per-row `channel_id` carries the channel identity
                 // honestly.
-                if let Some(state_snap) = trace_state {
+                // Same `enabled()` gate as the non-search lane: skip the
+                // trace-only `channels` lookup when nothing observes the emit.
+                if let Some(state_snap) = trace_state.filter(|_| state.tracer.enabled()) {
                     let row_channels: Vec<Option<uuid::Uuid>> =
                         events.iter().map(|e| e.channel_id).collect();
                     let distinct: Vec<uuid::Uuid> = {
@@ -845,6 +919,22 @@ fn filters_are_nip43_membership_only(filters: &[Filter]) -> bool {
                     })
             })
         })
+}
+
+/// A community administrator may inspect the NIP-29 catalog projections for
+/// private channels to recover memberships and metadata. This must remain an
+/// *exclusive* discovery filter: allowing a mixed or wildcard filter here
+/// would also put historical messages in the administrator's query scope.
+fn is_admin_channel_discovery_filter(filter: &Filter) -> bool {
+    filter.kinds.as_ref().is_some_and(|kinds| {
+        !kinds.is_empty()
+            && kinds.iter().all(|kind| {
+                matches!(
+                    kind.as_u16() as u32,
+                    KIND_NIP29_GROUP_METADATA | KIND_NIP29_GROUP_ADMINS | KIND_NIP29_GROUP_MEMBERS
+                )
+            })
+    })
 }
 
 /// Extract a channel UUID from a single filter's `#h` tag.
@@ -1535,6 +1625,22 @@ mod tests {
         assert!(!filters_are_nip43_membership_only(&[
             Filter::new().kinds([nostr::Kind::Custom(13_534), nostr::Kind::TextNote]),
         ]));
+    }
+
+    #[test]
+    fn admin_private_channel_discovery_never_matches_messages() {
+        assert!(is_admin_channel_discovery_filter(
+            &Filter::new().kind(nostr::Kind::Custom(KIND_NIP29_GROUP_METADATA as u16)),
+        ));
+        assert!(is_admin_channel_discovery_filter(&Filter::new().kinds([
+            nostr::Kind::Custom(KIND_NIP29_GROUP_METADATA as u16),
+            nostr::Kind::Custom(KIND_NIP29_GROUP_MEMBERS as u16),
+        ]),));
+        assert!(!is_admin_channel_discovery_filter(&Filter::new().kinds([
+            nostr::Kind::Custom(KIND_NIP29_GROUP_METADATA as u16),
+            nostr::Kind::TextNote,
+        ]),));
+        assert!(!is_admin_channel_discovery_filter(&Filter::new()));
     }
 
     #[test]
