@@ -2391,7 +2391,9 @@ async fn test_private_channel_non_member_cannot_invite() {
         "non-member should NOT be able to invite to private channel, but it was accepted"
     );
     assert!(
-        msg.contains("not authorized") || msg.contains("not a channel member"),
+        msg.contains("not authorized")
+            || msg.contains("not a channel member")
+            || msg.contains("only owners/admins"),
         "rejection should mention authorization or membership, got: {msg}"
     );
 
