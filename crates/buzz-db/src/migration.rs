@@ -929,7 +929,7 @@ mod tests {
         assert!(migrations[26]
             .sql
             .as_str()
-            .contains("workflow_owner_mentions"));
+            .contains("DELETE FROM event_mentions"));
 
         // Channel-id lookup index (0031): serves the tenant-independent
         // `channels` lookups that carry no community_id predicate, which no
