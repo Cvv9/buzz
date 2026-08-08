@@ -291,7 +291,11 @@ type UsersBatchEntry = {
   fetchedAt: number;
 };
 
-const usersBatchEntryKey = (pubkey: string) => ["users-batch-entry", pubkey];
+const usersBatchEntryKey = (relayUrl: string, pubkey: string) => [
+  "users-batch-entry",
+  relayUrl,
+  pubkey,
+];
 
 /**
  * Drop the per-pubkey delta-fetch entries so the next `useUsersBatchQuery`
@@ -305,12 +309,20 @@ export function evictUsersBatchEntries(
   queryClient: QueryClient,
   pubkeys: string[],
 ) {
-  for (const pubkey of pubkeys) {
-    queryClient.removeQueries({
-      queryKey: usersBatchEntryKey(pubkey.toLowerCase()),
-      exact: true,
-    });
-  }
+  const normalizedPubkeys = new Set(
+    pubkeys.map((pubkey) => pubkey.toLowerCase()),
+  );
+  queryClient.removeQueries({
+    predicate: ({ queryKey }) => {
+      if (queryKey[0] !== "users-batch-entry") return false;
+      // Remove both relay-scoped entries and legacy two-part entries that may
+      // survive an in-place upgrade in the long-lived QueryClient.
+      const entryPubkey = queryKey.length >= 3 ? queryKey[2] : queryKey[1];
+      return (
+        typeof entryPubkey === "string" && normalizedPubkeys.has(entryPubkey)
+      );
+    },
+  });
 }
 
 export function useUsersBatchQuery(
@@ -331,7 +343,11 @@ export function useUsersBatchQuery(
 
   const query = useQuery<UsersBatchResponse>({
     enabled,
-    queryKey: ["users-batch", ...normalizedPubkeys],
+    queryKey: ["users-batch", relayUrl, ...normalizedPubkeys],
+    initialData: () =>
+      resolveUserLabelPlaceholderData(undefined, relayUrl, normalizedPubkeys),
+    // Persisted labels are presentation-only and must revalidate immediately.
+    initialDataUpdatedAt: 0,
     // Delta fetch: scroll-back grows the author set one page at a time, and
     // keying on the full sorted list means every growth re-runs the query.
     // Requesting the accumulated set re-downloaded every already-resolved
@@ -346,7 +362,7 @@ export function useUsersBatchQuery(
       const toFetch: string[] = [];
       for (const pubkey of normalizedPubkeys) {
         const entry = queryClient.getQueryData<UsersBatchEntry>(
-          usersBatchEntryKey(pubkey),
+          usersBatchEntryKey(relayUrl, pubkey),
         );
         if (entry && now - entry.fetchedAt < 60_000) {
           if (entry.summary) profiles[pubkey] = entry.summary;
@@ -363,7 +379,7 @@ export function useUsersBatchQuery(
         for (const pubkey of toFetch) {
           const summary = fresh.profiles[pubkey] ?? null;
           queryClient.setQueryData<UsersBatchEntry>(
-            usersBatchEntryKey(pubkey),
+            usersBatchEntryKey(relayUrl, pubkey),
             { summary, fetchedAt: now },
           );
           if (summary) profiles[pubkey] = summary;

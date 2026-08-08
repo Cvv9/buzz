@@ -493,6 +493,15 @@ async fn authenticate_media_read(
 ) -> Result<MediaReadAuth, MediaError> {
     let tenant = bind_media_read_tenant(state, headers).await?;
 
+    authenticate_media_read_for_tenant(state, headers, sha256_ext, tenant).await
+}
+
+async fn authenticate_media_read_for_tenant(
+    state: &AppState,
+    headers: &HeaderMap,
+    sha256_ext: &str,
+    tenant: TenantContext,
+) -> Result<MediaReadAuth, MediaError> {
     let auth_event = extract_blossom_auth(headers)?;
     let sha256 = sha256_ext.split('.').next().unwrap_or(sha256_ext);
     buzz_media::auth::verify_blossom_get_auth(&auth_event, sha256, Some(tenant.host()), 3600)?;
