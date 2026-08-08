@@ -12,6 +12,11 @@ use buzz_core_pkg::kind::{KIND_IA_ARCHIVE_REQUEST, KIND_IA_UNARCHIVE_REQUEST};
 use nostr::{EventBuilder, EventId, Kind, Tag};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
+
+mod channel_catalog_events;
+pub use channel_catalog_events::{
+    build_create_channel_with_catalog_section, build_update_channel_with_catalog_section,
+};
 // ── Constants ────────────────────────────────────────────────────────────────
 
 /// Maximum content size — matches buzz-sdk (64 KiB).
@@ -158,39 +163,6 @@ pub fn build_create_channel(
     )
 }
 
-/// Kind 9007 — create a channel with shared catalog metadata.
-#[allow(clippy::too_many_arguments)]
-pub fn build_create_channel_with_catalog_section(
-    channel_id: Uuid,
-    name: &str,
-    visibility: &str,
-    channel_type: &str,
-    about: Option<&str>,
-    ttl_seconds: Option<i32>,
-    catalog_section: Option<&str>,
-) -> Result<EventBuilder, String> {
-    let name = buzz_sdk_pkg::canonical_channel_name(name);
-    if name.trim().is_empty() {
-        return Err("channel name is required".into());
-    }
-    let mut tags = vec![
-        tag(vec!["h", &channel_id.to_string()])?,
-        tag(vec!["name", name])?,
-        tag(vec!["visibility", visibility])?,
-        tag(vec!["channel_type", channel_type])?,
-    ];
-    if let Some(a) = about {
-        tags.push(tag(vec!["about", a])?);
-    }
-    if let Some(ttl) = ttl_seconds {
-        tags.push(tag(vec!["ttl", &ttl.to_string()])?);
-    }
-    if let Some(section) = catalog_section {
-        tags.push(tag(vec!["catalog_section", section.trim()])?);
-    }
-    Ok(EventBuilder::new(Kind::Custom(9007), "").tags(tags))
-}
-
 /// Kind 9021 — join channel.
 pub fn build_join(channel_id: Uuid) -> Result<EventBuilder, String> {
     let tags = vec![tag(vec!["h", &channel_id.to_string()])?];
@@ -214,58 +186,6 @@ pub fn build_update_channel(
     ttl: Option<Option<i32>>,
 ) -> Result<EventBuilder, String> {
     build_update_channel_with_catalog_section(channel_id, name, about, visibility, ttl, None)
-}
-
-/// Kind 9002 — update channel metadata including the relay-backed catalog
-/// section. `Some(None)` clears the section with an empty tag value.
-pub fn build_update_channel_with_catalog_section(
-    channel_id: Uuid,
-    name: Option<&str>,
-    about: Option<&str>,
-    visibility: Option<&str>,
-    ttl: Option<Option<i32>>,
-    catalog_section: Option<Option<&str>>,
-) -> Result<EventBuilder, String> {
-    if name.is_none()
-        && about.is_none()
-        && visibility.is_none()
-        && ttl.is_none()
-        && catalog_section.is_none()
-    {
-        return Err(
-            "at least one of name, about, visibility, ttl, or catalog_section must be provided"
-                .into(),
-        );
-    }
-    if let Some(v) = visibility {
-        if v != "open" && v != "private" {
-            return Err("visibility must be \"open\" or \"private\"".into());
-        }
-    }
-    let name = name.map(buzz_sdk_pkg::canonical_channel_name);
-    if name.is_some_and(|name| name.trim().is_empty()) {
-        return Err("channel name is required".into());
-    }
-    let mut tags = vec![tag(vec!["h", &channel_id.to_string()])?];
-    if let Some(n) = name {
-        tags.push(tag(vec!["name", n])?);
-    }
-    if let Some(a) = about {
-        tags.push(tag(vec!["about", a])?);
-    }
-    if let Some(v) = visibility {
-        tags.push(tag(vec!["visibility", v])?);
-    }
-    if let Some(ttl) = ttl {
-        match ttl {
-            Some(secs) => tags.push(tag(vec!["ttl", &secs.to_string()])?),
-            None => tags.push(tag(vec!["ttl", ""])?),
-        }
-    }
-    if let Some(section) = catalog_section {
-        tags.push(tag(vec!["catalog_section", section.unwrap_or("").trim()])?);
-    }
-    Ok(EventBuilder::new(Kind::Custom(9002), "").tags(tags))
 }
 
 /// Kind 9002 — set topic.

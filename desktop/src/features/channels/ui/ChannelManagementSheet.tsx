@@ -249,7 +249,8 @@ export function ChannelManagementSheet({
   const descriptionDirty =
     descriptionDraft.trim() !== resolvedChannel.description.trim();
   const catalogSectionDirty =
-    catalogSectionDraft.trim() !== (resolvedChannel.catalogSection ?? "").trim();
+    catalogSectionDraft.trim() !==
+    (resolvedChannel.catalogSection ?? "").trim();
   const isSavingChannelEdits = updateChannelDetailsMutation.isPending;
   const hasChannelEditChanges =
     nameDirty || descriptionDirty || catalogSectionDirty || lifecycleDirty;
@@ -281,7 +282,12 @@ export function ChannelManagementSheet({
 
   async function handleSaveChannelEdits() {
     try {
-      if (nameDirty || descriptionDirty || catalogSectionDirty || lifecycleDirty) {
+      if (
+        nameDirty ||
+        descriptionDirty ||
+        catalogSectionDirty ||
+        lifecycleDirty
+      ) {
         await updateChannelDetailsMutation.mutateAsync({
           catalogSection: catalogSectionDirty
             ? catalogSectionDraft.trim() || null
