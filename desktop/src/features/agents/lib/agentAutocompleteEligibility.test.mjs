@@ -95,6 +95,31 @@ test("relayAgentIsSharedWithUser: accepts anyone agents before their first share
   );
 });
 
+test("relayAgentIsSharedWithUser: an explicit allowlist outranks hosted visibility", () => {
+  // The relay marks hosted agents community/shared by default, so a
+  // shared-but-allowlisted agent must still be hidden from people the
+  // allowlist does not name.
+  const allowlisted = {
+    accessTier: "shared",
+    audience: "community",
+    respondTo: "allowlist",
+    respondToAllowlist: [CURRENT_PUBKEY],
+    channelIds: [],
+    ownerPubkey: OTHER_OWNER_PUBKEY,
+  };
+
+  assert.equal(
+    relayAgentIsSharedWithUser(allowlisted, new Set(), CURRENT_PUBKEY),
+    true,
+  );
+  assert.equal(
+    relayAgentIsSharedWithUser(allowlisted, new Set(), OTHER_OWNER_PUBKEY),
+    false,
+  );
+  // Unknown viewer fails closed.
+  assert.equal(relayAgentIsSharedWithUser(allowlisted, new Set(), null), false);
+});
+
 test("relayAgentIsSharedWithUser: uses hosted visibility even when response policy is stale", () => {
   assert.equal(
     relayAgentIsSharedWithUser(

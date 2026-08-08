@@ -61,6 +61,21 @@ export function relayAgentIsSharedWithUser(
     );
   }
 
+  // An explicit allowlist is authoritative and outranks the hosted-directory
+  // visibility below. A shared/community agent that names specific people must
+  // stay hidden from everyone else, otherwise the allowlist means nothing —
+  // and since the relay marks hosted agents community/shared by default, the
+  // visibility check below would otherwise swallow every allowlist. Fails
+  // closed when the viewer is unknown.
+  if (agent.respondTo === "allowlist") {
+    return Boolean(
+      normalizedCurrentPubkey &&
+        agent.respondToAllowlist
+          .map((pubkey) => normalizePubkey(pubkey))
+          .includes(normalizedCurrentPubkey),
+    );
+  }
+
   // Access tier and audience are the authoritative visibility controls for
   // the hosted directory. Community agents must be discoverable before their
   // first channel invitation; older runtime records can still carry a stale
@@ -78,12 +93,6 @@ export function relayAgentIsSharedWithUser(
     (agent.respondTo === null || agent.respondTo === "owner-only")
   ) {
     return true;
-  }
-
-  if (agent.respondTo === "allowlist" && normalizedCurrentPubkey) {
-    return agent.respondToAllowlist
-      .map((pubkey) => normalizePubkey(pubkey))
-      .includes(normalizedCurrentPubkey);
   }
 
   // Community agents explicitly configured for anyone are invocable across
