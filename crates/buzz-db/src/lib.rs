@@ -2575,6 +2575,18 @@ impl Db {
         user::set_channel_add_policy(&self.pool, community_id, pubkey, policy).await
     }
 
+    /// Atomically bind an agent to its immutable owner and set its channel-add
+    /// policy to `owner_only`.
+    pub async fn bind_agent_owner_owner_only(
+        &self,
+        community_id: CommunityId,
+        agent_pubkey: &[u8],
+        owner_pubkey: &[u8],
+    ) -> Result<bool> {
+        user::bind_agent_owner_owner_only(&self.pool, community_id, agent_pubkey, owner_pubkey)
+            .await
+    }
+
     /// Find an existing DM by its participant hash.
     pub async fn find_dm_by_participants(
         &self,
