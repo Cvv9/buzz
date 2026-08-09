@@ -243,6 +243,7 @@ fn is_workspace_spa_path(path: &str) -> bool {
     matches!(
         path,
         "/" | "/channel-state"
+            | "/custom-emoji"
             | "/identity-archive"
             | "/messages/new"
             | "/moderation"
@@ -253,6 +254,7 @@ fn is_workspace_spa_path(path: &str) -> bool {
             | "/pulse"
             | "/reminders"
             | "/search"
+            | "/settings"
             | "/workflows"
     ) || path.starts_with("/channels/")
         || path.starts_with("/huddles/")
@@ -578,6 +580,8 @@ mod tests {
         assert!(!should_serve_spa("/repos/example", false, false));
         assert!(should_serve_spa("/", true, false));
         assert!(should_serve_spa("/preferences", true, false));
+        assert!(should_serve_spa("/settings", true, false));
+        assert!(should_serve_spa("/custom-emoji", true, false));
         assert!(should_serve_spa("/projects/project", true, false));
         assert!(should_serve_spa("/", false, true));
         assert!(should_serve_spa("/repos/example", false, true));
