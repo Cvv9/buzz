@@ -1,5 +1,6 @@
 import { useMutation } from "@tanstack/react-query";
 import * as React from "react";
+import varvikMark from "@/assets/varvik-mark.svg";
 import { claimInviteInBrowser } from "@/features/invite/invite-api";
 import { createWorkspaceChannel } from "@/features/workspace/workspace-api";
 import { Button } from "@/shared/ui/button";
@@ -31,8 +32,8 @@ export function EmptyMembership({
   return (
     <div className="flex min-h-[100dvh] items-center justify-center bg-[#f4f5ee] px-5 dark:bg-[#151713]">
       <div className="w-full max-w-md">
-        <div className="flex size-12 items-center justify-center rounded-2xl bg-[#d7d72e] font-black text-[#171912]">
-          V
+        <div className="flex size-12 items-center justify-center rounded-2xl border border-black/10 bg-white p-2 dark:border-white/10 dark:bg-white/[0.06]">
+          <img alt="" className="size-full object-contain" src={varvikMark} />
         </div>
         <h1 className="mt-7 text-3xl font-semibold tracking-tight">
           Open VarVik Studios

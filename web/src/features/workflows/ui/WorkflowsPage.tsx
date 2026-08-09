@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 import { Check, ClipboardCheck, Workflow } from "lucide-react";
+import { Link } from "@tanstack/react-router";
 import { WorkspaceIdentityGate } from "@/features/access/WorkspaceIdentityGate";
 import {
   listWorkspaceChannels,
@@ -136,9 +137,9 @@ function WorkflowsPageContent({ viewerPubkey }: { viewerPubkey: string }) {
     <main className="min-h-[100dvh] bg-background px-4 py-6 text-foreground sm:px-8">
       <div className="mx-auto max-w-6xl">
         <nav className="mb-8 flex flex-wrap items-center gap-4 text-sm">
-          <a className="text-muted-foreground hover:text-foreground" href="/">
+          <Link className="text-muted-foreground hover:text-foreground" to="/">
             Workspace
-          </a>
+          </Link>
           <span className="text-foreground">Workflows</span>
         </nav>
 
@@ -158,12 +159,12 @@ function WorkflowsPageContent({ viewerPubkey }: { viewerPubkey: string }) {
               </p>
             </div>
           </div>
-          <a
+          <Link
             className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-            href="/search"
+            to="/search"
           >
             Search activity
-          </a>
+          </Link>
         </header>
 
         <div className="mt-6">
@@ -195,10 +196,11 @@ function WorkflowsPageContent({ viewerPubkey }: { viewerPubkey: string }) {
             ) : workflowsQuery.data?.length ? (
               <div className="mt-6 divide-y divide-border overflow-hidden rounded-xl border border-border">
                 {workflowsQuery.data.map((workflow) => (
-                  <a
+                  <Link
                     className="block px-4 py-4 transition-colors hover:bg-muted/35"
-                    href={`/workflows/${workflow.id}`}
                     key={`${workflow.ownerPubkey}:${workflow.id}`}
+                    params={{ workflowId: workflow.id }}
+                    to="/workflows/$workflowId"
                   >
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-medium">
@@ -219,7 +221,7 @@ function WorkflowsPageContent({ viewerPubkey }: { viewerPubkey: string }) {
                       {workflow.definition.steps.length} step
                       {workflow.definition.steps.length === 1 ? "" : "s"}
                     </p>
-                  </a>
+                  </Link>
                 ))}
               </div>
             ) : (

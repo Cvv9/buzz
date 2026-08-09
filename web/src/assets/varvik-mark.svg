@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="281 316 461 390" role="img" aria-label="VarVik">
+  <style>
+    .v { fill: #17150f; }
+    @media (prefers-color-scheme: dark) { .v { fill: #f0e8d8; } }
+  </style>
+  <path class="v" d="M281 316 L411 316 L511 484 L611 316 L742 317 L650 473 L649 495 L666 526 L633 521 L608 513 L584 478 L612 460 L623 449 L680 352 L631 351 L512 554 L393 353 L343 352 L510 636 L530 606 L560 624 L512 706 Z"/>
+  <path fill="#ff3a20" d="M580 522 L610 539 L572 604 L543 589 Z"/>
+</svg>

@@ -8,6 +8,7 @@ import {
   Palette,
   Sun,
 } from "lucide-react";
+import { Link } from "@tanstack/react-router";
 import * as React from "react";
 import { toast } from "sonner";
 import { mintBrowserInvite } from "@/features/invite/invite-api";
@@ -329,17 +330,17 @@ export function WorkspaceSettings({
           </p>
           <div className="mt-3 divide-y divide-border overflow-hidden rounded-xl border border-border">
             {browserTools.map((tool) => (
-              <a
+              <Link
                 className="block px-4 py-3 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                 data-testid={`workspace-tool-${tool.href.slice(1)}`}
-                href={tool.href}
+                to={tool.href}
                 key={tool.href}
               >
                 <span className="block text-sm font-medium">{tool.label}</span>
                 <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">
                   {tool.description}
                 </span>
-              </a>
+              </Link>
             ))}
           </div>
         </section>
@@ -535,15 +536,25 @@ function SettingsNavigation({ identity }: { identity: BrowserIdentity }) {
             {group.label}
           </p>
           <div className="mt-1 space-y-0.5">
-            {group.entries.map((entry) => (
-              <a
-                className="block rounded-lg px-2 py-2 text-sm text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-                href={entry.href}
-                key={entry.href}
-              >
-                {entry.label}
-              </a>
-            ))}
+            {group.entries.map((entry) =>
+              entry.href.startsWith("#") ? (
+                <a
+                  className="block rounded-lg px-2 py-2 text-sm text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                  href={entry.href}
+                  key={entry.href}
+                >
+                  {entry.label}
+                </a>
+              ) : (
+                <Link
+                  className="block rounded-lg px-2 py-2 text-sm text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                  key={entry.href}
+                  to={entry.href}
+                >
+                  {entry.label}
+                </Link>
+              ),
+            )}
           </div>
         </div>
       ))}

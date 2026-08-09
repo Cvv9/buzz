@@ -1,4 +1,5 @@
 import { SmilePlus } from "lucide-react";
+import { Link } from "@tanstack/react-router";
 import { WorkspaceIdentityGate } from "@/features/access/WorkspaceIdentityGate";
 import { EmojiSetManager } from "./CustomEmojiPickerButton";
 
@@ -9,18 +10,18 @@ export function CustomEmojiSettingsPage() {
         <main className="min-h-[100dvh] bg-background px-4 py-6 text-foreground sm:px-8">
           <div className="mx-auto max-w-3xl">
             <nav className="mb-8 flex items-center gap-4 text-sm">
-              <a
+              <Link
                 className="text-muted-foreground hover:text-foreground"
-                href="/"
+                to="/"
               >
                 Workspace
-              </a>
-              <a
+              </Link>
+              <Link
                 className="text-muted-foreground hover:text-foreground"
-                href="/settings"
+                to="/settings"
               >
                 Settings
-              </a>
+              </Link>
               <span>Custom emoji</span>
             </nav>
             <header className="flex items-start gap-4">

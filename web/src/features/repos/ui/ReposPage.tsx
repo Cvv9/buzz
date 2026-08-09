@@ -1,4 +1,5 @@
 import { BookMarked, GitBranch } from "lucide-react";
+import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { useEffect, useMemo, useState } from "react";
 
@@ -158,9 +159,9 @@ export function ReposPage() {
           <h2 className="flex items-center gap-2 text-lg font-semibold text-black dark:text-white">
             <BookMarked className="h-4 w-4" /> Repositories
           </h2>
-          <a className="text-sm text-primary hover:underline" href="/projects">
+          <Link className="text-sm text-primary hover:underline" to="/projects">
             Browse projects
-          </a>
+          </Link>
         </div>
 
         {/* Search + Sort bar */}

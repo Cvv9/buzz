@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import * as React from "react";
 import { LinkIcon, Search, UserRound } from "lucide-react";
 import { WorkspaceIdentityGate } from "@/features/access/WorkspaceIdentityGate";
@@ -49,12 +50,12 @@ function InvalidProfilePage() {
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
           A Buzz profile URL needs a 64-character public key.
         </p>
-        <a
+        <Link
           className="mt-5 inline-flex text-sm font-medium text-primary underline-offset-4 hover:underline"
-          href="/"
+          to="/"
         >
           Return to workspace
-        </a>
+        </Link>
       </div>
     </main>
   );
@@ -152,15 +153,15 @@ function ProfilePageContent({
     <main className="min-h-[100dvh] bg-background px-4 py-6 text-foreground sm:px-8">
       <div className="mx-auto max-w-3xl">
         <nav className="mb-8 flex flex-wrap items-center gap-4 text-sm">
-          <a className="text-muted-foreground hover:text-foreground" href="/">
+          <Link className="text-muted-foreground hover:text-foreground" to="/">
             Workspace
-          </a>
-          <a
+          </Link>
+          <Link
             className="inline-flex items-center gap-1.5 text-muted-foreground hover:text-foreground"
-            href="/search"
+            to="/search"
           >
             <Search className="size-4" /> Search
-          </a>
+          </Link>
         </nav>
 
         <section className="rounded-2xl border border-border bg-card p-5 shadow-sm sm:p-7">
@@ -184,12 +185,13 @@ function ProfilePageContent({
                 {detail?.status ? <StatusLine status={detail.status} /> : null}
               </div>
             </div>
-            <a
+            <Link
               className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground"
-              href={`/search?author=${encodeURIComponent(pubkey)}`}
+              search={{ author: pubkey }}
+              to="/search"
             >
               <Search className="size-4" /> Find messages
-            </a>
+            </Link>
           </div>
 
           {presentation.about ? (
@@ -520,12 +522,12 @@ function ProfileError({ error }: { error: unknown }) {
             ? error.message
             : "The relay did not return this profile."}
         </p>
-        <a
+        <Link
           className="mt-5 inline-flex text-sm font-medium text-primary underline-offset-4 hover:underline"
-          href="/"
+          to="/"
         >
           Return to workspace
-        </a>
+        </Link>
       </div>
     </main>
   );

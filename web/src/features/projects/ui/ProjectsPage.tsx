@@ -117,9 +117,9 @@ function ProjectsPageContent() {
   return (
     <PageShell>
       <nav className="mb-8 flex items-center gap-3 text-sm text-muted-foreground">
-        <a className="hover:text-foreground" href="/repos">
+        <Link className="hover:text-foreground" to="/repos">
           Repositories
-        </a>
+        </Link>
         <span>Projects</span>
       </nav>
       <header className="rounded-2xl border border-border bg-card p-5 shadow-sm sm:p-7">
@@ -231,12 +231,13 @@ function ProjectCard({ project }: { project: ProjectContainer }) {
         ) : null}
       </div>
       {project.channelId ? (
-        <a
+        <Link
           className="mt-4 inline-block text-sm text-primary hover:underline"
-          href={`/?channel=${encodeURIComponent(project.channelId)}`}
+          search={{ channel: project.channelId }}
+          to="/"
         >
           Open linked channel
-        </a>
+        </Link>
       ) : null}
     </section>
   );
