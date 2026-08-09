@@ -58,6 +58,17 @@ test("workspace composer uploads imeta attachments and renders protected media",
   await page.getByLabel("Message general").fill("Attached plan");
   await page.getByLabel("Send message").click();
   await expect.poll(() => uploadAuthorized).toBe(true);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (
+          window as typeof window & {
+            __BUZZ_WEB_E2E_PUBLISHED__: Array<{ kind: number }>;
+          }
+        ).__BUZZ_WEB_E2E_PUBLISHED__.some((event) => event.kind === 9),
+      ),
+    )
+    .toBe(true);
 
   const published = await page.evaluate(() =>
     (

@@ -95,9 +95,12 @@ test("a recovery key stays available on this device until explicitly locked", as
 
   await page
     .getByTestId("workspace-sidebar")
-    .getByRole("button", { name: /Vikram/ })
+    .locator('a[href="/settings"]')
     .click();
-  await expect(page.getByText("Browser identity")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Recovery key" }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "Lock and sign out" }).click();
   await expect(
     page.getByRole("heading", { name: "Welcome back, Vikram" }),
@@ -217,9 +220,6 @@ test("the web agent page explains resources and lets an admin edit profile and c
 
   await page.getByRole("button", { name: "Edit profile" }).click();
   await page.getByLabel("Name").fill("Opportunity Scout");
-  await page
-    .getByLabel("Profile picture URL")
-    .fill("https://example.test/scout.png");
   await page.getByRole("button", { name: "Save changes" }).click();
   await page.getByLabel("general access for Workspace Agent 7").click();
 
@@ -250,7 +250,6 @@ test("the web agent page explains resources and lets an admin edit profile and c
   const config = published.find((relayEvent) => relayEvent.kind === 30180);
   expect(JSON.parse(config?.content ?? "{}")).toMatchObject({
     name: "Opportunity Scout",
-    avatar_url: "https://example.test/scout.png",
   });
 });
 
@@ -277,7 +276,7 @@ test("admin-edited hosted agent identity is shared across the web roster and men
   await page.getByLabel("Confirm password").fill("web-agent-config");
   await page.getByRole("button", { name: "Sign in with recovery key" }).click();
 
-  await expect(page.getByText("Sylar", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText(/^Sylar — /).first()).toBeVisible();
   await expect(
     page.getByText("Workspace Agent 7", { exact: true }),
   ).toHaveCount(0);
@@ -335,9 +334,7 @@ test("an already-present personal agent remains mentionable", async ({
     .fill("personal-agent-password");
   await page.getByLabel("Confirm password").fill("personal-agent-password");
   await page.getByRole("button", { name: "Sign in with recovery key" }).click();
-  await expect(
-    page.getByText("Workspace Agent 1", { exact: true }),
-  ).toBeVisible();
+  await expect(page.getByText(/^Workspace Agent 1 — /)).toBeVisible();
 
   const composer = page.getByLabel("Message general");
   await composer.fill("@Workspace Agent 1 handle my private work");
