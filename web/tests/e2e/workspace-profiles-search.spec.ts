@@ -25,6 +25,18 @@ test("web profile edits preserve kind 0 JSON and project live status events", as
   const pubkey = getPublicKey(secret);
   await installWorkspaceRelayMock(page, pubkey);
   await signIn(page, secret);
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const hasSubscription = (
+          window as typeof window & {
+            __BUZZ_WEB_E2E_HAS_KIND_SUBSCRIPTION__: (kind: number) => boolean;
+          }
+        ).__BUZZ_WEB_E2E_HAS_KIND_SUBSCRIPTION__;
+        return hasSubscription(9) && hasSubscription(30315);
+      }),
+    )
+    .toBe(true);
 
   await page.evaluate((eventPubkey) => {
     const helpers = window as typeof window & {
@@ -76,7 +88,11 @@ test("web profile edits preserve kind 0 JSON and project live status events", as
     page.getByLabel("Current status: 🛰️ Updated from desktop"),
   ).toBeVisible();
 
-  await page.getByRole("link", { name: "View profile" }).click();
+  await page
+    .getByTestId("workspace-sidebar")
+    .locator('a[href="/settings"]')
+    .click();
+  await page.getByRole("link", { name: "Profile", exact: true }).click();
   await expect(
     page.getByRole("button", { name: "Save profile" }),
   ).toBeVisible();
@@ -108,7 +124,6 @@ test("web profile edits preserve kind 0 JSON and project live status events", as
   await expect(page.getByText("At lunch")).toBeVisible();
 
   await page.getByLabel("Display name").fill("Vikram Sharma");
-  await page.getByLabel("Picture URL").fill("https://example.test/vikram.png");
   await page.getByLabel("About").fill("Building browser parity.");
   await page.getByRole("button", { name: "Save profile" }).click();
   await expect
@@ -127,7 +142,8 @@ test("web profile edits preserve kind 0 JSON and project live status events", as
         return (
           content.name === "Vikram Sharma" &&
           content.display_name === "Vikram Sharma" &&
-          content.picture === "https://example.test/vikram.png" &&
+          content.picture ===
+            "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==" &&
           content.about === "Building browser parity." &&
           content.custom_field === "preserve-me"
         );
@@ -147,7 +163,8 @@ test("web profile edits preserve kind 0 JSON and project live status events", as
   expect(profileContent).toMatchObject({
     name: "Vikram Sharma",
     display_name: "Vikram Sharma",
-    picture: "https://example.test/vikram.png",
+    picture:
+      "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==",
     about: "Building browser parity.",
     custom_field: "preserve-me",
   });

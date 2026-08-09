@@ -135,4 +135,34 @@ test("workspace appearance publishes the desktop-compatible encrypted coordinate
     accent: "#ec4899",
     followSystem: false,
   });
+
+  await page.evaluate(() => {
+    (
+      window as typeof window & { __BUZZ_ROUTE_MARKER__?: string }
+    ).__BUZZ_ROUTE_MARKER__ = "preserved";
+  });
+  await settingsRail.getByRole("link", { name: "Custom emoji" }).click();
+  await expect(page).toHaveURL("/custom-emoji");
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __BUZZ_ROUTE_MARKER__?: string })
+            .__BUZZ_ROUTE_MARKER__,
+      ),
+    )
+    .toBe("preserved");
+  await page.getByRole("link", { name: "Settings" }).click();
+  await page.getByRole("button", { name: "Back to app" }).click();
+  await expect(page).toHaveURL("/");
+  await expect(page.getByTestId("workspace-shell")).toBeVisible();
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () =>
+          (window as typeof window & { __BUZZ_ROUTE_MARKER__?: string })
+            .__BUZZ_ROUTE_MARKER__,
+      ),
+    )
+    .toBe("preserved");
 });

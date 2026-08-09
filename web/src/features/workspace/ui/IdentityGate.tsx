@@ -1,5 +1,6 @@
 import { KeyRound, LogIn, ShieldCheck, UserRound } from "lucide-react";
 import * as React from "react";
+import varvikMark from "@/assets/varvik-mark.svg";
 import {
   type BrowserIdentity,
   type StoredBrowserIdentitySummary,
@@ -154,8 +155,8 @@ export function IdentityGate({
       <section className="relative hidden overflow-hidden border-r border-white/10 p-12 lg:flex lg:flex-col lg:justify-between">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_15%_20%,rgba(215,215,46,0.18),transparent_28%),radial-gradient(circle_at_80%_75%,rgba(215,231,246,0.12),transparent_32%)]" />
         <div className="relative flex items-center gap-3">
-          <div className="flex size-10 items-center justify-center rounded-xl bg-[#d7d72e] font-black text-[#111310]">
-            V
+          <div className="flex size-10 items-center justify-center rounded-xl border border-white/10 bg-white/[0.06] p-1.5">
+            <img alt="" className="size-full object-contain" src={varvikMark} />
           </div>
           <div>
             <p className="font-semibold">VarVik Studios</p>
@@ -188,8 +189,12 @@ export function IdentityGate({
         <div className="w-full max-w-md">
           <div className="mb-10 lg:hidden">
             <div className="flex items-center gap-3">
-              <div className="flex size-10 items-center justify-center rounded-xl bg-[#d7d72e] font-black text-[#111310]">
-                V
+              <div className="flex size-10 items-center justify-center rounded-xl border border-white/10 bg-white/[0.06] p-1.5">
+                <img
+                  alt=""
+                  className="size-full object-contain"
+                  src={varvikMark}
+                />
               </div>
               <div>
                 <p className="font-semibold">VarVik Studios</p>

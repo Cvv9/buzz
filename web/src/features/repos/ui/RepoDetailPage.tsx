@@ -98,9 +98,13 @@ function BackToRepositories({
   );
 
   return mockPreview ? (
-    <a href="/?preview=repositories" className={className}>
+    <Link
+      search={{ preview: "repositories" }}
+      to="/repos"
+      className={className}
+    >
       {content}
-    </a>
+    </Link>
   ) : (
     <Link to="/" className={className}>
       {content}
@@ -374,10 +378,13 @@ export function RepoDetailPage() {
               className="border-black/10 bg-white text-black hover:bg-black/5 dark:border-white/10 dark:bg-white/5 dark:text-white dark:hover:bg-white/10"
               asChild
             >
-              <a href={`/channels/${repo.channelId}`}>
+              <Link
+                params={{ channelId: repo.channelId }}
+                to="/channels/$channelId/posts"
+              >
                 <MessageSquare className="h-4 w-4" />
                 View channel
-              </a>
+              </Link>
             </Button>
           </div>
         )}

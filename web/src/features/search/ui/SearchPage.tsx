@@ -1,5 +1,6 @@
 import * as React from "react";
 import { CalendarClock, Search } from "lucide-react";
+import { Link } from "@tanstack/react-router";
 import { WorkspaceIdentityGate } from "@/features/access/WorkspaceIdentityGate";
 import { truncatePubkey } from "@/shared/lib/pubkey";
 import { Button } from "@/shared/ui/button";
@@ -54,9 +55,9 @@ function SearchPageContent() {
     <main className="min-h-[100dvh] bg-background px-4 py-6 text-foreground sm:px-8">
       <div className="mx-auto max-w-4xl">
         <nav className="mb-8 flex items-center gap-4 text-sm">
-          <a className="text-muted-foreground hover:text-foreground" href="/">
+          <Link className="text-muted-foreground hover:text-foreground" to="/">
             Workspace
-          </a>
+          </Link>
           <span className="text-foreground">Search</span>
         </nav>
         <section className="rounded-2xl border border-border bg-card p-5 shadow-sm sm:p-7">
@@ -196,12 +197,13 @@ function SearchResult({
         <span className="rounded-full bg-muted px-2 py-0.5 font-medium text-foreground">
           {searchKindLabel(event.kind)}
         </span>
-        <a
+        <Link
           className="font-mono hover:text-foreground"
-          href={`/profiles/${event.pubkey}`}
+          params={{ pubkey: event.pubkey }}
+          to="/profiles/$pubkey"
         >
           {truncatePubkey(event.pubkey)}
-        </a>
+        </Link>
         <time dateTime={new Date(event.created_at * 1_000).toISOString()}>
           {date}
         </time>
@@ -215,12 +217,12 @@ function SearchResult({
             {destination.label}
           </span>
         ) : (
-          <a
+          <Link
             className="text-sm font-medium text-primary underline-offset-4 hover:underline"
-            href={destination.href}
+            to={destination.href}
           >
             {destination.label}
-          </a>
+          </Link>
         )}
       </div>
     </article>

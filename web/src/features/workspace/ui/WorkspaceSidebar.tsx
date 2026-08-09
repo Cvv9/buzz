@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
+import varvikMark from "@/assets/varvik-mark.svg";
 import { makeBlossomGetAuthHeader } from "@/shared/lib/blossom-auth";
 import { cn } from "@/shared/lib/cn";
 import { truncatePubkey } from "@/shared/lib/pubkey";
@@ -292,8 +293,12 @@ export function WorkspaceSidebar({
       >
         <header className="flex h-16 items-center justify-between border-b border-sidebar-border px-4">
           <div className="flex min-w-0 items-center gap-3">
-            <div className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary font-black text-primary-foreground">
-              V
+            <div className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-sidebar-border bg-background p-1.5">
+              <img
+                alt=""
+                className="size-full object-contain"
+                src={varvikMark}
+              />
             </div>
             <div className="min-w-0">
               <p className="truncate text-sm font-semibold">VarVik Studios</p>
@@ -317,24 +322,24 @@ export function WorkspaceSidebar({
           data-testid="workspace-sidebar-scroll"
         >
           <div className="mb-4 space-y-0.5">
-            <a
+            <Link
               aria-label="Search workspace"
               className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent"
-              href="/search"
+              to="/search"
               onClick={onClose}
             >
               <Search className="size-3.5 shrink-0" />
               <span className="min-w-0 flex-1 truncate">Search</span>
-            </a>
-            <a
+            </Link>
+            <Link
               aria-label="Open workflows"
               className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent"
-              href="/workflows"
+              to="/workflows"
               onClick={onClose}
             >
               <Workflow className="size-3.5 shrink-0" />
               <span className="min-w-0 flex-1 truncate">Workflows</span>
-            </a>
+            </Link>
             <button
               aria-label={
                 inboxUnreadCount

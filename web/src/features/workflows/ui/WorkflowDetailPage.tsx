@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link, useNavigate } from "@tanstack/react-router";
 import * as React from "react";
 import {
   CirclePlay,
@@ -53,6 +54,7 @@ function WorkflowDetailContent({
   viewerPubkey: string;
 }) {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const workflowQuery = useQuery({
     queryKey: workflowDetailKey(workflowId),
     queryFn: () => getWorkflow(workflowId),
@@ -171,7 +173,7 @@ function WorkflowDetailContent({
       });
     },
     onSuccess: () => {
-      window.location.assign("/workflows");
+      void navigate({ to: "/workflows" });
     },
   });
 
@@ -184,15 +186,16 @@ function WorkflowDetailContent({
     <main className="min-h-[100dvh] bg-background px-4 py-6 text-foreground sm:px-8">
       <div className="mx-auto max-w-5xl">
         <nav className="mb-8 flex flex-wrap items-center gap-4 text-sm">
-          <a className="text-muted-foreground hover:text-foreground" href="/">
+          <Link className="text-muted-foreground hover:text-foreground" to="/">
             Workspace
-          </a>
-          <a
+          </Link>
+          <Link
             className="text-muted-foreground hover:text-foreground"
-            href={`/workflows?channel=${encodeURIComponent(workflow.channelId)}`}
+            search={{ channel: workflow.channelId }}
+            to="/workflows"
           >
             Workflows
-          </a>
+          </Link>
           <span className="truncate text-foreground">
             {workflow.definition.name}
           </span>
@@ -533,12 +536,12 @@ function WorkflowMessage({
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
           {message}
         </p>
-        <a
+        <Link
           className="mt-5 inline-flex text-sm text-primary hover:underline"
-          href="/workflows"
+          to="/workflows"
         >
           Return to workflows
-        </a>
+        </Link>
       </section>
     </main>
   );
