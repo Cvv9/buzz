@@ -1,5 +1,9 @@
 # Changelog
 
+## relay-v0.2.6
+
+- fix(web): serve Settings and Custom Emoji on direct navigation ([#30](https://github.com/Cvv9/buzz/pull/30))
+
 ## relay-v0.2.5
 
 - feat(web): deliver desktop-parity settings and workflows ([#28](https://github.com/Cvv9/buzz/pull/28))
