@@ -96,7 +96,52 @@ test("workspace appearance publishes the desktop-compatible encrypted coordinate
     )
     .toHaveLength(publishedThemeEventCount + 1);
 
-  const published = await page.evaluate(() => {
+  const desiredPreference = {
+    version: 1,
+    theme: "github-dark",
+    accent: "#ec4899",
+    followSystem: false,
+  };
+
+  await expect
+    .poll(async () => {
+      const events = await page.evaluate(() =>
+        (
+          window as typeof window & {
+            __BUZZ_WEB_E2E_PUBLISHED__: Array<{
+              kind: number;
+              content: string;
+              pubkey: string;
+              tags: string[][];
+            }>;
+          }
+        ).__BUZZ_WEB_E2E_PUBLISHED__.filter(
+          (event) =>
+            event.kind === 30078 &&
+            event.tags.some(
+              (tag) => tag[0] === "d" && tag[1] === "community-theme",
+            ),
+        ),
+      );
+      return events.slice(publishedThemeEventCount).some((event) => {
+        try {
+          const preference = JSON.parse(
+            nip44.decrypt(
+              event.content,
+              nip44.utils.getConversationKey(secretKey, viewerPubkey),
+            ),
+          );
+          return (
+            JSON.stringify(preference) === JSON.stringify(desiredPreference)
+          );
+        } catch {
+          return false;
+        }
+      });
+    })
+    .toBe(true);
+
+  const publishedEvents = await page.evaluate(() => {
     const events = (
       window as typeof window & {
         __BUZZ_WEB_E2E_PUBLISHED__: Array<{
@@ -113,8 +158,24 @@ test("workspace appearance publishes the desktop-compatible encrypted coordinate
           (tag) => tag[0] === "d" && tag[1] === "community-theme",
         ),
     );
-    return events.at(-1);
+    return events;
   });
+
+  const published = publishedEvents
+    .slice(publishedThemeEventCount)
+    .findLast((event) => {
+      try {
+        const preference = JSON.parse(
+          nip44.decrypt(
+            event.content,
+            nip44.utils.getConversationKey(secretKey, viewerPubkey),
+          ),
+        );
+        return JSON.stringify(preference) === JSON.stringify(desiredPreference);
+      } catch {
+        return false;
+      }
+    });
 
   expect(published).toMatchObject({
     kind: 30078,
@@ -129,12 +190,7 @@ test("workspace appearance publishes the desktop-compatible encrypted coordinate
       nip44.utils.getConversationKey(secretKey, viewerPubkey),
     ),
   ) as Record<string, unknown>;
-  expect(preference).toEqual({
-    version: 1,
-    theme: "github-dark",
-    accent: "#ec4899",
-    followSystem: false,
-  });
+  expect(preference).toEqual(desiredPreference);
 
   await page.evaluate(() => {
     (

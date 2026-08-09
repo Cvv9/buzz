@@ -67,7 +67,7 @@ test("browser-local archive, pairing, and preferences stay capability- and lock-
   await page.goto("/");
   await page
     .getByTestId("workspace-sidebar")
-    .getByRole("button", { name: /Browser local QA/ })
+    .locator('a[href="/settings"]')
     .click();
   await page.getByRole("button", { name: "Lock and sign out" }).click();
   await page.goto("/offline");
