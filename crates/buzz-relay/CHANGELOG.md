@@ -1,5 +1,9 @@
 # Changelog
 
+## relay-v0.2.5
+
+- feat(web): deliver desktop-parity settings and workflows ([#28](https://github.com/Cvv9/buzz/pull/28))
+
 ## relay-v0.2.4
 
 - feat(web): expose browser-safe tools from settings ([`4d115bb0c`](https://github.com/Cvv9/buzz/commit/4d115bb0c))
