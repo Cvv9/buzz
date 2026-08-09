@@ -271,6 +271,9 @@ pub enum AgentsCmd {
         /// Short description of the hosted agent
         #[arg(long)]
         about: Option<String>,
+        /// Comma-separated runtime integrations and data sources available to the agent
+        #[arg(long)]
+        resources: Option<String>,
         /// Comma-separated legacy or alternate names that may address the agent
         #[arg(long)]
         aliases: Option<String>,

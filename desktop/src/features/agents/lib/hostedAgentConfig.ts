@@ -61,11 +61,12 @@ export async function publishHostedAgentConfig(
   } catch (error) {
     if (!isUnknownKindError(error)) throw error;
 
-    // Compatibility path for relays deployed before kind:30179 existed.
+    // Compatibility path for relays deployed before kind:30180 existed.
     // Kind:30177 is already an owner-authored, global NIP-33 document. A
     // namespaced d-tag and schema marker keep this projection disjoint from
     // real managed-agent definitions while allowing mixed-version fleets to
-    // save names, avatars, and model preferences immediately.
+    // save names, avatars, and model preferences immediately. Never fall back
+    // to 30179: that coordinate is a private managed-agent aggregate.
     await publishConfigEvent(
       KIND_MANAGED_AGENT,
       `hosted-agent:${pubkey}`,

@@ -5,10 +5,22 @@ import {
   subscribeEvents,
 } from "@/shared/lib/nostr-client";
 import { truncatePubkey } from "@/shared/lib/pubkey";
-import { relayHttpBaseUrl, relayWsUrl } from "@/shared/lib/relay-url";
-import { verifyEvent } from "nostr-tools";
+import { relayWsUrl } from "@/shared/lib/relay-url";
 import { hostedDirectoryEvents } from "./workspace-agent-directory-policy";
 import { canDiscoverPrivateWorkspaceChannels } from "./workspace-channel-discovery-policy";
+import {
+  buildHostedAgentConfigTemplate,
+  hostedAgentConfigTarget as hostedAgentConfigTargetForEvent,
+  HOSTED_AGENT_CONFIG_SCHEMA,
+  isNewerReplaceableHead,
+} from "./workspace-hosted-agent-config-policy";
+import { listArchivedWorkspaceIdentities } from "./workspace-archive-api";
+import {
+  customEmojiFromReaction,
+  isSafeEmojiImageUrl,
+  normalizeEmojiShortcode,
+  type CustomEmoji,
+} from "@/features/custom-emoji/custom-emoji-policy";
 
 export const KIND_PROFILE = 0;
 export const KIND_DELETION = 5;
@@ -24,14 +36,17 @@ export const KIND_STREAM_MESSAGE_V2 = 40002;
 export const KIND_STREAM_MESSAGE_EDIT = 40003;
 export const KIND_SYSTEM_MESSAGE = 40099;
 export const KIND_MANAGED_AGENT = 30177;
-export const KIND_HOSTED_AGENT_CONFIG = 30179;
+/** Public hosted-agent presentation configuration. Kind 30179 is private. */
+export const KIND_HOSTED_AGENT_CONFIG = 30180;
+export const KIND_MEMBER_ADDED_NOTIFICATION = 44100;
+export const KIND_MEMBER_REMOVED_NOTIFICATION = 44101;
 export const KIND_NIP29_DELETE = 9005;
 export const KIND_NIP29_PUT_USER = 9000;
 export const KIND_NIP29_REMOVE_USER = 9001;
 export const KIND_NIP29_EDIT_METADATA = 9002;
 export const KIND_NIP29_DELETE_GROUP = 9008;
 
-const HOSTED_AGENT_CONFIG_SCHEMA = "buzz.hosted-agent-config.v1";
+export { HOSTED_AGENT_CONFIG_SCHEMA };
 
 const MESSAGE_KINDS = [
   KIND_STREAM_MESSAGE,
@@ -93,6 +108,8 @@ export type WorkspaceProfile = {
   ownerPubkey?: string;
   accessTier?: "shared" | "personal" | "admin";
   model?: string;
+  /** Runtime-declared integrations and data sources. Presentation configs cannot grant these. */
+  resources?: string[];
 };
 
 export type WorkspaceMessage = NostrEvent & {
@@ -105,6 +122,8 @@ export type ReactionSummary = {
   /** The message that received this reaction. */
   eventId: string;
   emoji: string;
+  /** Safe NIP-30 image metadata for a custom reaction, when unambiguous. */
+  emojiUrl?: string;
   authors: string[];
   /** The latest reaction event from each author, used for NIP-09 removal. */
   reactionEventIdsByAuthor: Record<string, string>;
@@ -131,11 +150,7 @@ function dedupeReplaceable(events: NostrEvent[]): NostrEvent[] {
   for (const event of events) {
     const key = `${event.kind}:${event.pubkey}:${firstTag(event, "d") ?? ""}`;
     const current = latest.get(key);
-    if (
-      !current ||
-      event.created_at > current.created_at ||
-      (event.created_at === current.created_at && event.id > current.id)
-    ) {
+    if (isNewerReplaceableHead(event, current)) {
       latest.set(key, event);
     }
   }
@@ -151,33 +166,17 @@ function parsedContent(event: NostrEvent): Record<string, unknown> {
 }
 
 function isHostedAgentConfigEvent(event: NostrEvent): boolean {
-  if (event.kind === KIND_HOSTED_AGENT_CONFIG) return true;
-  if (event.kind !== KIND_MANAGED_AGENT) return false;
-  const content = parsedContent(event);
-  return (
-    content.schema === HOSTED_AGENT_CONFIG_SCHEMA &&
-    (firstTag(event, "d") ?? "").startsWith("hosted-agent:")
-  );
+  return hostedAgentConfigTargetForEvent(event) !== null;
 }
 
 function hostedAgentConfigTarget(event: NostrEvent): string | null {
-  if (!isHostedAgentConfigEvent(event)) return null;
-  const content = parsedContent(event);
-  const declared = content.agent_pubkey;
-  if (typeof declared === "string" && declared.trim()) {
-    return declared.trim().toLowerCase();
-  }
-  const dTag = firstTag(event, "d") ?? "";
-  const target = dTag.startsWith("hosted-agent:")
-    ? dTag.slice("hosted-agent:".length)
-    : dTag;
-  return target.trim().toLowerCase() || null;
+  return hostedAgentConfigTargetForEvent(event);
 }
 
 function communityAdminPubkeys(events: NostrEvent[]): Set<string> {
   const latest = [...events].sort(
     (left, right) =>
-      right.created_at - left.created_at || right.id.localeCompare(left.id),
+      right.created_at - left.created_at || left.id.localeCompare(right.id),
   )[0];
   if (!latest) return new Set();
   return new Set(
@@ -210,11 +209,7 @@ function applyHostedAgentConfigs(
       continue;
     }
     const current = latestByTarget.get(target);
-    if (
-      !current ||
-      event.created_at > current.created_at ||
-      (event.created_at === current.created_at && event.id > current.id)
-    ) {
+    if (isNewerReplaceableHead(event, current)) {
       latestByTarget.set(target, event);
     }
   }
@@ -425,7 +420,7 @@ export async function listWorkspaceCommunityMembers(): Promise<
   );
   const latest = events.sort(
     (left, right) =>
-      right.created_at - left.created_at || right.id.localeCompare(left.id),
+      right.created_at - left.created_at || left.id.localeCompare(right.id),
   )[0];
   if (!latest) return [];
   return latest.tags
@@ -454,7 +449,7 @@ export async function listWorkspaceChannelMembers(
   );
   const event = events.sort(
     (left, right) =>
-      right.created_at - left.created_at || right.id.localeCompare(left.id),
+      right.created_at - left.created_at || left.id.localeCompare(right.id),
   )[0];
   if (!event) return [];
   return allTags(event, "p")
@@ -492,7 +487,7 @@ export async function listAgents(
         kinds: [KIND_COMMUNITY_MEMBERS],
         limit: 50,
       }),
-      listArchivedIdentities(),
+      listArchivedWorkspaceIdentities(),
     ]);
   const events = hostedDirectoryEvents(agentEvents);
   const agentPubkeys = events.map((event) => event.pubkey);
@@ -535,6 +530,14 @@ export async function listAgents(
           ? content.access_tier
           : "shared",
       model: typeof content.model === "string" ? content.model : undefined,
+      resources: Array.isArray(content.resources)
+        ? content.resources
+            .filter(
+              (resource): resource is string => typeof resource === "string",
+            )
+            .map((resource) => resource.trim())
+            .filter(Boolean)
+        : undefined,
     });
   }
   applyHostedAgentConfigs(
@@ -551,48 +554,6 @@ export async function listAgents(
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-async function listArchivedIdentities(): Promise<Set<string>> {
-  try {
-    const infoResponse = await fetch(relayHttpBaseUrl(), {
-      headers: { Accept: "application/nostr+json" },
-    });
-    if (!infoResponse.ok) return new Set();
-    const info = (await infoResponse.json()) as { self?: unknown };
-    if (typeof info.self !== "string" || !/^[0-9a-f]{64}$/i.test(info.self)) {
-      return new Set();
-    }
-    const snapshots = await queryEvents(relayWsUrl(), {
-      kinds: [KIND_ARCHIVED_IDENTITIES],
-      authors: [info.self.toLowerCase()],
-      limit: 50,
-    });
-    const snapshot = dedupeReplaceable(snapshots)[0];
-    if (
-      !snapshot ||
-      snapshot.kind !== KIND_ARCHIVED_IDENTITIES ||
-      snapshot.pubkey.toLowerCase() !== info.self.toLowerCase() ||
-      !verifyEvent(snapshot) ||
-      snapshot.tags.filter((tag) => tag.length === 1 && tag[0] === "-")
-        .length !== 1
-    ) {
-      return new Set();
-    }
-    return new Set(
-      snapshot.tags
-        .filter(
-          (tag) =>
-            tag[0] === "p" &&
-            typeof tag[1] === "string" &&
-            /^[0-9a-f]{64}$/i.test(tag[1]),
-        )
-        .map((tag) => tag[1].toLowerCase()),
-    );
-  } catch {
-    // Archive state is a visibility hint. Fail open if trust cannot be proven.
-    return new Set();
-  }
-}
-
 export async function listReactions(
   eventIds: string[],
 ): Promise<Map<string, ReactionSummary[]>> {
@@ -603,13 +564,21 @@ export async function listReactions(
     limit: 500,
   });
   const grouped = new Map<string, Map<string, ReactionSummary>>();
-  for (const reaction of reactions) {
+  for (const reaction of reactions.sort(
+    (left, right) =>
+      right.created_at - left.created_at || left.id.localeCompare(right.id),
+  )) {
     const target = firstTag(reaction, "e");
     if (!target) continue;
+    const customEmoji = customEmojiFromReaction(
+      reaction.content,
+      reaction.tags,
+    );
     const byEmoji = grouped.get(target) ?? new Map<string, ReactionSummary>();
     const summary = byEmoji.get(reaction.content) ?? {
       eventId: target,
       emoji: reaction.content,
+      ...(customEmoji ? { emojiUrl: customEmoji.url } : {}),
       authors: [],
       reactionEventIdsByAuthor: {},
     };
@@ -637,6 +606,7 @@ export function sendWorkspaceMessage(
   content: string,
   replyTo?: WorkspaceMessage,
   mentionPubkeys: string[] = [],
+  mediaTags: string[][] = [],
 ): Promise<NostrEvent> {
   const tags: string[][] = [["h", channelId]];
   if (replyTo) {
@@ -650,11 +620,17 @@ export function sendWorkspaceMessage(
   for (const pubkey of [...new Set(mentionPubkeys)]) {
     tags.push(["p", pubkey]);
   }
+  tags.push(...mediaTags);
   return publishEvent(relayWsUrl(), {
     kind: KIND_STREAM_MESSAGE,
     content: content.trim(),
     tags,
   });
+}
+
+/** Match the relay/desktop canonical channel-name normalization exactly. */
+export function canonicalWorkspaceChannelName(name: string): string {
+  return name.replace(/^[#\s]+/, "").trimEnd();
 }
 
 export function createWorkspaceChannel(
@@ -672,7 +648,7 @@ export function createWorkspaceChannel(
     content: "",
     tags: [
       ["h", crypto.randomUUID()],
-      ["name", name.trim().replace(/^#+/, "")],
+      ["name", canonicalWorkspaceChannelName(name)],
       ["visibility", options.visibility === "private" ? "private" : "open"],
       ["channel_type", options.type ?? "stream"],
       ...(about.trim() ? [["about", about.trim()]] : []),
@@ -686,7 +662,9 @@ export function updateWorkspaceChannel(
   input: WorkspaceChannelUpdate,
 ): Promise<NostrEvent> {
   const tags: string[][] = [["h", channelId]];
-  if (input.name !== undefined) tags.push(["name", input.name.trim()]);
+  if (input.name !== undefined) {
+    tags.push(["name", canonicalWorkspaceChannelName(input.name)]);
+  }
   if (input.about !== undefined) tags.push(["about", input.about.trim()]);
   if (input.visibility !== undefined) {
     tags.push([
@@ -771,6 +749,26 @@ export function removeWorkspaceMember(
   });
 }
 
+export type { HostedAgentConfigInput } from "./workspace-hosted-agent-config-policy";
+
+/** Build the canonical, public hosted-agent presentation configuration. */
+export function hostedAgentConfigTemplate(
+  input: import("./workspace-hosted-agent-config-policy").HostedAgentConfigInput,
+): { kind: number; content: string; tags: string[][] } {
+  return buildHostedAgentConfigTemplate(input);
+}
+
+/**
+ * Publish an overlay for an existing hosted directory entry. The relay verifies
+ * that the signer is a community admin or the agent's declared owner; this API
+ * cannot create or manage a browser-local agent.
+ */
+export function publishHostedAgentConfig(
+  input: import("./workspace-hosted-agent-config-policy").HostedAgentConfigInput,
+): Promise<NostrEvent> {
+  return publishEvent(relayWsUrl(), hostedAgentConfigTemplate(input));
+}
+
 export async function publishWorkspaceProfile(
   pubkey: string,
   displayName: string,
@@ -781,7 +779,7 @@ export async function publishWorkspaceProfile(
     limit: 20,
   });
   const existing = existingEvents.sort(
-    (a, b) => b.created_at - a.created_at || b.id.localeCompare(a.id),
+    (a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id),
   )[0];
   let content: Record<string, unknown> = {};
   if (existing) {
@@ -836,11 +834,22 @@ export function deleteWorkspaceMessage(
 export function reactToWorkspaceMessage(
   message: WorkspaceMessage,
   emoji: string,
+  customEmoji?: CustomEmoji | null,
 ): Promise<NostrEvent> {
+  const shortcode = customEmoji
+    ? normalizeEmojiShortcode(customEmoji.shortcode)
+    : null;
+  const customEmojiTags =
+    customEmoji &&
+    shortcode &&
+    emoji.trim().toLowerCase() === `:${shortcode}:` &&
+    isSafeEmojiImageUrl(customEmoji.url)
+      ? [["emoji", shortcode, customEmoji.url]]
+      : [];
   return publishEvent(relayWsUrl(), {
     kind: KIND_REACTION,
     content: emoji,
-    tags: [["e", message.id]],
+    tags: [["e", message.id], ...customEmojiTags],
   });
 }
 
@@ -867,7 +876,7 @@ export async function removeWorkspaceReaction(
       .filter((reaction) => reaction.content === emoji)
       .sort(
         (left, right) =>
-          right.created_at - left.created_at || right.id.localeCompare(left.id),
+          right.created_at - left.created_at || left.id.localeCompare(right.id),
       )[0]?.id;
   }
   if (!reactionEventId) return null;
@@ -906,6 +915,66 @@ export function subscribeToChannels(
       since: Math.floor(Date.now() / 1000),
     },
     (event) => onEvent(parseMessage(event)),
+    onStatus,
+  );
+}
+
+/**
+ * Live NIP-29 catalog heads. The relay permits this exclusive discovery filter
+ * to cross its channel routing boundary, then rechecks open/private access for
+ * every recipient before fan-out.
+ */
+export function subscribeToWorkspaceChannelCatalog(
+  onEvent: (event: NostrEvent) => void,
+  onStatus?: Parameters<typeof subscribeEvents>[3],
+): () => void {
+  return subscribeEvents(
+    relayWsUrl(),
+    {
+      kinds: [KIND_CHANNEL_METADATA, KIND_CHANNEL_MEMBERS],
+      since: Math.floor(Date.now() / 1000),
+    },
+    onEvent,
+    onStatus,
+  );
+}
+
+/** Live hosted-directory, authorized-overlay, and community-role updates. */
+export function subscribeToWorkspaceDirectory(
+  onEvent: (event: NostrEvent) => void,
+  onStatus?: Parameters<typeof subscribeEvents>[3],
+): () => void {
+  return subscribeEvents(
+    relayWsUrl(),
+    {
+      kinds: [
+        KIND_AGENT_PROFILE,
+        KIND_HOSTED_AGENT_CONFIG,
+        KIND_MANAGED_AGENT,
+        KIND_COMMUNITY_MEMBERS,
+      ],
+      since: Math.floor(Date.now() / 1000),
+    },
+    onEvent,
+    onStatus,
+  );
+}
+
+/** Receive the recipient-targeted join/leave signals for the current viewer. */
+export function subscribeToWorkspaceMembershipChanges(
+  viewerPubkey: string,
+  onEvent: (event: NostrEvent) => void,
+  onStatus?: Parameters<typeof subscribeEvents>[3],
+): () => void {
+  if (!viewerPubkey) return () => {};
+  return subscribeEvents(
+    relayWsUrl(),
+    {
+      kinds: [KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION],
+      "#p": [viewerPubkey.toLowerCase()],
+      since: Math.floor(Date.now() / 1000),
+    },
+    onEvent,
     onStatus,
   );
 }

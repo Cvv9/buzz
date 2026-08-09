@@ -37,6 +37,12 @@ that execution roster.
 - `Project Brain` — shared, read-only answers backed by Project Intelligence
 - `Market Intelligence` — shared research intake backed by Sylar's dedicated
   MarketIntelligence specialist for durable multi-source work
+- `Opportunity Scout` — shared opportunity discovery, evidence-based scoring,
+  and portfolio-fit analysis
+- `Bid & Partnerships Desk` — shared tender/partner qualification, compliance
+  matrices, evidence packs, and review-ready response drafts
+- `GTM & Customer Discovery` — shared customer-evidence synthesis, positioning,
+  interview guides, and measurable go-to-market experiments
 - `People & Culture` — shared, opt-in welcomes, introductions, team rituals,
   and celebrations for explicitly verified milestones
 - `Founder Chief of Staff` — Varun's private portfolio and Sylars coordinator
@@ -47,7 +53,9 @@ that execution roster.
 Trend Radar is a scheduled integration rather than another always-on Codex
 container. Sylars' `news-digest` job scrapes subscribed topics and posts one
 synthesized briefing to a dedicated Buzz channel. The full article feed remains
-in the Sylars dashboard.
+in the Sylars dashboard. Its dedicated webhook is required and must target
+`#tech-radar` (or another subscribed-topic channel); it never falls back to the
+Operations webhook.
 
 Generation-ready visual briefs for this roster live in
 [`AGENT_AVATAR_PROMPTS.md`](AGENT_AVATAR_PROMPTS.md).
@@ -58,7 +66,8 @@ them only when the signed-in pubkey matches `VARUN_PUBKEY` (falling back to
 owner. This is in addition to channel membership enforcement.
 
 `Project Brain` receives only `PROJECT_INTELLIGENCE_READ_TOKEN`. `Market
-Intelligence`, `Founder Chief of Staff`, and `Operations Desk` receive
+Intelligence`, `Founder Chief of Staff`, `Operations Desk`, `Opportunity Scout`,
+`Bid & Partnerships Desk`, and `GTM & Customer Discovery` receive the scoped
 `SYLARS_CONTROL_API_TOKEN`, which can submit, read, deny, or cancel tasks but
 cannot approve machine-submitted work.
 Their remote HTTP MCP endpoints are adapted to the agent's stdio-only MCP

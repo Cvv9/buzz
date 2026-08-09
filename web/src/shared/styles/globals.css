@@ -113,3 +113,23 @@
   background-color: transparent;
   background-image: linear-gradient(to bottom, #4a4616, #0a1423);
 }
+
+html[data-buzz-font-scale="large"] {
+  font-size: 112.5%;
+}
+
+html[data-buzz-font-scale="larger"] {
+  font-size: 125%;
+}
+
+html[data-buzz-reduced-motion="true"] {
+  scroll-behavior: auto;
+}
+
+html[data-buzz-reduced-motion="true"] *,
+html[data-buzz-reduced-motion="true"] *::before,
+html[data-buzz-reduced-motion="true"] *::after {
+  animation-duration: 0.01ms;
+  animation-iteration-count: 1;
+  transition-duration: 0.01ms;
+}

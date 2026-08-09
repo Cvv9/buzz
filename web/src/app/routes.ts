@@ -2,8 +2,38 @@ import { index, route, rootRoute } from "@tanstack/virtual-file-routes";
 
 export const routes = rootRoute("root.tsx", [
   index("index.tsx"),
+  route("/messages/new", "messages.new.tsx"),
+  route("/messages/$channelId", "messages.$channelId.tsx"),
+  route("/huddles/$channelId", "huddles.$channelId.tsx"),
+  route("/channels/$channelId/posts", "channels.$channelId.posts.tsx"),
+  route(
+    "/channels/$channelId/posts/$postId",
+    "channels.$channelId.posts.$postId.tsx",
+  ),
+  route("/reminders", "reminders.tsx"),
   route("/invite/$code", "invite.$code.tsx"),
+  route("/profiles/$pubkey", "profiles.$pubkey.tsx"),
+  route("/pulse", "pulse.tsx"),
+  route("/channel-state", "channel-state.tsx"),
+  route("/moderation", "moderation.tsx"),
+  route("/identity-archive", "identity-archive.tsx"),
+  route("/offline", "offline.tsx"),
+  route("/pairing", "pairing.tsx"),
+  route("/preferences", "preferences.tsx"),
   route("/repos", "repos.tsx"),
   route("/repos/$repoId", "repos.$repoId.tsx"),
   route("/repos/$repoId/blob/$", "repos.$repoId.blob.$.tsx"),
+  route(
+    "/repos/$repositoryAddress/work-items",
+    "repos.$repositoryAddress.work-items.tsx",
+  ),
+  route(
+    "/repos/$repositoryAddress/work-items/$workItemId",
+    "repos.$repositoryAddress.work-items.$workItemId.tsx",
+  ),
+  route("/projects", "projects.tsx"),
+  route("/projects/$projectAddress", "projects.$projectAddress.tsx"),
+  route("/search", "search.tsx"),
+  route("/workflows", "workflows.tsx"),
+  route("/workflows/$workflowId", "workflows.$workflowId.tsx"),
 ]);

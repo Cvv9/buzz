@@ -15,6 +15,8 @@ export interface NostrFilter {
   ids?: string[];
   authors?: string[];
   kinds?: number[];
+  /** NIP-50 full-text query. Relay requests must still declare `kinds`. */
+  search?: string;
   since?: number;
   until?: number;
   limit?: number;
@@ -22,6 +24,12 @@ export interface NostrFilter {
 }
 
 export type NostrEvent = SignedNostrEvent;
+
+/** Relay acknowledgement retained for command kinds with a Nostr `OK` response body. */
+export type PublishedEvent = {
+  event: NostrEvent;
+  relayMessage: string | null;
+};
 
 const QUERY_TIMEOUT_MS = 10_000;
 const PUBLISH_TIMEOUT_MS = 10_000;
@@ -185,6 +193,18 @@ export async function publishEvent(
   wsUrl: string,
   template: Parameters<typeof signNostrEvent>[0],
 ): Promise<NostrEvent> {
+  return (await publishEventWithReceipt(wsUrl, template)).event;
+}
+
+/**
+ * Publish a signed event and retain the relay's accepted `OK` message. Command
+ * handlers use this standard Nostr acknowledgement to return a run identifier
+ * or one-time webhook secret; no feature-specific HTTP endpoint is involved.
+ */
+export async function publishEventWithReceipt(
+  wsUrl: string,
+  template: Parameters<typeof signNostrEvent>[0],
+): Promise<PublishedEvent> {
   const event = await signNostrEvent(template, { requireNip07: true });
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
@@ -199,13 +219,13 @@ export async function publishEvent(
       reject(new Error("Publishing to the relay timed out."));
     }, PUBLISH_TIMEOUT_MS);
 
-    const finish = (error?: Error) => {
+    const finish = (error?: Error, relayMessage: string | null = null) => {
       if (settled) return;
       settled = true;
       window.clearTimeout(timeout);
       ws.close();
       if (error) reject(error);
-      else resolve(event);
+      else resolve({ event, relayMessage });
     };
 
     const sendEvent = () => {
@@ -257,6 +277,7 @@ export async function publishEvent(
                   ? data[3]
                   : "The relay rejected the event.",
               ),
+          typeof data[3] === "string" ? data[3] : null,
         );
       }
     });

@@ -29,8 +29,20 @@ export function useWorkspaceIdentity() {
     void restoreIdentity().catch(() => {
       if (active) setIdentityLoading(false);
     });
+    const synchronizeLockState = () => {
+      if (!active) return;
+      setIdentity(getUnlockedBrowserIdentity());
+    };
+    window.addEventListener(
+      "buzz-browser-identity-changed",
+      synchronizeLockState,
+    );
     return () => {
       active = false;
+      window.removeEventListener(
+        "buzz-browser-identity-changed",
+        synchronizeLockState,
+      );
     };
   }, []);
 

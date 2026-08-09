@@ -53,7 +53,9 @@ export const KIND_COMMUNITY_THEME = 30078;
 export const KIND_PERSONA = 30175;
 export const KIND_TEAM = 30176;
 export const KIND_MANAGED_AGENT = 30177;
-export const KIND_HOSTED_AGENT_CONFIG = 30179;
+// Public hosted-agent presentation config. Kind 30179 is intentionally reserved
+// for encrypted, author-only managed-agent aggregates.
+export const KIND_HOSTED_AGENT_CONFIG = 30180;
 export const KIND_USER_STATUS = 30315;
 export const KIND_AGENT_OBSERVER_FRAME = 24200;
 export const KIND_AGENT_TURN_METRIC = 44200;

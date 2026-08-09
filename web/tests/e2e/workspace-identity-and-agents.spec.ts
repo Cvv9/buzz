@@ -190,6 +190,70 @@ test("mentioning an eligible hosted agent adds it before the message", async ({
   ).toBeVisible();
 });
 
+test("the web agent page explains resources and lets an admin edit profile and channel access", async ({
+  page,
+}) => {
+  const secretKey = generateSecretKey();
+  await installWorkspaceRelayMock(page, getPublicKey(secretKey));
+  await page.goto("/");
+  await page.getByLabel("Display name").fill("Vikram");
+  await page.getByLabel("Recovery key").fill(nsecEncode(secretKey));
+  await page
+    .getByLabel("Password", { exact: true })
+    .fill("agent-admin-password");
+  await page.getByLabel("Confirm password").fill("agent-admin-password");
+  await page.getByRole("button", { name: "Sign in with recovery key" }).click();
+
+  await page.getByTestId("workspace-agents-button").click();
+  await page.getByTestId("agent-row-workspace-agent-7").click();
+  await expect(
+    page.getByRole("paragraph").filter({
+      hasText:
+        "Investigates market questions and returns source-backed findings.",
+    }),
+  ).toBeVisible();
+  await expect(page.getByText("Market Intelligence research")).toBeVisible();
+  await expect(page.getByText("Public web sources")).toBeVisible();
+
+  await page.getByRole("button", { name: "Edit profile" }).click();
+  await page.getByLabel("Name").fill("Opportunity Scout");
+  await page
+    .getByLabel("Profile picture URL")
+    .fill("https://example.test/scout.png");
+  await page.getByRole("button", { name: "Save changes" }).click();
+  await page.getByLabel("general access for Workspace Agent 7").click();
+
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (
+          window as typeof window & {
+            __BUZZ_WEB_E2E_PUBLISHED__: Array<{
+              kind: number;
+              content: string;
+            }>;
+          }
+        ).__BUZZ_WEB_E2E_PUBLISHED__.filter(
+          (relayEvent) => relayEvent.kind === 30180 || relayEvent.kind === 9000,
+        ),
+      ),
+    )
+    .toHaveLength(2);
+  const published = await page.evaluate(
+    () =>
+      (
+        window as typeof window & {
+          __BUZZ_WEB_E2E_PUBLISHED__: Array<{ kind: number; content: string }>;
+        }
+      ).__BUZZ_WEB_E2E_PUBLISHED__,
+  );
+  const config = published.find((relayEvent) => relayEvent.kind === 30180);
+  expect(JSON.parse(config?.content ?? "{}")).toMatchObject({
+    name: "Opportunity Scout",
+    avatar_url: "https://example.test/scout.png",
+  });
+});
+
 test("admin-edited hosted agent identity is shared across the web roster and mentions", async ({
   page,
 }) => {

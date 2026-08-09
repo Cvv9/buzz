@@ -5,15 +5,91 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from "./routes/root";
+import { Route as workflowsRouteImport } from "./routes/workflows";
+import { Route as searchRouteImport } from "./routes/search";
 import { Route as reposRouteImport } from "./routes/repos";
+import { Route as remindersRouteImport } from "./routes/reminders";
+import { Route as pulseRouteImport } from "./routes/pulse";
+import { Route as projectsRouteImport } from "./routes/projects";
+import { Route as preferencesRouteImport } from "./routes/preferences";
+import { Route as pairingRouteImport } from "./routes/pairing";
+import { Route as offlineRouteImport } from "./routes/offline";
+import { Route as moderationRouteImport } from "./routes/moderation";
+import { Route as identityArchiveRouteImport } from "./routes/identity-archive";
+import { Route as channelStateRouteImport } from "./routes/channel-state";
 import { Route as indexRouteImport } from "./routes/index";
+import { Route as workflowsDotworkflowIdRouteImport } from "./routes/workflows.$workflowId";
 import { Route as reposDotrepoIdRouteImport } from "./routes/repos.$repoId";
+import { Route as projectsDotprojectAddressRouteImport } from "./routes/projects.$projectAddress";
+import { Route as profilesDotpubkeyRouteImport } from "./routes/profiles.$pubkey";
+import { Route as messagesDotnewRouteImport } from "./routes/messages.new";
+import { Route as messagesDotchannelIdRouteImport } from "./routes/messages.$channelId";
 import { Route as inviteDotcodeRouteImport } from "./routes/invite.$code";
+import { Route as huddlesDotchannelIdRouteImport } from "./routes/huddles.$channelId";
+import { Route as reposDotrepositoryAddressDotworkItemsRouteImport } from "./routes/repos.$repositoryAddress.work-items";
+import { Route as channelsDotchannelIdDotpostsRouteImport } from "./routes/channels.$channelId.posts";
+import { Route as reposDotrepositoryAddressDotworkItemsDotworkItemIdRouteImport } from "./routes/repos.$repositoryAddress.work-items.$workItemId";
 import { Route as reposDotrepoIdDotblobDotsplatRouteImport } from "./routes/repos.$repoId.blob.$";
+import { Route as channelsDotchannelIdDotpostsDotpostIdRouteImport } from "./routes/channels.$channelId.posts.$postId";
 
+const workflowsRoute = workflowsRouteImport.update({
+  id: "/workflows",
+  path: "/workflows",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const searchRoute = searchRouteImport.update({
+  id: "/search",
+  path: "/search",
+  getParentRoute: () => rootRouteImport,
+} as any);
 const reposRoute = reposRouteImport.update({
   id: "/repos",
   path: "/repos",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const remindersRoute = remindersRouteImport.update({
+  id: "/reminders",
+  path: "/reminders",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const pulseRoute = pulseRouteImport.update({
+  id: "/pulse",
+  path: "/pulse",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const projectsRoute = projectsRouteImport.update({
+  id: "/projects",
+  path: "/projects",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const preferencesRoute = preferencesRouteImport.update({
+  id: "/preferences",
+  path: "/preferences",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const pairingRoute = pairingRouteImport.update({
+  id: "/pairing",
+  path: "/pairing",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const offlineRoute = offlineRouteImport.update({
+  id: "/offline",
+  path: "/offline",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const moderationRoute = moderationRouteImport.update({
+  id: "/moderation",
+  path: "/moderation",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const identityArchiveRoute = identityArchiveRouteImport.update({
+  id: "/identity-archive",
+  path: "/identity-archive",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const channelStateRoute = channelStateRouteImport.update({
+  id: "/channel-state",
+  path: "/channel-state",
   getParentRoute: () => rootRouteImport,
 } as any);
 const indexRoute = indexRouteImport.update({
@@ -21,9 +97,35 @@ const indexRoute = indexRouteImport.update({
   path: "/",
   getParentRoute: () => rootRouteImport,
 } as any);
+const workflowsDotworkflowIdRoute = workflowsDotworkflowIdRouteImport.update({
+  id: "/workflows/$workflowId",
+  path: "/workflows/$workflowId",
+  getParentRoute: () => rootRouteImport,
+} as any);
 const reposDotrepoIdRoute = reposDotrepoIdRouteImport.update({
   id: "/repos/$repoId",
   path: "/repos/$repoId",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const projectsDotprojectAddressRoute =
+  projectsDotprojectAddressRouteImport.update({
+    id: "/projects/$projectAddress",
+    path: "/projects/$projectAddress",
+    getParentRoute: () => rootRouteImport,
+  } as any);
+const profilesDotpubkeyRoute = profilesDotpubkeyRouteImport.update({
+  id: "/profiles/$pubkey",
+  path: "/profiles/$pubkey",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const messagesDotnewRoute = messagesDotnewRouteImport.update({
+  id: "/messages/new",
+  path: "/messages/new",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const messagesDotchannelIdRoute = messagesDotchannelIdRouteImport.update({
+  id: "/messages/$channelId",
+  path: "/messages/$channelId",
   getParentRoute: () => rootRouteImport,
 } as any);
 const inviteDotcodeRoute = inviteDotcodeRouteImport.update({
@@ -31,74 +133,327 @@ const inviteDotcodeRoute = inviteDotcodeRouteImport.update({
   path: "/invite/$code",
   getParentRoute: () => rootRouteImport,
 } as any);
+const huddlesDotchannelIdRoute = huddlesDotchannelIdRouteImport.update({
+  id: "/huddles/$channelId",
+  path: "/huddles/$channelId",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const reposDotrepositoryAddressDotworkItemsRoute =
+  reposDotrepositoryAddressDotworkItemsRouteImport.update({
+    id: "/repos/$repositoryAddress/work-items",
+    path: "/repos/$repositoryAddress/work-items",
+    getParentRoute: () => rootRouteImport,
+  } as any);
+const channelsDotchannelIdDotpostsRoute =
+  channelsDotchannelIdDotpostsRouteImport.update({
+    id: "/channels/$channelId/posts",
+    path: "/channels/$channelId/posts",
+    getParentRoute: () => rootRouteImport,
+  } as any);
+const reposDotrepositoryAddressDotworkItemsDotworkItemIdRoute =
+  reposDotrepositoryAddressDotworkItemsDotworkItemIdRouteImport.update({
+    id: "/repos/$repositoryAddress/work-items/$workItemId",
+    path: "/repos/$repositoryAddress/work-items/$workItemId",
+    getParentRoute: () => rootRouteImport,
+  } as any);
 const reposDotrepoIdDotblobDotsplatRoute =
   reposDotrepoIdDotblobDotsplatRouteImport.update({
     id: "/repos/$repoId/blob/$",
     path: "/repos/$repoId/blob/$",
     getParentRoute: () => rootRouteImport,
   } as any);
+const channelsDotchannelIdDotpostsDotpostIdRoute =
+  channelsDotchannelIdDotpostsDotpostIdRouteImport.update({
+    id: "/channels/$channelId/posts/$postId",
+    path: "/channels/$channelId/posts/$postId",
+    getParentRoute: () => rootRouteImport,
+  } as any);
 
 export interface FileRoutesByFullPath {
   "/": typeof indexRoute;
+  "/channel-state": typeof channelStateRoute;
+  "/identity-archive": typeof identityArchiveRoute;
+  "/moderation": typeof moderationRoute;
+  "/offline": typeof offlineRoute;
+  "/pairing": typeof pairingRoute;
+  "/preferences": typeof preferencesRoute;
+  "/projects": typeof projectsRoute;
+  "/pulse": typeof pulseRoute;
+  "/reminders": typeof remindersRoute;
   "/repos": typeof reposRoute;
+  "/search": typeof searchRoute;
+  "/workflows": typeof workflowsRoute;
+  "/huddles/$channelId": typeof huddlesDotchannelIdRoute;
   "/invite/$code": typeof inviteDotcodeRoute;
+  "/messages/$channelId": typeof messagesDotchannelIdRoute;
+  "/messages/new": typeof messagesDotnewRoute;
+  "/profiles/$pubkey": typeof profilesDotpubkeyRoute;
+  "/projects/$projectAddress": typeof projectsDotprojectAddressRoute;
   "/repos/$repoId": typeof reposDotrepoIdRoute;
+  "/workflows/$workflowId": typeof workflowsDotworkflowIdRoute;
+  "/channels/$channelId/posts": typeof channelsDotchannelIdDotpostsRoute;
+  "/repos/$repositoryAddress/work-items": typeof reposDotrepositoryAddressDotworkItemsRoute;
+  "/channels/$channelId/posts/$postId": typeof channelsDotchannelIdDotpostsDotpostIdRoute;
   "/repos/$repoId/blob/$": typeof reposDotrepoIdDotblobDotsplatRoute;
+  "/repos/$repositoryAddress/work-items/$workItemId": typeof reposDotrepositoryAddressDotworkItemsDotworkItemIdRoute;
 }
 export interface FileRoutesByTo {
   "/": typeof indexRoute;
+  "/channel-state": typeof channelStateRoute;
+  "/identity-archive": typeof identityArchiveRoute;
+  "/moderation": typeof moderationRoute;
+  "/offline": typeof offlineRoute;
+  "/pairing": typeof pairingRoute;
+  "/preferences": typeof preferencesRoute;
+  "/projects": typeof projectsRoute;
+  "/pulse": typeof pulseRoute;
+  "/reminders": typeof remindersRoute;
   "/repos": typeof reposRoute;
+  "/search": typeof searchRoute;
+  "/workflows": typeof workflowsRoute;
+  "/huddles/$channelId": typeof huddlesDotchannelIdRoute;
   "/invite/$code": typeof inviteDotcodeRoute;
+  "/messages/$channelId": typeof messagesDotchannelIdRoute;
+  "/messages/new": typeof messagesDotnewRoute;
+  "/profiles/$pubkey": typeof profilesDotpubkeyRoute;
+  "/projects/$projectAddress": typeof projectsDotprojectAddressRoute;
   "/repos/$repoId": typeof reposDotrepoIdRoute;
+  "/workflows/$workflowId": typeof workflowsDotworkflowIdRoute;
+  "/channels/$channelId/posts": typeof channelsDotchannelIdDotpostsRoute;
+  "/repos/$repositoryAddress/work-items": typeof reposDotrepositoryAddressDotworkItemsRoute;
+  "/channels/$channelId/posts/$postId": typeof channelsDotchannelIdDotpostsDotpostIdRoute;
   "/repos/$repoId/blob/$": typeof reposDotrepoIdDotblobDotsplatRoute;
+  "/repos/$repositoryAddress/work-items/$workItemId": typeof reposDotrepositoryAddressDotworkItemsDotworkItemIdRoute;
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport;
   "/": typeof indexRoute;
+  "/channel-state": typeof channelStateRoute;
+  "/identity-archive": typeof identityArchiveRoute;
+  "/moderation": typeof moderationRoute;
+  "/offline": typeof offlineRoute;
+  "/pairing": typeof pairingRoute;
+  "/preferences": typeof preferencesRoute;
+  "/projects": typeof projectsRoute;
+  "/pulse": typeof pulseRoute;
+  "/reminders": typeof remindersRoute;
   "/repos": typeof reposRoute;
+  "/search": typeof searchRoute;
+  "/workflows": typeof workflowsRoute;
+  "/huddles/$channelId": typeof huddlesDotchannelIdRoute;
   "/invite/$code": typeof inviteDotcodeRoute;
+  "/messages/$channelId": typeof messagesDotchannelIdRoute;
+  "/messages/new": typeof messagesDotnewRoute;
+  "/profiles/$pubkey": typeof profilesDotpubkeyRoute;
+  "/projects/$projectAddress": typeof projectsDotprojectAddressRoute;
   "/repos/$repoId": typeof reposDotrepoIdRoute;
+  "/workflows/$workflowId": typeof workflowsDotworkflowIdRoute;
+  "/channels/$channelId/posts": typeof channelsDotchannelIdDotpostsRoute;
+  "/repos/$repositoryAddress/work-items": typeof reposDotrepositoryAddressDotworkItemsRoute;
+  "/channels/$channelId/posts/$postId": typeof channelsDotchannelIdDotpostsDotpostIdRoute;
   "/repos/$repoId/blob/$": typeof reposDotrepoIdDotblobDotsplatRoute;
+  "/repos/$repositoryAddress/work-items/$workItemId": typeof reposDotrepositoryAddressDotworkItemsDotworkItemIdRoute;
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath;
   fullPaths:
     | "/"
+    | "/channel-state"
+    | "/identity-archive"
+    | "/moderation"
+    | "/offline"
+    | "/pairing"
+    | "/preferences"
+    | "/projects"
+    | "/pulse"
+    | "/reminders"
     | "/repos"
+    | "/search"
+    | "/workflows"
+    | "/huddles/$channelId"
     | "/invite/$code"
+    | "/messages/$channelId"
+    | "/messages/new"
+    | "/profiles/$pubkey"
+    | "/projects/$projectAddress"
     | "/repos/$repoId"
-    | "/repos/$repoId/blob/$";
+    | "/workflows/$workflowId"
+    | "/channels/$channelId/posts"
+    | "/repos/$repositoryAddress/work-items"
+    | "/channels/$channelId/posts/$postId"
+    | "/repos/$repoId/blob/$"
+    | "/repos/$repositoryAddress/work-items/$workItemId";
   fileRoutesByTo: FileRoutesByTo;
   to:
     | "/"
+    | "/channel-state"
+    | "/identity-archive"
+    | "/moderation"
+    | "/offline"
+    | "/pairing"
+    | "/preferences"
+    | "/projects"
+    | "/pulse"
+    | "/reminders"
     | "/repos"
+    | "/search"
+    | "/workflows"
+    | "/huddles/$channelId"
     | "/invite/$code"
+    | "/messages/$channelId"
+    | "/messages/new"
+    | "/profiles/$pubkey"
+    | "/projects/$projectAddress"
     | "/repos/$repoId"
-    | "/repos/$repoId/blob/$";
+    | "/workflows/$workflowId"
+    | "/channels/$channelId/posts"
+    | "/repos/$repositoryAddress/work-items"
+    | "/channels/$channelId/posts/$postId"
+    | "/repos/$repoId/blob/$"
+    | "/repos/$repositoryAddress/work-items/$workItemId";
   id:
     | "__root__"
     | "/"
+    | "/channel-state"
+    | "/identity-archive"
+    | "/moderation"
+    | "/offline"
+    | "/pairing"
+    | "/preferences"
+    | "/projects"
+    | "/pulse"
+    | "/reminders"
     | "/repos"
+    | "/search"
+    | "/workflows"
+    | "/huddles/$channelId"
     | "/invite/$code"
+    | "/messages/$channelId"
+    | "/messages/new"
+    | "/profiles/$pubkey"
+    | "/projects/$projectAddress"
     | "/repos/$repoId"
-    | "/repos/$repoId/blob/$";
+    | "/workflows/$workflowId"
+    | "/channels/$channelId/posts"
+    | "/repos/$repositoryAddress/work-items"
+    | "/channels/$channelId/posts/$postId"
+    | "/repos/$repoId/blob/$"
+    | "/repos/$repositoryAddress/work-items/$workItemId";
   fileRoutesById: FileRoutesById;
 }
 export interface RootRouteChildren {
   indexRoute: typeof indexRoute;
+  channelStateRoute: typeof channelStateRoute;
+  identityArchiveRoute: typeof identityArchiveRoute;
+  moderationRoute: typeof moderationRoute;
+  offlineRoute: typeof offlineRoute;
+  pairingRoute: typeof pairingRoute;
+  preferencesRoute: typeof preferencesRoute;
+  projectsRoute: typeof projectsRoute;
+  pulseRoute: typeof pulseRoute;
+  remindersRoute: typeof remindersRoute;
   reposRoute: typeof reposRoute;
+  searchRoute: typeof searchRoute;
+  workflowsRoute: typeof workflowsRoute;
+  huddlesDotchannelIdRoute: typeof huddlesDotchannelIdRoute;
   inviteDotcodeRoute: typeof inviteDotcodeRoute;
+  messagesDotchannelIdRoute: typeof messagesDotchannelIdRoute;
+  messagesDotnewRoute: typeof messagesDotnewRoute;
+  profilesDotpubkeyRoute: typeof profilesDotpubkeyRoute;
+  projectsDotprojectAddressRoute: typeof projectsDotprojectAddressRoute;
   reposDotrepoIdRoute: typeof reposDotrepoIdRoute;
+  workflowsDotworkflowIdRoute: typeof workflowsDotworkflowIdRoute;
+  channelsDotchannelIdDotpostsRoute: typeof channelsDotchannelIdDotpostsRoute;
+  reposDotrepositoryAddressDotworkItemsRoute: typeof reposDotrepositoryAddressDotworkItemsRoute;
+  channelsDotchannelIdDotpostsDotpostIdRoute: typeof channelsDotchannelIdDotpostsDotpostIdRoute;
   reposDotrepoIdDotblobDotsplatRoute: typeof reposDotrepoIdDotblobDotsplatRoute;
+  reposDotrepositoryAddressDotworkItemsDotworkItemIdRoute: typeof reposDotrepositoryAddressDotworkItemsDotworkItemIdRoute;
 }
 
 declare module "@tanstack/react-router" {
   interface FileRoutesByPath {
+    "/workflows": {
+      id: "/workflows";
+      path: "/workflows";
+      fullPath: "/workflows";
+      preLoaderRoute: typeof workflowsRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/search": {
+      id: "/search";
+      path: "/search";
+      fullPath: "/search";
+      preLoaderRoute: typeof searchRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
     "/repos": {
       id: "/repos";
       path: "/repos";
       fullPath: "/repos";
       preLoaderRoute: typeof reposRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/reminders": {
+      id: "/reminders";
+      path: "/reminders";
+      fullPath: "/reminders";
+      preLoaderRoute: typeof remindersRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/pulse": {
+      id: "/pulse";
+      path: "/pulse";
+      fullPath: "/pulse";
+      preLoaderRoute: typeof pulseRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/projects": {
+      id: "/projects";
+      path: "/projects";
+      fullPath: "/projects";
+      preLoaderRoute: typeof projectsRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/preferences": {
+      id: "/preferences";
+      path: "/preferences";
+      fullPath: "/preferences";
+      preLoaderRoute: typeof preferencesRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/pairing": {
+      id: "/pairing";
+      path: "/pairing";
+      fullPath: "/pairing";
+      preLoaderRoute: typeof pairingRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/offline": {
+      id: "/offline";
+      path: "/offline";
+      fullPath: "/offline";
+      preLoaderRoute: typeof offlineRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/moderation": {
+      id: "/moderation";
+      path: "/moderation";
+      fullPath: "/moderation";
+      preLoaderRoute: typeof moderationRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/identity-archive": {
+      id: "/identity-archive";
+      path: "/identity-archive";
+      fullPath: "/identity-archive";
+      preLoaderRoute: typeof identityArchiveRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/channel-state": {
+      id: "/channel-state";
+      path: "/channel-state";
+      fullPath: "/channel-state";
+      preLoaderRoute: typeof channelStateRouteImport;
       parentRoute: typeof rootRouteImport;
     };
     "/": {
@@ -108,11 +463,46 @@ declare module "@tanstack/react-router" {
       preLoaderRoute: typeof indexRouteImport;
       parentRoute: typeof rootRouteImport;
     };
+    "/workflows/$workflowId": {
+      id: "/workflows/$workflowId";
+      path: "/workflows/$workflowId";
+      fullPath: "/workflows/$workflowId";
+      preLoaderRoute: typeof workflowsDotworkflowIdRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
     "/repos/$repoId": {
       id: "/repos/$repoId";
       path: "/repos/$repoId";
       fullPath: "/repos/$repoId";
       preLoaderRoute: typeof reposDotrepoIdRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/projects/$projectAddress": {
+      id: "/projects/$projectAddress";
+      path: "/projects/$projectAddress";
+      fullPath: "/projects/$projectAddress";
+      preLoaderRoute: typeof projectsDotprojectAddressRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/profiles/$pubkey": {
+      id: "/profiles/$pubkey";
+      path: "/profiles/$pubkey";
+      fullPath: "/profiles/$pubkey";
+      preLoaderRoute: typeof profilesDotpubkeyRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/messages/new": {
+      id: "/messages/new";
+      path: "/messages/new";
+      fullPath: "/messages/new";
+      preLoaderRoute: typeof messagesDotnewRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/messages/$channelId": {
+      id: "/messages/$channelId";
+      path: "/messages/$channelId";
+      fullPath: "/messages/$channelId";
+      preLoaderRoute: typeof messagesDotchannelIdRouteImport;
       parentRoute: typeof rootRouteImport;
     };
     "/invite/$code": {
@@ -122,6 +512,34 @@ declare module "@tanstack/react-router" {
       preLoaderRoute: typeof inviteDotcodeRouteImport;
       parentRoute: typeof rootRouteImport;
     };
+    "/huddles/$channelId": {
+      id: "/huddles/$channelId";
+      path: "/huddles/$channelId";
+      fullPath: "/huddles/$channelId";
+      preLoaderRoute: typeof huddlesDotchannelIdRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/repos/$repositoryAddress/work-items": {
+      id: "/repos/$repositoryAddress/work-items";
+      path: "/repos/$repositoryAddress/work-items";
+      fullPath: "/repos/$repositoryAddress/work-items";
+      preLoaderRoute: typeof reposDotrepositoryAddressDotworkItemsRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/channels/$channelId/posts": {
+      id: "/channels/$channelId/posts";
+      path: "/channels/$channelId/posts";
+      fullPath: "/channels/$channelId/posts";
+      preLoaderRoute: typeof channelsDotchannelIdDotpostsRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/repos/$repositoryAddress/work-items/$workItemId": {
+      id: "/repos/$repositoryAddress/work-items/$workItemId";
+      path: "/repos/$repositoryAddress/work-items/$workItemId";
+      fullPath: "/repos/$repositoryAddress/work-items/$workItemId";
+      preLoaderRoute: typeof reposDotrepositoryAddressDotworkItemsDotworkItemIdRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
     "/repos/$repoId/blob/$": {
       id: "/repos/$repoId/blob/$";
       path: "/repos/$repoId/blob/$";
@@ -129,15 +547,46 @@ declare module "@tanstack/react-router" {
       preLoaderRoute: typeof reposDotrepoIdDotblobDotsplatRouteImport;
       parentRoute: typeof rootRouteImport;
     };
+    "/channels/$channelId/posts/$postId": {
+      id: "/channels/$channelId/posts/$postId";
+      path: "/channels/$channelId/posts/$postId";
+      fullPath: "/channels/$channelId/posts/$postId";
+      preLoaderRoute: typeof channelsDotchannelIdDotpostsDotpostIdRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   indexRoute: indexRoute,
+  channelStateRoute: channelStateRoute,
+  identityArchiveRoute: identityArchiveRoute,
+  moderationRoute: moderationRoute,
+  offlineRoute: offlineRoute,
+  pairingRoute: pairingRoute,
+  preferencesRoute: preferencesRoute,
+  projectsRoute: projectsRoute,
+  pulseRoute: pulseRoute,
+  remindersRoute: remindersRoute,
   reposRoute: reposRoute,
+  searchRoute: searchRoute,
+  workflowsRoute: workflowsRoute,
+  huddlesDotchannelIdRoute: huddlesDotchannelIdRoute,
   inviteDotcodeRoute: inviteDotcodeRoute,
+  messagesDotchannelIdRoute: messagesDotchannelIdRoute,
+  messagesDotnewRoute: messagesDotnewRoute,
+  profilesDotpubkeyRoute: profilesDotpubkeyRoute,
+  projectsDotprojectAddressRoute: projectsDotprojectAddressRoute,
   reposDotrepoIdRoute: reposDotrepoIdRoute,
+  workflowsDotworkflowIdRoute: workflowsDotworkflowIdRoute,
+  channelsDotchannelIdDotpostsRoute: channelsDotchannelIdDotpostsRoute,
+  reposDotrepositoryAddressDotworkItemsRoute:
+    reposDotrepositoryAddressDotworkItemsRoute,
+  channelsDotchannelIdDotpostsDotpostIdRoute:
+    channelsDotchannelIdDotpostsDotpostIdRoute,
   reposDotrepoIdDotblobDotsplatRoute: reposDotrepoIdDotblobDotsplatRoute,
+  reposDotrepositoryAddressDotworkItemsDotworkItemIdRoute:
+    reposDotrepositoryAddressDotworkItemsDotworkItemIdRoute,
 };
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

@@ -9,9 +9,11 @@ import {
   Lock,
   MessageCircle,
   Plus,
+  Search,
   Settings,
   Sparkles,
   Star,
+  Workflow,
   X,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -178,6 +180,10 @@ export function WorkspaceSidebar({
   onOpenInbox,
   onOpenAlerts,
   onOpenAgents,
+  onNewMessage,
+  onOpenReminders,
+  onReopenDirectMessage,
+  hiddenDirectMessages,
   onAddAgent,
   starredChannelIds,
   onToggleStar,
@@ -200,6 +206,10 @@ export function WorkspaceSidebar({
   onOpenInbox: () => void;
   onOpenAlerts: () => void;
   onOpenAgents: () => void;
+  onNewMessage: () => void;
+  onOpenReminders: () => void;
+  onReopenDirectMessage: (channel: WorkspaceChannel) => void;
+  hiddenDirectMessages: WorkspaceChannel[];
   onAddAgent: (agent: WorkspaceProfile) => void;
   starredChannelIds: ReadonlySet<string>;
   onToggleStar: (channelId: string) => void;
@@ -307,6 +317,24 @@ export function WorkspaceSidebar({
           data-testid="workspace-sidebar-scroll"
         >
           <div className="mb-4 space-y-0.5">
+            <a
+              aria-label="Search workspace"
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent"
+              href="/search"
+              onClick={onClose}
+            >
+              <Search className="size-3.5 shrink-0" />
+              <span className="min-w-0 flex-1 truncate">Search</span>
+            </a>
+            <a
+              aria-label="Open workflows"
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent"
+              href="/workflows"
+              onClick={onClose}
+            >
+              <Workflow className="size-3.5 shrink-0" />
+              <span className="min-w-0 flex-1 truncate">Workflows</span>
+            </a>
             <button
               aria-label={
                 inboxUnreadCount
@@ -378,6 +406,18 @@ export function WorkspaceSidebar({
               <Bot className="size-3.5 shrink-0" />
               <span className="min-w-0 flex-1 truncate">Agents</span>
             </button>
+            <button
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent"
+              data-testid="workspace-reminders-button"
+              type="button"
+              onClick={() => {
+                onOpenReminders();
+                onClose();
+              }}
+            >
+              <Bell className="size-3.5 shrink-0" />
+              <span className="min-w-0 flex-1 truncate">Reminders</span>
+            </button>
           </div>
           <div className="mb-6">
             <div className="mb-2 flex items-center justify-between px-2">
@@ -428,11 +468,21 @@ export function WorkspaceSidebar({
             </div>
           </div>
 
-          {directMessages.length ? (
-            <div className="mb-6">
-              <p className="mb-2 px-2 text-xs font-semibold text-muted-foreground">
+          <div className="mb-6">
+            <div className="mb-2 flex items-center justify-between px-2">
+              <p className="text-xs font-semibold text-muted-foreground">
                 Direct messages
               </p>
+              <button
+                aria-label="New direct message"
+                className="rounded-md p-1 hover:bg-sidebar-accent"
+                type="button"
+                onClick={onNewMessage}
+              >
+                <Plus className="size-3.5" />
+              </button>
+            </div>
+            {directMessages.length ? (
               <div className="space-y-0.5">
                 {directMessages.map((channel) => (
                   <ChannelButton
@@ -447,6 +497,36 @@ export function WorkspaceSidebar({
                       onClose();
                     }}
                   />
+                ))}
+              </div>
+            ) : (
+              <p className="px-2 text-xs text-muted-foreground">
+                Start a private conversation.
+              </p>
+            )}
+          </div>
+
+          {hiddenDirectMessages.length ? (
+            <div className="mb-6">
+              <p className="mb-2 px-2 text-xs font-semibold text-muted-foreground">
+                Hidden conversations
+              </p>
+              <div className="space-y-0.5">
+                {hiddenDirectMessages.map((channel) => (
+                  <button
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-sidebar-foreground/70 hover:bg-sidebar-accent"
+                    key={channel.id}
+                    type="button"
+                    onClick={() => onReopenDirectMessage(channel)}
+                  >
+                    <MessageCircle className="size-3.5 shrink-0" />
+                    <span className="min-w-0 flex-1 truncate">
+                      {channel.name}
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      Reopen
+                    </span>
+                  </button>
                 ))}
               </div>
             </div>
@@ -533,6 +613,19 @@ export function WorkspaceSidebar({
               </p>
             </div>
           </button>
+          <a
+            className="mt-1 flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left text-sm text-sidebar-foreground/70 hover:bg-sidebar-accent"
+            href={`/profiles/${identity.pubkey}`}
+            onClick={onClose}
+          >
+            <ProfileAvatar profile={profile} size="sm" />
+            <div className="min-w-0 flex-1">
+              <p className="truncate font-medium">View profile</p>
+              <p className="truncate text-xs text-muted-foreground">
+                Status and profile settings
+              </p>
+            </div>
+          </a>
           <button
             className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left hover:bg-sidebar-accent"
             type="button"

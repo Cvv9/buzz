@@ -1987,7 +1987,7 @@ mod tests {
         use std::sync::Arc;
 
         use buzz_core::StoredEvent;
-        use nostr::{EventBuilder, Keys, Kind};
+        use nostr::{EventBuilder, Keys, Kind, Tag};
         use tokio::sync::{mpsc, Mutex};
         use tokio_util::sync::CancellationToken;
         use uuid::Uuid;
@@ -2236,6 +2236,37 @@ mod tests {
             // Only the author's subscription survives; the non-author and the
             // unauthenticated connection are both dropped.
             assert_eq!(out, vec![(author_conn, "a".to_string())]);
+        }
+
+        #[tokio::test]
+        async fn private_managed_agent_payload_stays_author_only() {
+            let state = test_state().await;
+            let author_keys = Keys::generate();
+            let author_pk = author_keys.public_key().to_bytes().to_vec();
+            let private_payload = EventBuilder::new(
+                Kind::Custom(buzz_core::kind::KIND_PRIVATE_MANAGED_AGENT as u16),
+                "encrypted-managed-agent-aggregate",
+            )
+            .tags([Tag::parse(["d", "a"]).expect("valid address tag")])
+            .sign_with_keys(&author_keys)
+            .expect("sign private aggregate");
+            let stored = StoredEvent::new(private_payload, None);
+
+            let author_conn = register_conn(&state, Some(author_pk));
+            let foreign_conn = register_conn(&state, Some(vec![7u8; 32]));
+            let out = filter_fanout_by_access(
+                &state,
+                buzz_core::tenant::CommunityId::from_uuid(Uuid::nil()),
+                &stored,
+                vec![
+                    (author_conn, "author".to_string()),
+                    (foreign_conn, "foreign".to_string()),
+                ],
+                None,
+            )
+            .await;
+
+            assert_eq!(out, vec![(author_conn, "author".to_string())]);
         }
 
         // -- E1 phase-2: threaded-visibility fences (§4.8 phase-2 addendum) --

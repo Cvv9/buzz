@@ -13,6 +13,7 @@ import {
 type SendVariables = {
   content: string;
   mentions: string[];
+  mediaTags?: string[][];
   replyTo?: WorkspaceMessage;
 };
 
@@ -37,13 +38,11 @@ export function useAgentMentionDelivery({
   activeChannelId,
   agents,
   identity,
-  refetchChannels,
 }: {
   activeChannel: WorkspaceChannel | null;
   activeChannelId: string | null;
   agents: WorkspaceProfile[];
   identity: BrowserIdentity | null;
-  refetchChannels: () => Promise<unknown>;
 }) {
   const queryClient = useQueryClient();
   const addAgentToChannelCache = React.useCallback(
@@ -69,6 +68,7 @@ export function useAgentMentionDelivery({
     mutationFn: async ({
       content,
       mentions,
+      mediaTags,
       replyTo,
     }: SendVariables): Promise<SendResult> => {
       const channelId = activeChannelId ?? "";
@@ -97,6 +97,7 @@ export function useAgentMentionDelivery({
           content,
           replyTo,
           mentions,
+          mediaTags,
         ),
       };
     },
@@ -144,12 +145,15 @@ export function useAgentMentionDelivery({
             : "Owner or admin access is required.",
       });
     },
-    onSuccess: async (_, agent) => {
+    onSuccess: (_, agent) => {
       if (activeChannelId)
         addAgentToChannelCache(activeChannelId, agent.pubkey);
       toast.success(`${agent.name} was added to this channel`);
-      await new Promise((resolve) => window.setTimeout(resolve, 350));
-      await refetchChannels();
+      // The relay emits a kind:39002 replacement head; invalidate now so the
+      // local optimistic cache converges even if a second client wins the head.
+      void queryClient.invalidateQueries({
+        queryKey: ["workspace-channels", identity?.pubkey],
+      });
     },
   });
 

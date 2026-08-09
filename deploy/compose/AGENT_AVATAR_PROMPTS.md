@@ -18,6 +18,18 @@ Apply this paragraph to every prompt:
 
 > A sharp market analyst represented by a faceted dark-glass observatory lens scanning a horizon of subtle market signals, competitor constellations, customer patterns, and opportunity curves; one chartreuse beam isolates the meaningful signal from noise; worldly, curious, commercially astute. [Append shared art direction.]
 
+## Opportunity Scout
+
+> A focused opportunity scout represented by a dark-glass field compass aligned with three distant market beacons, while a chartreuse scoring path highlights the single strongest route; discerning, evidence-led, exploratory, commercially grounded. [Append shared art direction.]
+
+## Bid & Partnerships Desk
+
+> A precise partnership desk represented by two interlocking dark-metal forms beside an orderly requirement matrix and evidence folio, with one chartreuse verification seal; credible, careful, collaborative, and review-ready rather than salesy. [Append shared art direction.]
+
+## GTM & Customer Discovery
+
+> A perceptive customer-discovery strategist represented by several abstract conversation signals converging into a clear segment map and a small chartreuse experiment loop; empathetic, analytical, hypothesis-driven, and commercially practical. [Append shared art direction.]
+
 ## Founder Chief of Staff
 
 > A composed strategic coordinator represented by an elegant dark-metal compass and command table, several complex paths organized into one luminous chartreuse priority line; discreet executive presence, calm authority, synthesis, judgment, and trusted private counsel. [Append shared art direction.]
