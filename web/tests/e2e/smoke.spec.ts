@@ -120,7 +120,7 @@ test("web workspace preserves profiles and applies live-event parity rules", asy
   });
   await expect(randomChannel).toHaveAttribute(
     "aria-label",
-    "random, unread messages",
+    "random, 1 unread message",
   );
 
   await page.getByRole("button", { name: "Add random to favorites" }).click();

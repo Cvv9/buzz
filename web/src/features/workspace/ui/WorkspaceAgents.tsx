@@ -12,17 +12,16 @@ import {
   X,
 } from "lucide-react";
 import * as React from "react";
+import { uploadBrowserMedia } from "@/features/media/browser-media";
 import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
 import { cn } from "@/shared/lib/cn";
 import type { WorkspaceChannel, WorkspaceProfile } from "../workspace-api";
+import {
+  agentAccessLabel as accessLabel,
+  agentRoleLabel,
+} from "../agent-presentation";
 import { ProfileAvatar } from "./WorkspaceSidebar";
-
-function accessLabel(agent: WorkspaceProfile) {
-  if (agent.accessTier === "personal") return "Private to you";
-  if (agent.accessTier === "admin") return "Admins only";
-  return "Available to everyone";
-}
 
 type AgentUpdate = {
   name: string;
@@ -122,10 +121,10 @@ export function WorkspaceAgents({
                     <ProfileAvatar profile={agent} />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm font-medium">
-                        {agent.name}
+                        {agent.name} — {agentRoleLabel(agent)}
                       </span>
                       <span className="block truncate text-xs text-black/40 dark:text-white/35">
-                        {agent.about || accessLabel(agent)}
+                        {accessLabel(agent)}
                       </span>
                     </span>
                     <ChevronRight
@@ -230,7 +229,7 @@ function AgentDetails({
         <ProfileAvatar profile={agent} />
         <div className="min-w-0 flex-1">
           <h2 className="truncate text-xl font-semibold tracking-tight">
-            {agent.name}
+            {agent.name} — {agentRoleLabel(agent)}
           </h2>
           <p className="mt-1 text-xs text-black/45 dark:text-white/40">
             {accessLabel(agent)}
@@ -366,6 +365,10 @@ function AgentEditForm({
   const [name, setName] = React.useState(agent.name);
   const [avatarUrl, setAvatarUrl] = React.useState(agent.picture ?? "");
   const [model, setModel] = React.useState(agent.model ?? "");
+  const [uploadProgress, setUploadProgress] = React.useState<number | null>(
+    null,
+  );
+  const [uploadError, setUploadError] = React.useState<string | null>(null);
   return (
     <form
       className="mx-auto max-w-xl"
@@ -406,28 +409,83 @@ function AgentEditForm({
             onChange={(event) => setName(event.target.value)}
           />
         </label>
-        <label className="block text-sm font-medium" htmlFor="agent-avatar-url">
+        <div className="block text-sm font-medium">
           <span className="inline-flex items-center gap-2">
-            <Image className="size-4" /> Profile picture URL
+            <Image className="size-4" /> Profile picture
           </span>
-          <Input
-            id="agent-avatar-url"
-            className="mt-2"
-            placeholder="https://…"
-            type="url"
-            value={avatarUrl}
-            onChange={(event) => setAvatarUrl(event.target.value)}
-          />
-        </label>
+          <div className="mt-2 flex flex-wrap items-center gap-3">
+            <label className="inline-flex cursor-pointer items-center rounded-md border border-input bg-background px-3 py-2 text-sm font-medium hover:bg-accent">
+              {uploadProgress === null
+                ? "Choose picture"
+                : `Uploading ${uploadProgress}%`}
+              <input
+                accept="image/jpeg,image/png,image/gif,image/webp"
+                className="sr-only"
+                disabled={uploadProgress !== null}
+                type="file"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = "";
+                  if (!file) return;
+                  setUploadError(null);
+                  setUploadProgress(0);
+                  void uploadBrowserMedia(file, {
+                    onProgress: setUploadProgress,
+                  })
+                    .then((media) => setAvatarUrl(media.url))
+                    .catch((nextError) =>
+                      setUploadError(
+                        nextError instanceof Error
+                          ? nextError.message
+                          : "The picture could not be uploaded.",
+                      ),
+                    )
+                    .finally(() => setUploadProgress(null));
+                }}
+              />
+            </label>
+            {avatarUrl ? (
+              <button
+                className="text-sm text-muted-foreground hover:text-foreground"
+                type="button"
+                onClick={() => setAvatarUrl("")}
+              >
+                Remove picture
+              </button>
+            ) : null}
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">
+            JPG, PNG, GIF, or WebP. The relay stores it securely and the saved
+            media URL syncs across Buzz clients.
+          </p>
+          {uploadError ? (
+            <p className="mt-2 text-xs text-destructive">{uploadError}</p>
+          ) : null}
+        </div>
         <label className="block text-sm font-medium" htmlFor="agent-model">
-          Model
-          <Input
+          Runtime model
+          <select
             id="agent-model"
-            className="mt-2"
-            placeholder="Runtime default"
+            className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
             value={model}
             onChange={(event) => setModel(event.target.value)}
-          />
+          >
+            <option value="">Runtime default</option>
+            {agent.models?.map((option) => (
+              <option key={option.id} value={option.id}>
+                {option.name || option.id}
+              </option>
+            ))}
+            {model && !agent.models?.some((option) => option.id === model) ? (
+              <option value={model}>{model}</option>
+            ) : null}
+          </select>
+          <span className="mt-2 block text-xs font-normal text-muted-foreground">
+            Options come from this agent&apos;s signed ACP catalog. Saving
+            records the desired model; the hosted runtime applies it only when
+            its operator has enabled runtime control. Provider changes require a
+            separately credentialed hosted deployment.
+          </span>
         </label>
       </div>
       {error ? (

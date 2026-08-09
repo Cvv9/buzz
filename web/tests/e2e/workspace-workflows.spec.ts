@@ -1,6 +1,7 @@
 import { expect, test } from "@playwright/test";
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure";
 import { nsecEncode } from "nostr-tools/nip19";
+import { parseWorkflowDefinition } from "../../src/features/workflows/workflow-policy";
 import { installWorkspaceRelayMock } from "./helpers/workspaceRelayMock";
 
 async function signIn(
@@ -31,6 +32,17 @@ test("workflow definitions, automatic dispatch toggle, runs, and approvals use r
   await signIn(page, secret);
 
   await page.getByLabel("Workflow channel").selectOption(workflowChannelId);
+  await expect(
+    page.getByRole("heading", { name: "Workflow builder" }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: /Search the web/ })
+    .first()
+    .click();
+  await page.getByLabel("Agent").selectOption({ label: "Workspace Agent 1" });
+  await page
+    .getByLabel("Instructions")
+    .fill("Find the latest source-backed market signal for our launch.");
 
   await page.getByRole("button", { name: "Save workflow" }).click();
   await expect
@@ -54,6 +66,25 @@ test("workflow definitions, automatic dispatch toggle, runs, and approvals use r
         ["h", workflowChannelId],
       ]),
     });
+  const savedWorkflowYaml = await page.evaluate(
+    () =>
+      (
+        window as typeof window & {
+          __BUZZ_WEB_E2E_PUBLISHED__: Array<{
+            kind: number;
+            content: string;
+          }>;
+        }
+      ).__BUZZ_WEB_E2E_PUBLISHED__.find((event) => event.kind === 30620)
+        ?.content ?? "",
+  );
+  expect(parseWorkflowDefinition(savedWorkflowYaml)).toMatchObject({
+    trigger: { on: "message_posted" },
+    enabled: true,
+  });
+  expect(savedWorkflowYaml).toContain(
+    "@Workspace Agent 1 Search the web using current, source-linked information.",
+  );
   await page.getByRole("link", { name: "New workflow" }).click();
   await expect(
     page.getByRole("heading", { name: "New workflow" }),
@@ -119,7 +150,10 @@ test("workflow definitions, automatic dispatch toggle, runs, and approvals use r
     );
   }, viewerPubkey);
   await expect(page.getByText("Approve production deployment?")).toBeVisible();
-  await page.getByRole("button", { name: "Approve" }).click();
+  await page
+    .getByTestId(`workflow-approval-${"a".repeat(64)}`)
+    .getByRole("button", { name: "Approve", exact: true })
+    .click();
   await expect
     .poll(() =>
       page.evaluate(() =>

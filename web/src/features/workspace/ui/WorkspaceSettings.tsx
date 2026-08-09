@@ -1,4 +1,5 @@
 import {
+  ArrowLeft,
   Bell,
   Check,
   LogOut,
@@ -6,7 +7,6 @@ import {
   Moon,
   Palette,
   Sun,
-  X,
 } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
@@ -287,29 +287,28 @@ export function WorkspaceSettings({
   );
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-foreground/30">
-      <button
-        aria-label="Close settings"
-        className="absolute inset-0"
-        type="button"
-        onClick={onClose}
-      />
-      <section className="relative h-full w-full max-w-md overflow-y-auto bg-background p-6 shadow-2xl">
+    <main className="min-h-[100dvh] bg-background text-foreground lg:grid lg:grid-cols-[18rem_minmax(0,1fr)]">
+      <aside className="border-b border-border bg-sidebar px-4 py-5 text-sidebar-foreground lg:sticky lg:top-0 lg:h-dvh lg:border-r lg:border-b-0">
+        <button
+          className="flex items-center gap-2 rounded-lg px-2 py-2 text-sm text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+          type="button"
+          onClick={onClose}
+        >
+          <ArrowLeft className="size-4" /> Back to app
+        </button>
+        <SettingsNavigation identity={identity} />
+      </aside>
+      <section className="mx-auto w-full max-w-5xl px-5 py-7 sm:px-8 lg:px-12 lg:py-10">
         <header className="flex items-center justify-between">
           <div>
-            <p className="text-xs font-medium text-muted-foreground">
-              VarVik Studios
+            <p className="text-sm font-medium text-primary">Personal</p>
+            <h1 className="mt-1 text-3xl font-semibold tracking-tight">
+              Settings
+            </h1>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Browser-safe preferences that sync with Buzz where supported.
             </p>
-            <h2 className="mt-1 text-xl font-semibold">Browser identity</h2>
           </div>
-          <button
-            aria-label="Close settings"
-            className="rounded-lg p-2 transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            type="button"
-            onClick={onClose}
-          >
-            <X className="size-4" />
-          </button>
         </header>
 
         <WorkspaceAppearanceSettings />
@@ -493,6 +492,61 @@ export function WorkspaceSettings({
           </Button>
         </div>
       </section>
-    </div>
+    </main>
+  );
+}
+
+function SettingsNavigation({ identity }: { identity: BrowserIdentity }) {
+  const groups = [
+    {
+      label: "Personal",
+      entries: [
+        { href: `/profiles/${identity.pubkey}`, label: "Profile" },
+        { href: "#workspace-appearance-heading", label: "Appearance" },
+        { href: "/preferences", label: "Notifications & accessibility" },
+        { href: "/reminders", label: "Reminders" },
+        { href: "/custom-emoji", label: "Custom emoji" },
+      ],
+    },
+    {
+      label: "Workspace",
+      entries: [
+        { href: "/?view=agents", label: "Agents" },
+        { href: "/workflows", label: "Workflows" },
+        { href: "/projects", label: "Projects & work items" },
+        { href: "/channel-state", label: "Saved channel state" },
+      ],
+    },
+    {
+      label: "Browser & data",
+      entries: [
+        { href: "/offline", label: "Local archive" },
+        { href: "/pairing", label: "Pair another browser" },
+        { href: "/identity-archive", label: "Identity archive" },
+        { href: "/moderation", label: "Moderation" },
+      ],
+    },
+  ];
+  return (
+    <nav className="mt-6 grid gap-5 sm:grid-cols-3 lg:grid-cols-1">
+      {groups.map((group) => (
+        <div key={group.label}>
+          <p className="px-2 text-xs font-semibold text-muted-foreground">
+            {group.label}
+          </p>
+          <div className="mt-1 space-y-0.5">
+            {group.entries.map((entry) => (
+              <a
+                className="block rounded-lg px-2 py-2 text-sm text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                href={entry.href}
+                key={entry.href}
+              >
+                {entry.label}
+              </a>
+            ))}
+          </div>
+        </div>
+      ))}
+    </nav>
   );
 }

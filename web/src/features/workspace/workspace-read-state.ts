@@ -588,6 +588,15 @@ export function useWorkspaceReadState({
   );
 
   React.useEffect(() => {
+    if (!activeChannelId) return;
+    // Events can arrive through the shared channel subscription before the
+    // channel's message query resolves. Opening the channel must consume those
+    // already-observed messages as well, otherwise an unread badge survives
+    // until a later event happens to refresh the timeline.
+    markChannelRead(activeChannelId);
+  }, [activeChannelId, markChannelRead]);
+
+  React.useEffect(() => {
     if (!activeChannelId || currentMessages.length === 0) return;
     const newestExternal = currentMessages
       .filter((message) => message.channelId === activeChannelId)

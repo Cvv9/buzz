@@ -20,39 +20,81 @@ test("workspace appearance publishes the desktop-compatible encrypted coordinate
   await page.getByRole("button", { name: "Sign in with recovery key" }).click();
   await expect(page.getByTestId("workspace-shell")).toBeVisible();
 
-  await page
+  const settingsLink = page
     .getByTestId("workspace-sidebar")
-    .locator("footer button")
-    .last()
-    .click();
+    .locator('a[href="/settings"]');
+  await expect(settingsLink).toHaveCount(1);
+  await expect(
+    page.getByTestId("workspace-sidebar").getByText("View profile", {
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  await settingsLink.click();
+  await expect(page).toHaveURL("/settings");
   await expect(page.getByTestId("workspace-appearance-settings")).toBeVisible();
+
+  const settingsRail = page.locator("nav").filter({
+    has: page.getByText("Personal", { exact: true }),
+  });
+  await expect(
+    settingsRail.getByRole("link", { name: "Profile" }),
+  ).toHaveAttribute("href", `/profiles/${viewerPubkey}`);
+  await expect(
+    settingsRail.getByRole("link", { name: "Notifications & accessibility" }),
+  ).toHaveAttribute("href", "/preferences");
+  await expect(
+    settingsRail.getByRole("link", { name: "Agents" }),
+  ).toHaveAttribute("href", "/?view=agents");
+  await expect(
+    settingsRail.getByRole("link", { name: "Local archive" }),
+  ).toHaveAttribute("href", "/offline");
+
+  const publishedThemeEventCount = await page.evaluate(
+    () =>
+      (
+        window as typeof window & {
+          __BUZZ_WEB_E2E_PUBLISHED__: Array<{
+            kind: number;
+            tags: string[][];
+          }>;
+        }
+      ).__BUZZ_WEB_E2E_PUBLISHED__.filter(
+        (event) =>
+          event.kind === 30078 &&
+          event.tags.some(
+            (tag) => tag[0] === "d" && tag[1] === "community-theme",
+          ),
+      ).length,
+  );
 
   await page.getByTestId("appearance-mode-dark").click();
   await page.getByTestId("workspace-theme-family").selectOption("github-dark");
   await page.getByTestId("appearance-accent-pink").click();
 
   await expect
-    .poll(() =>
-      page.evaluate(() =>
-        (
-          window as typeof window & {
-            __BUZZ_WEB_E2E_PUBLISHED__: Array<{
-              kind: number;
-              content: string;
-              pubkey: string;
-              tags: string[][];
-            }>;
-          }
-        ).__BUZZ_WEB_E2E_PUBLISHED__.filter(
-          (event) =>
-            event.kind === 30078 &&
-            event.tags.some(
-              (tag) => tag[0] === "d" && tag[1] === "community-theme",
-            ),
+    .poll(
+      () =>
+        page.evaluate(() =>
+          (
+            window as typeof window & {
+              __BUZZ_WEB_E2E_PUBLISHED__: Array<{
+                kind: number;
+                content: string;
+                pubkey: string;
+                tags: string[][];
+              }>;
+            }
+          ).__BUZZ_WEB_E2E_PUBLISHED__.filter(
+            (event) =>
+              event.kind === 30078 &&
+              event.tags.some(
+                (tag) => tag[0] === "d" && tag[1] === "community-theme",
+              ),
+          ),
         ),
-      ),
+      { timeout: 15_000 },
     )
-    .not.toHaveLength(0);
+    .toHaveLength(publishedThemeEventCount + 1);
 
   const published = await page.evaluate(() => {
     const events = (

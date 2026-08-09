@@ -8,7 +8,6 @@ import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import { WorkspaceInbox } from "./WorkspaceInbox";
 import { WorkspaceAgents } from "./WorkspaceAgents";
 import { WorkspaceGuide } from "./WorkspaceGuide";
-import { WorkspaceSettings } from "./WorkspaceSettings";
 import { WorkspaceConversation } from "./WorkspaceConversation";
 import { WorkspaceContentDialogs } from "./WorkspaceContentDialogs";
 import { WorkspaceChannelSettings } from "./WorkspaceChannelSettings";
@@ -27,7 +26,6 @@ import {
   useTypingBroadcast,
   useWorkspacePresence,
 } from "@/features/presence/workspace-presence";
-import { shouldMountWorkspaceTheme } from "../workspace-theme-mount-policy";
 import { useAgentMentionDelivery } from "../useAgentMentionDelivery";
 import { useWorkspaceIdentity } from "../useWorkspaceIdentity";
 import { useSyncedChannelState } from "@/features/channel-state/useSyncedChannelState";
@@ -60,7 +58,6 @@ import {
 } from "@/features/workspace/workspace-messages";
 import { useWorkspaceReactions } from "@/features/workspace/useWorkspaceReactions";
 import { useWorkspaceReadState } from "@/features/workspace/workspace-read-state";
-import { CommunityThemeController } from "@/shared/theme/CommunityThemeController";
 import { workspaceInvalidationTargets } from "../workspace-realtime-sync-policy";
 import {
   listUserStatuses,
@@ -84,7 +81,6 @@ export function WorkspacePage({
   const {
     identity,
     identityLoading,
-    lock: lockIdentity,
     setIdentity,
     setStoredIdentity,
     storedIdentity,
@@ -92,14 +88,21 @@ export function WorkspacePage({
   const [activeChannelId, setActiveChannelId] = React.useState<string | null>(
     () => localStorage.getItem("buzz.web.active-channel"),
   );
-  const [workspaceView, setWorkspaceView] =
-    React.useState<WorkspaceView>("channel");
+  const [workspaceView, setWorkspaceView] = React.useState<WorkspaceView>(
+    () => {
+      const requested = new URLSearchParams(window.location.search).get("view");
+      return requested === "agents" ||
+        requested === "alerts" ||
+        requested === "inbox"
+        ? requested
+        : "channel";
+    },
+  );
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
   const [threadRootId, setThreadRootId] = React.useState<string | null>(null);
   const [expandedThreadIds, setExpandedThreadIds] = React.useState<Set<string>>(
     () => new Set(),
   );
-  const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [guideOpen, setGuideOpen] = React.useState(false);
   const [createChannelOpen, setCreateChannelOpen] = React.useState(false);
   const [channelName, setChannelName] = React.useState("");
@@ -287,7 +290,7 @@ export function WorkspacePage({
     markAllRead,
     markInboxItemRead,
     recordIncomingMessage,
-    unreadChannelIds,
+    unreadChannelCounts,
   } = useWorkspaceReadState({
     activeChannelId,
     channels,
@@ -583,28 +586,18 @@ export function WorkspacePage({
     (!channelsQuery.isPending && channels.length === 0)
   ) {
     return (
-      <>
-        {shouldMountWorkspaceTheme(identity.pubkey) ? (
-          <CommunityThemeController pubkey={identity.pubkey} />
-        ) : null}
-        <EmptyMembership
-          onJoined={async () => {
-            await channelsQuery.refetch();
-          }}
-        />
-      </>
+      <EmptyMembership
+        onJoined={async () => {
+          await channelsQuery.refetch();
+        }}
+      />
     );
   }
   if (channelsQuery.isPending) {
     return (
-      <>
-        {shouldMountWorkspaceTheme(identity.pubkey) ? (
-          <CommunityThemeController pubkey={identity.pubkey} />
-        ) : null}
-        <div className="flex min-h-[100dvh] items-center justify-center bg-[#f4f5ee] text-black/45 dark:bg-[#151713] dark:text-white/40">
-          Connecting to VarVik Studios…
-        </div>
-      </>
+      <div className="flex min-h-[100dvh] items-center justify-center bg-[#f4f5ee] text-black/45 dark:bg-[#151713] dark:text-white/40">
+        Connecting to VarVik Studios…
+      </div>
     );
   }
 
@@ -674,9 +667,6 @@ export function WorkspacePage({
       className="flex h-dvh min-h-0 overflow-hidden bg-background text-foreground"
       data-testid="workspace-shell"
     >
-      {shouldMountWorkspaceTheme(identity.pubkey) ? (
-        <CommunityThemeController pubkey={identity.pubkey} />
-      ) : null}
       <WorkspaceSidebar
         activeChannelId={activeChannelId}
         agents={agentsQuery.data ?? []}
@@ -692,12 +682,11 @@ export function WorkspacePage({
         selectedView={workspaceView}
         profile={currentProfile}
         starredChannelIds={starredChannelIds}
-        unreadChannelIds={unreadChannelIds}
+        unreadChannelCounts={unreadChannelCounts}
         open={sidebarOpen}
         onClose={() => setSidebarOpen(false)}
         onCreateChannel={() => setCreateChannelOpen(true)}
         onAddAgent={(agent) => addAgentMutation.mutate(agent)}
-        onOpenSettings={() => setSettingsOpen(true)}
         onOpenGuide={() => setGuideOpen(true)}
         onOpenInbox={() => setWorkspaceView("inbox")}
         onOpenAlerts={() => setWorkspaceView("alerts")}
@@ -914,18 +903,6 @@ export function WorkspacePage({
         onSetChannelVisibility={setChannelVisibility}
         onSetDmMemberQuery={setDmMemberQuery}
       />
-      {settingsOpen ? (
-        <WorkspaceSettings
-          identity={identity}
-          onClose={() => setSettingsOpen(false)}
-          onSignOut={() => {
-            lockIdentity();
-            setSettingsOpen(false);
-            queryClient.clear();
-          }}
-        />
-      ) : null}
-
       {channelSettingsOpen && activeChannel ? (
         <WorkspaceChannelSettings
           channel={activeChannel}

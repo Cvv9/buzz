@@ -8,7 +8,7 @@ import { CustomEmojiImage } from "./CustomEmojiImage";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 
-function EmojiSetManager({ pubkey }: { pubkey: string }) {
+export function EmojiSetManager({ pubkey }: { pubkey: string }) {
   const { data: ownEmoji = [], isPending, save } = useOwnCustomEmojiSet(pubkey);
   const [shortcode, setShortcode] = React.useState("");
   const [url, setUrl] = React.useState("");

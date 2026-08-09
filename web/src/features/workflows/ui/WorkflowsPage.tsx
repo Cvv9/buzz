@@ -1,15 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
-import {
-  Check,
-  CirclePlay,
-  ClipboardCheck,
-  Plus,
-  Workflow,
-} from "lucide-react";
+import { Check, ClipboardCheck, Workflow } from "lucide-react";
 import { WorkspaceIdentityGate } from "@/features/access/WorkspaceIdentityGate";
 import {
   listWorkspaceChannels,
+  listAgents,
   type WorkspaceChannel,
 } from "@/features/workspace/workspace-api";
 import { Button } from "@/shared/ui/button";
@@ -23,7 +18,7 @@ import {
   subscribeToWorkflowApprovalRequests,
   type WorkflowApprovalRequest,
 } from "../workflow-api";
-import { parseWorkflowDefinition } from "../workflow-policy";
+import { WorkflowVisualBuilder } from "./WorkflowVisualBuilder";
 
 const channelWorkflowsKey = (channelId: string) =>
   ["workflow-channel", channelId] as const;
@@ -65,6 +60,11 @@ function WorkflowsPageContent({ viewerPubkey }: { viewerPubkey: string }) {
     queryKey: ["workspace-channels", viewerPubkey],
     queryFn: () => listWorkspaceChannels(viewerPubkey),
     staleTime: 60_000,
+  });
+  const agentsQuery = useQuery({
+    queryKey: ["workspace-agents", viewerPubkey],
+    queryFn: () => listAgents(viewerPubkey),
+    staleTime: 30_000,
   });
   const workflowChannels = (channelsQuery.data ?? []).filter(
     (channel) => channel.type !== "dm",
@@ -166,7 +166,7 @@ function WorkflowsPageContent({ viewerPubkey }: { viewerPubkey: string }) {
           </a>
         </header>
 
-        <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1fr)_minmax(22rem,0.8fr)]">
+        <div className="mt-6">
           <section className="rounded-2xl border border-border bg-card p-5 shadow-sm sm:p-6">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
@@ -228,16 +228,17 @@ function WorkflowsPageContent({ viewerPubkey }: { viewerPubkey: string }) {
               </p>
             )}
           </section>
-
-          <CreateWorkflowCard
-            channelId={channelId}
-            error={createMutation.error}
-            pending={createMutation.isPending}
-            yaml={yaml}
-            onSave={() => createMutation.mutate()}
-            onYamlChange={setYaml}
-          />
         </div>
+
+        <WorkflowVisualBuilder
+          agents={agentsQuery.data ?? []}
+          channelId={channelId}
+          error={createMutation.error}
+          pending={createMutation.isPending}
+          yaml={yaml}
+          onSave={() => createMutation.mutate()}
+          onYamlChange={setYaml}
+        />
 
         <ApprovalRequests
           error={approvalsQuery.error}
@@ -297,72 +298,6 @@ function ChannelPicker({
         ))}
       </select>
     </label>
-  );
-}
-
-function CreateWorkflowCard({
-  channelId,
-  yaml,
-  pending,
-  error,
-  onYamlChange,
-  onSave,
-}: {
-  channelId: string;
-  yaml: string;
-  pending: boolean;
-  error: unknown;
-  onYamlChange: (value: string) => void;
-  onSave: () => void;
-}) {
-  const [validationError, setValidationError] = React.useState<string | null>(
-    null,
-  );
-  return (
-    <section className="rounded-2xl border border-border bg-card p-5 shadow-sm sm:p-6">
-      <div className="flex items-center gap-2">
-        <Plus className="size-4 text-primary" />
-        <h2 className="font-semibold">New workflow</h2>
-      </div>
-      <p className="mt-2 text-sm leading-6 text-muted-foreground">
-        The editor validates the shared YAML schema before signing. The relay
-        remains the authority for membership, webhook safety, and execution.
-      </p>
-      <textarea
-        aria-label="Workflow YAML"
-        className="mt-5 min-h-80 w-full rounded-lg border border-input bg-background p-3 font-mono text-xs leading-5 shadow-xs focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-        spellCheck={false}
-        value={yaml}
-        onChange={(event) => {
-          setValidationError(null);
-          onYamlChange(event.target.value);
-        }}
-      />
-      <Button
-        className="mt-4"
-        data-testid="workflow-create"
-        disabled={pending || !channelId}
-        type="button"
-        onClick={() => {
-          try {
-            parseWorkflowDefinition(yaml);
-            setValidationError(null);
-            onSave();
-          } catch (nextError) {
-            setValidationError(
-              nextError instanceof Error
-                ? nextError.message
-                : "Workflow YAML is invalid.",
-            );
-          }
-        }}
-      >
-        <CirclePlay className="size-4" />
-        {pending ? "Saving…" : "Save workflow"}
-      </Button>
-      {validationError ? <InlineError error={validationError} /> : null}
-      {error ? <InlineError error={error} /> : null}
-    </section>
   );
 }
 
