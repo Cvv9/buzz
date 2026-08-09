@@ -235,8 +235,31 @@ fn is_invite_landing_path(path: &str) -> bool {
 
 fn should_serve_spa(path: &str, serve_web_workspace: bool, serve_git_web_gui: bool) -> bool {
     is_invite_landing_path(path)
-        || (serve_web_workspace && path == "/")
+        || (serve_web_workspace && is_workspace_spa_path(path))
         || (serve_git_web_gui && is_git_web_gui_path(path))
+}
+
+fn is_workspace_spa_path(path: &str) -> bool {
+    matches!(
+        path,
+        "/" | "/channel-state"
+            | "/identity-archive"
+            | "/messages/new"
+            | "/moderation"
+            | "/offline"
+            | "/pairing"
+            | "/preferences"
+            | "/projects"
+            | "/pulse"
+            | "/reminders"
+            | "/search"
+            | "/workflows"
+    ) || path.starts_with("/channels/")
+        || path.starts_with("/huddles/")
+        || path.starts_with("/messages/")
+        || path.starts_with("/profiles/")
+        || path.starts_with("/projects/")
+        || path.starts_with("/workflows/")
 }
 
 fn is_git_web_gui_path(path: &str) -> bool {
@@ -505,12 +528,57 @@ mod tests {
     }
 
     #[test]
+    fn workspace_spa_paths_cover_browser_routes_without_shadowing_http_apis() {
+        for path in [
+            "/",
+            "/channel-state",
+            "/channels/general/posts",
+            "/channels/general/posts/event-id",
+            "/huddles/general",
+            "/identity-archive",
+            "/messages/new",
+            "/messages/direct-channel",
+            "/moderation",
+            "/offline",
+            "/pairing",
+            "/preferences",
+            "/profiles/pubkey",
+            "/projects",
+            "/projects/30621:owner:project",
+            "/pulse",
+            "/reminders",
+            "/search",
+            "/workflows",
+            "/workflows/workflow-id",
+        ] {
+            assert!(is_workspace_spa_path(path), "missing browser route {path}");
+        }
+
+        for path in [
+            "/api/invites",
+            "/events",
+            "/hooks/workflow-id",
+            "/media/file-id",
+            "/repos/repository",
+            "/_liveness",
+            "/arbitrary",
+        ] {
+            assert!(
+                !is_workspace_spa_path(path),
+                "HTTP route must not be shadowed by the workspace SPA: {path}"
+            );
+        }
+    }
+
+    #[test]
     fn invite_is_always_served_but_workspace_and_git_gui_require_opt_in() {
         assert!(should_serve_spa("/invite/payload.mac", false, false));
         assert!(should_serve_spa("/invite/payload.mac", true, false));
         assert!(!should_serve_spa("/", false, false));
         assert!(!should_serve_spa("/repos/example", false, false));
         assert!(should_serve_spa("/", true, false));
+        assert!(should_serve_spa("/preferences", true, false));
+        assert!(should_serve_spa("/projects/project", true, false));
         assert!(should_serve_spa("/", false, true));
         assert!(should_serve_spa("/repos/example", false, true));
         assert!(!should_serve_spa("/repos/example", true, false));
