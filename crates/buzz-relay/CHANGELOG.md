@@ -1,5 +1,9 @@
 # Changelog
 
+## relay-v0.2.3
+
+- fix(web): serve workspace SPA routes ([`963db96bc`](https://github.com/Cvv9/buzz/commit/963db96bc8f2ca2a2dde45b341934bb8ff53c32c))
+
 ## relay-v0.2.2
 
 - Add web parity and agent deployment updates (#22) ([`530cb5c11`](https://github.com/Cvv9/buzz/commit/530cb5c11a4cb84bc6934e47d75de750b8e68ef4))
