@@ -1,5 +1,9 @@
 # Changelog
 
+## relay-v0.2.4
+
+- feat(web): expose browser-safe tools from settings ([`4d115bb0c`](https://github.com/Cvv9/buzz/commit/4d115bb0c))
+
 ## relay-v0.2.3
 
 - fix(web): serve workspace SPA routes ([`963db96bc`](https://github.com/Cvv9/buzz/commit/963db96bc8f2ca2a2dde45b341934bb8ff53c32c))
