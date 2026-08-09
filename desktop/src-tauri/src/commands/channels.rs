@@ -13,6 +13,11 @@ use crate::{
 const DIRECTORY_PAGE_SIZE: usize = 500;
 const STARTER_CHANNEL_NAMESPACE: uuid::Uuid = uuid::uuid!("3ce33bea-8f09-5f1b-9c85-8a7d2659e6b0");
 
+/// How many distinct ids to try per starter channel before giving up. Bounded
+/// so a relay that accepts creates but never serves their metadata fails fast
+/// instead of seeding a channel per retry.
+const STARTER_CHANNEL_ID_ATTEMPTS: u32 = 3;
+
 struct StarterChannelSpec {
     slug: &'static str,
     name: &'static str,
@@ -573,6 +578,61 @@ fn starter_channel_uuid(relay_scope: &str, slug: &str) -> uuid::Uuid {
     uuid::Uuid::new_v5(&STARTER_CHANNEL_NAMESPACE, name.as_bytes())
 }
 
+/// Derive a starter channel's id for a given creation `attempt`.
+///
+/// Attempt 0 reproduces the original derivation, so an install that already
+/// owns its starter channels keeps resolving them instead of creating a
+/// second copy. Later attempts step to a fresh id: the relay dedupes channel
+/// creates on `(community_id, id)`, so an id occupied by a row this identity
+/// cannot read back — soft-deleted, archived, or private without membership —
+/// is rejected as a duplicate *and* returns no kind:39000, which dead-ends
+/// onboarding permanently because the id never changes between retries.
+fn starter_channel_uuid_for_attempt(relay_scope: &str, slug: &str, attempt: u32) -> uuid::Uuid {
+    if attempt == 0 {
+        return starter_channel_uuid(relay_scope, slug);
+    }
+    let name = format!(
+        "starter-channel:v1:{}:{}#{}",
+        relay_scope.trim(),
+        slug,
+        attempt
+    );
+    uuid::Uuid::new_v5(&STARTER_CHANNEL_NAMESPACE, name.as_bytes())
+}
+
+/// The starter channels still missing from `existing`, paired with the id to
+/// create each one under on `attempt`.
+fn starter_channel_work_list(
+    relay_scope: &str,
+    existing: &[ChannelInfo],
+    attempt: u32,
+) -> Vec<(&'static StarterChannelSpec, uuid::Uuid)> {
+    STARTER_CHANNELS
+        .iter()
+        .filter(|spec| {
+            !existing
+                .iter()
+                .any(|channel| is_matching_starter_channel(channel, spec))
+        })
+        .map(|spec| {
+            (
+                spec,
+                starter_channel_uuid_for_attempt(relay_scope, spec.slug, attempt),
+            )
+        })
+        .collect()
+}
+
+// An accepted create with delayed metadata must not become a fresh create.
+fn starter_channel_creation_pending(
+    channels: &[ChannelInfo],
+    created_ids: &std::collections::HashSet<String>,
+) -> bool {
+    created_ids
+        .iter()
+        .any(|id| !channels.iter().any(|channel| channel.id == *id))
+}
+
 fn is_duplicate_channel_rejection(error: &str) -> bool {
     error.contains("relay rejected event:") && error.contains("duplicate: channel already exists")
 }
@@ -717,62 +777,75 @@ pub async fn ensure_starter_channels(
     let relay_scope = relay_api_base_url_with_override(&state);
     let creator_keys = state.signing_keys()?;
     let creator_pubkey = creator_keys.public_key().to_hex();
-    let mut starter_ids = Vec::with_capacity(STARTER_CHANNELS.len());
-    let mut created_ids = std::collections::HashSet::new();
-
-    for spec in STARTER_CHANNELS {
-        if existing_channels
-            .iter()
-            .any(|channel| is_matching_starter_channel(channel, spec))
-        {
-            continue;
-        }
-
-        let channel_uuid = starter_channel_uuid(&relay_scope, spec.slug);
-        let channel_uuid_string = channel_uuid.to_string();
-        starter_ids.push(channel_uuid_string.clone());
-        let builder = events::build_create_channel(
-            channel_uuid,
-            spec.name,
-            "open",
-            "stream",
-            Some(spec.description),
-            None,
-        )?;
-
-        match submit_event_with_keys(builder, &state, &creator_keys, None).await {
-            Ok(_) => {
-                state.mark_pending_owned_channel(&creator_pubkey, &channel_uuid_string);
-                created_ids.insert(channel_uuid_string.clone());
-            }
-            Err(error) if is_duplicate_channel_rejection(&error) => {
-                state.mark_pending_owned_channel(&creator_pubkey, &channel_uuid_string);
-            }
-            Err(error) => return Err(error),
-        }
-    }
-
-    for _ in 0..3 {
-        let metadata = fetch_starter_channel_metadata(&state, &starter_ids).await?;
-        for mut channel in metadata {
-            if created_ids.contains(&channel.id) {
-                channel.is_member = true;
-            }
-            if !existing_channels
-                .iter()
-                .any(|existing| existing.id == channel.id)
-            {
-                existing_channels.push(channel);
-            }
-        }
-        if has_all_starter_channels(&existing_channels) {
+    // Each pass creates the still-missing starter channels, then waits for
+    // their metadata. A pass that resolves nothing new means its ids are
+    // blocked by rows this identity cannot read back, so the next pass aims
+    // at fresh ids rather than re-issuing the same rejected create.
+    for attempt in 0..STARTER_CHANNEL_ID_ATTEMPTS {
+        let work = starter_channel_work_list(&relay_scope, &existing_channels, attempt);
+        if work.is_empty() {
             break;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-    }
 
-    if !has_all_starter_channels(&existing_channels) {
-        existing_channels = fetch_channels(&state).await?;
+        let mut starter_ids = Vec::with_capacity(work.len());
+        let mut created_ids = std::collections::HashSet::new();
+
+        for (spec, channel_uuid) in work {
+            let channel_uuid_string = channel_uuid.to_string();
+            starter_ids.push(channel_uuid_string.clone());
+            let builder = events::build_create_channel(
+                channel_uuid,
+                spec.name,
+                "open",
+                "stream",
+                Some(spec.description),
+                None,
+            )?;
+
+            // A previous call accepted this ID but its membership/metadata
+            // has not caught up. Keep reading that ID instead of retargeting.
+            if state.is_pending_owned_channel(&creator_pubkey, &channel_uuid_string) {
+                created_ids.insert(channel_uuid_string);
+                continue;
+            }
+
+            match submit_event_with_keys(builder, &state, &creator_keys, None).await {
+                Ok(_) => {
+                    state.mark_pending_owned_channel(&creator_pubkey, &channel_uuid_string);
+                    created_ids.insert(channel_uuid_string.clone());
+                }
+                Err(error) if is_duplicate_channel_rejection(&error) => {
+                    // A duplicate rejection does not establish ownership.
+                }
+                Err(error) => return Err(error),
+            }
+        }
+
+        for _ in 0..3 {
+            let metadata = fetch_starter_channel_metadata(&state, &starter_ids).await?;
+            for mut channel in metadata {
+                if created_ids.contains(&channel.id) {
+                    channel.is_member = true;
+                }
+                if !existing_channels
+                    .iter()
+                    .any(|existing| existing.id == channel.id)
+                {
+                    existing_channels.push(channel);
+                }
+            }
+            if has_all_starter_channels(&existing_channels) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+
+        if !has_all_starter_channels(&existing_channels) {
+            existing_channels = fetch_channels(&state).await?;
+            if starter_channel_creation_pending(&existing_channels, &created_ids) {
+                break;
+            }
+        }
     }
 
     if !has_all_starter_channels(&existing_channels) {

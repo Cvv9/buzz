@@ -429,3 +429,126 @@ fn starter_match_requires_open_unarchived_stream_by_normalized_name() {
     channel.archived_at = Some("2026-07-16T00:00:00Z".to_string());
     assert!(!is_matching_starter_channel(&channel, spec));
 }
+
+/// A visible, joinable starter channel as `get_channels` would report it.
+fn starter_channel_fixture(id: &str, name: &str) -> ChannelInfo {
+    ChannelInfo {
+        id: id.to_string(),
+        name: name.to_string(),
+        channel_type: "stream".to_string(),
+        visibility: "open".to_string(),
+        description: String::new(),
+        topic: None,
+        purpose: None,
+        member_count: 0,
+        member_pubkeys: Vec::new(),
+        last_message_at: None,
+        archived_at: None,
+        participants: Vec::new(),
+        participant_pubkeys: Vec::new(),
+        is_member: true,
+        ttl_seconds: None,
+        ttl_deadline: None,
+    }
+}
+
+#[test]
+fn starter_channel_uuid_attempt_zero_matches_legacy_derivation() {
+    // Attempt 0 must keep deriving the id that shipped in 0.4.x, so an
+    // install that already owns its starter channels re-finds them instead
+    // of creating a second copy on upgrade.
+    for slug in ["general", "welcome-everyone"] {
+        assert_eq!(
+            starter_channel_uuid_for_attempt("https://relay-a.example", slug, 0),
+            starter_channel_uuid("https://relay-a.example", slug),
+        );
+    }
+}
+
+#[test]
+fn starter_channel_uuid_advances_past_a_blocked_id() {
+    let scope = "https://relay-a.example";
+    let first = starter_channel_uuid_for_attempt(scope, "general", 0);
+    let second = starter_channel_uuid_for_attempt(scope, "general", 1);
+    let third = starter_channel_uuid_for_attempt(scope, "general", 2);
+
+    // Each attempt escapes the previous id...
+    assert_ne!(first, second);
+    assert_ne!(second, third);
+    assert_ne!(first, third);
+    // ...while staying deterministic and scoped.
+    assert_eq!(
+        second,
+        starter_channel_uuid_for_attempt(scope, "general", 1)
+    );
+    assert_ne!(
+        second,
+        starter_channel_uuid_for_attempt(scope, "welcome-everyone", 1)
+    );
+    assert_ne!(
+        second,
+        starter_channel_uuid_for_attempt("https://relay-b.example", "general", 1)
+    );
+}
+
+#[test]
+fn starter_work_list_is_empty_once_every_spec_is_visible() {
+    let existing: Vec<ChannelInfo> = STARTER_CHANNELS
+        .iter()
+        .enumerate()
+        .map(|(i, spec)| starter_channel_fixture(&format!("chan-{i}"), spec.name))
+        .collect();
+
+    assert!(starter_channel_work_list("https://relay-a.example", &existing, 0).is_empty());
+}
+
+#[test]
+fn starter_work_list_targets_only_the_missing_spec() {
+    let existing = vec![starter_channel_fixture("chan-0", STARTER_CHANNELS[0].name)];
+
+    let work = starter_channel_work_list("https://relay-a.example", &existing, 0);
+
+    assert_eq!(work.len(), STARTER_CHANNELS.len() - 1);
+    assert_eq!(work[0].0.slug, STARTER_CHANNELS[1].slug);
+    assert_eq!(
+        work[0].1,
+        starter_channel_uuid_for_attempt("https://relay-a.example", STARTER_CHANNELS[1].slug, 0),
+    );
+}
+
+#[test]
+fn starter_work_list_retargets_a_missing_spec_on_the_next_attempt() {
+    // The failure this guards: attempt 0's id is occupied by a row this
+    // identity cannot read (soft-deleted, private, or archived), so the
+    // create is duplicate-rejected and the metadata read stays empty
+    // forever. A later attempt must aim at a fresh id instead of re-issuing
+    // the same dead create.
+    let scope = "https://relay-a.example";
+    let first = starter_channel_work_list(scope, &[], 0);
+    let second = starter_channel_work_list(scope, &[], 1);
+
+    assert_eq!(first.len(), STARTER_CHANNELS.len());
+    assert_eq!(second.len(), STARTER_CHANNELS.len());
+    for (a, b) in first.iter().zip(second.iter()) {
+        assert_eq!(a.0.slug, b.0.slug);
+        assert_ne!(a.1, b.1, "attempt 1 must not reuse attempt 0's channel id");
+    }
+}
+
+#[test]
+fn accepted_starter_create_waits_for_metadata_instead_of_retargeting() {
+    let created = std::collections::HashSet::from(["accepted".to_string()]);
+    assert!(starter_channel_creation_pending(&[], &created));
+    let unrelated = vec![starter_channel_fixture("other", "general")];
+    assert!(starter_channel_creation_pending(&unrelated, &created));
+    let resolved = vec![starter_channel_fixture("accepted", "general")];
+    assert!(!starter_channel_creation_pending(&resolved, &created));
+}
+
+#[test]
+fn duplicate_rejected_starter_id_can_advance_without_claiming_ownership() {
+    assert!(!starter_channel_creation_pending(
+        &[],
+        &std::collections::HashSet::new(),
+    ));
+}
