@@ -124,7 +124,17 @@ test("workflow definitions, automatic dispatch toggle, runs, and approvals use r
     .toMatchObject({ kind: 46020, content: "{}" });
 
   await page.getByRole("link", { name: "Workflows", exact: true }).click();
-  await page.waitForTimeout(150);
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (
+          window as typeof window & {
+            __BUZZ_WEB_E2E_HAS_KIND_SUBSCRIPTION__: (kind: number) => boolean;
+          }
+        ).__BUZZ_WEB_E2E_HAS_KIND_SUBSCRIPTION__(46010),
+      ),
+    )
+    .toBe(true);
   await page.evaluate((pubkey) => {
     const helpers = window as typeof window & {
       __BUZZ_WEB_E2E_EMIT__: (event: unknown) => void;
