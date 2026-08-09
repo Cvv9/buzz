@@ -1,5 +1,27 @@
 # Changelog
 
+## relay-v0.2.2
+
+- Add web parity and agent deployment updates (#22) ([`530cb5c11`](https://github.com/Cvv9/buzz/commit/530cb5c11a4cb84bc6934e47d75de750b8e68ef4))
+- test: identify deployed migration 27 content ([`ea1c65b98`](https://github.com/Cvv9/buzz/commit/ea1c65b9852624ee08a11a0399975f238a4684ce))
+- test: preserve migration 27 checksum expectations ([`673005b6f`](https://github.com/Cvv9/buzz/commit/673005b6fa0fbce148ba7b2b085ab98a207104ec))
+- test: track production migration lineage ([`6381b9afd`](https://github.com/Cvv9/buzz/commit/6381b9afd2e3e3c45c38d80e8ceccd8e24a2968a))
+- feat: bind managed agents to owners atomically ([`ce6a712c0`](https://github.com/Cvv9/buzz/commit/ce6a712c015546dd5b830fa847a70eb6a673f089))
+- fix: preserve production migration lineage ([`f96c2ade5`](https://github.com/Cvv9/buzz/commit/f96c2ade52e85d649f09f70bf9001a26ee06b144))
+- fix: clear workspace administration CI gates ([`199ec7225`](https://github.com/Cvv9/buzz/commit/199ec7225d3e29ca8b38a298886a050a98361657))
+- feat: unify Buzz workspace administration ([`a107a2e2a`](https://github.com/Cvv9/buzz/commit/a107a2e2a70c1c8eacb39ca8e84d58676834357d))
+- Fix upstream sync CI regressions ([`8b2f83ded`](https://github.com/Cvv9/buzz/commit/8b2f83ded9ff7269824f106b05457e27d3b8ad77))
+- fix agent identity parity and first-join workflows ([`a33b38e7f`](https://github.com/Cvv9/buzz/commit/a33b38e7f82de46e1240c88b6063fa238632aa68))
+- Expand hosted agent controls and message projection ([`91aa485c9`](https://github.com/Cvv9/buzz/commit/91aa485c999a78e8f1b3f460aafa894afc32df4b))
+- fix(git): allow deleting the default branch (#4297) ([`77393cf4f`](https://github.com/Cvv9/buzz/commit/77393cf4f6b7730f8e9ae17375ec4ffa172d6ff7))
+- feat(projects): add buzz projects CLI commands (NIP-MP kind:30621) (#4020) ([`98af43b94`](https://github.com/Cvv9/buzz/commit/98af43b946609895e69b8cbdf8510371f2667396))
+- fix(workflows): separate attribution from mentions ([`5617fe184`](https://github.com/Cvv9/buzz/commit/5617fe18490cf8f789e47e1841623bebe616a562))
+- Fix upstream sync API compatibility ([`5321959c3`](https://github.com/Cvv9/buzz/commit/5321959c328a2493b68c8ab02f39dfbdae0a62b3))
+- fix: satisfy formatting checks ([`fe612581d`](https://github.com/Cvv9/buzz/commit/fe612581d018e34ac158a4709b02752fb7a569cb))
+- feat: add hosted VarVik browser community ([`bcc4ef32a`](https://github.com/Cvv9/buzz/commit/bcc4ef32a32344d2ecf4c3476a242e037f39936f))
+- feat(relay): harden deployment and git transport ([`f3e1d1fb3`](https://github.com/Cvv9/buzz/commit/f3e1d1fb3a58748612ef82bec35fbd080511e3f2))
+- fix(profile): preserve unmodeled metadata on update ([`6c43dabff`](https://github.com/Cvv9/buzz/commit/6c43dabff45c3fc40084eef4713911346ef53a00))
+
 ## relay-v0.2.1
 
 - fix(sdk): preserve self-mention p tags in message and forum event builders ([#4975](https://github.com/block/buzz/pull/4975)) ([`78c87ae20e`](https://github.com/block/buzz/commit/78c87ae20e182fffdd99744d6c9ff99df82b159c))
