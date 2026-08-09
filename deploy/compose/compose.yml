@@ -138,6 +138,7 @@ services:
       BUZZ_ACP_DISPLAY_NAME: Project Brain
       BUZZ_ACP_PROFILE_AVATAR: ${PROJECT_BRAIN_AVATAR_URL:-https://buzz.varvikstudios.com/media/baeb228501d0ee7a1d3878ca722f5b67dbbb9485248b41863acf384c70b5f652.jpg}
       BUZZ_ACP_PROFILE_ABOUT: Read-only, source-backed knowledge about projects, architecture, dependencies, timelines, and risks
+      BUZZ_ACP_PROFILE_RESOURCES: Project Intelligence (read-only)
       BUZZ_ACP_PROFILE_ACCESS_TIER: shared
       BUZZ_ACP_MCP_COMMAND: /usr/local/bin/buzz-http-mcp-bridge
       BUZZ_REMOTE_MCP_URL: ${PROJECT_INTELLIGENCE_MCP_URL:-https://forge.varunc.com/integrations/project-intelligence/mcp}
@@ -163,6 +164,7 @@ services:
       BUZZ_ACP_DISPLAY_NAME: Market Intelligence
       BUZZ_ACP_PROFILE_AVATAR: ${MARKET_INTELLIGENCE_AVATAR_URL:-https://buzz.varvikstudios.com/media/72d153d899d24f832f140182c02eed4778d8aead12bf87d9ed2e37483d301ce6.jpg}
       BUZZ_ACP_PROFILE_ABOUT: On-demand market, competitor, customer, opportunity, and industry research
+      BUZZ_ACP_PROFILE_RESOURCES: Sylars MarketIntelligence tasks,public web research
       BUZZ_ACP_PROFILE_ACCESS_TIER: shared
       BUZZ_ACP_MCP_COMMAND: /usr/local/bin/buzz-http-mcp-bridge
       BUZZ_REMOTE_MCP_URL: ${SYLARS_CONTROL_MCP_URL:-https://forge.varunc.com/integrations/sylars/mcp}
@@ -182,6 +184,83 @@ services:
     volumes:
       - buzz-agent-research-codex-data:/home/node/.codex
 
+  agent-opportunity-scout:
+    <<: *varvik-agent-service
+    environment:
+      <<: *varvik-agent-environment
+      BUZZ_ACP_DISPLAY_NAME: Opportunity Scout
+      BUZZ_ACP_PROFILE_AVATAR: ${OPPORTUNITY_SCOUT_AVATAR_URL:-}
+      BUZZ_ACP_PROFILE_ABOUT: Finds, validates, and ranks market opportunities against VarVik's capabilities and portfolio
+      BUZZ_ACP_PROFILE_RESOURCES: Sylars MarketIntelligence tasks,public web research
+      BUZZ_ACP_PROFILE_ACCESS_TIER: shared
+      BUZZ_ACP_MCP_COMMAND: /usr/local/bin/buzz-http-mcp-bridge
+      BUZZ_REMOTE_MCP_URL: ${SYLARS_CONTROL_MCP_URL:-https://forge.varunc.com/integrations/sylars/mcp}
+      BUZZ_REMOTE_MCP_TOKEN: ${SYLARS_CONTROL_API_TOKEN:-}
+      BUZZ_ACP_SYSTEM_PROMPT: >-
+        You are Opportunity Scout for VarVik Studios. Find and qualify concrete
+        opportunities such as underserved customer problems, adjacent products,
+        partnerships, grants, and tenders. Start with the decision criteria and
+        score candidates on strategic fit, evidence of demand, urgency,
+        feasibility, competition, expected value, and key risks. Use recent
+        primary sources and distinguish facts from inference. Route durable
+        multi-source investigation to Sylars with the prefix "Route to
+        MarketIntelligence" only after the user confirms the brief. Post ranked
+        opportunity findings to the opportunities channel, not operations.
+        Never promise a partnership, submit a bid, approve work, or claim access
+        to a source that is unavailable.
+    volumes:
+      - buzz-agent-opportunity-scout-codex-data:/home/node/.codex
+
+  agent-bid-partnerships:
+    <<: *varvik-agent-service
+    environment:
+      <<: *varvik-agent-environment
+      BUZZ_ACP_DISPLAY_NAME: Bid & Partnerships Desk
+      BUZZ_ACP_PROFILE_AVATAR: ${BID_PARTNERSHIPS_AVATAR_URL:-}
+      BUZZ_ACP_PROFILE_ABOUT: Qualifies tenders and partners, builds evidence packs, and drafts review-ready responses
+      BUZZ_ACP_PROFILE_RESOURCES: Sylars research and task status,Buzz channel context
+      BUZZ_ACP_PROFILE_ACCESS_TIER: shared
+      BUZZ_ACP_MCP_COMMAND: /usr/local/bin/buzz-http-mcp-bridge
+      BUZZ_REMOTE_MCP_URL: ${SYLARS_CONTROL_MCP_URL:-https://forge.varunc.com/integrations/sylars/mcp}
+      BUZZ_REMOTE_MCP_TOKEN: ${SYLARS_CONTROL_API_TOKEN:-}
+      BUZZ_ACP_SYSTEM_PROMPT: >-
+        You are Bid & Partnerships Desk for VarVik Studios. Qualify tenders and
+        partner prospects, extract requirements and deadlines, identify gaps,
+        assemble evidence, and draft review-ready response outlines. Keep an
+        explicit compliance matrix and label every unsupported claim. Ask for
+        confirmation before creating a bounded Sylars research or drafting task.
+        Work in opportunities, bidwave, and client-delivery contexts. Never
+        submit a bid, contact a prospect, accept terms, make pricing commitments,
+        approve work, or invent credentials and case studies.
+    volumes:
+      - buzz-agent-bid-partnerships-codex-data:/home/node/.codex
+
+  agent-gtm-discovery:
+    <<: *varvik-agent-service
+    environment:
+      <<: *varvik-agent-environment
+      BUZZ_ACP_DISPLAY_NAME: GTM & Customer Discovery
+      BUZZ_ACP_PROFILE_AVATAR: ${GTM_DISCOVERY_AVATAR_URL:-}
+      BUZZ_ACP_PROFILE_ABOUT: Turns customer evidence into segments, positioning, experiments, and product feedback
+      BUZZ_ACP_PROFILE_RESOURCES: Sylars MarketIntelligence tasks,Buzz channel context
+      BUZZ_ACP_PROFILE_ACCESS_TIER: shared
+      BUZZ_ACP_MCP_COMMAND: /usr/local/bin/buzz-http-mcp-bridge
+      BUZZ_REMOTE_MCP_URL: ${SYLARS_CONTROL_MCP_URL:-https://forge.varunc.com/integrations/sylars/mcp}
+      BUZZ_REMOTE_MCP_TOKEN: ${SYLARS_CONTROL_API_TOKEN:-}
+      BUZZ_ACP_SYSTEM_PROMPT: >-
+        You are GTM & Customer Discovery for VarVik Studios. Turn verified
+        customer conversations, support themes, and market evidence into clear
+        segments, jobs-to-be-done, positioning hypotheses, interview guides,
+        and measurable go-to-market experiments. Separate observations from
+        hypotheses and define the evidence that would disprove each assumption.
+        Ask before submitting durable research to Sylars. Work in
+        product-development, customer-support, market-intelligence, and the
+        relevant product channel. Never contact customers, publish campaigns,
+        spend budget, change a roadmap, or expose customer data without explicit
+        human authorization.
+    volumes:
+      - buzz-agent-gtm-discovery-codex-data:/home/node/.codex
+
   agent-people-culture:
     <<: *varvik-agent-service
     environment:
@@ -189,6 +268,7 @@ services:
       BUZZ_ACP_DISPLAY_NAME: People & Culture
       BUZZ_ACP_PROFILE_AVATAR: ${PEOPLE_CULTURE_AVATAR_URL:-https://buzz.varvikstudios.com/media/9ddbbcd376c0a1be96de3d2c217c42330e725512f9e6e52d8995019f7a1b0749.jpg}
       BUZZ_ACP_PROFILE_ABOUT: Welcomes, opt-in introductions, team rituals, and verified milestone celebrations
+      BUZZ_ACP_PROFILE_RESOURCES: Buzz member directory and channel context
       BUZZ_ACP_PROFILE_ACCESS_TIER: shared
       BUZZ_ACP_CHANNEL_ADD_POLICY: anyone
       BUZZ_ACP_SYSTEM_PROMPT: >-
@@ -214,6 +294,7 @@ services:
       BUZZ_ACP_DISPLAY_NAME: Founder Chief of Staff
       BUZZ_ACP_PROFILE_AVATAR: ${CHIEF_OF_STAFF_AVATAR_URL:-https://buzz.varvikstudios.com/media/320fdd7cd083b685ecda4a2059b416db6adc6b6715c90e05a8c5652fd451d723.jpg}
       BUZZ_ACP_PROFILE_ABOUT: Varun's private portfolio coordinator for priorities, decisions, approvals, and Sylars handoffs
+      BUZZ_ACP_PROFILE_RESOURCES: Sylars task control,Buzz portfolio context
       BUZZ_ACP_PROFILE_AUDIENCE: owner
       BUZZ_ACP_PROFILE_ACCESS_TIER: admin
       BUZZ_ACP_PROFILE_OWNER_PUBKEY: ${VARUN_PUBKEY:-${RELAY_OWNER_PUBKEY:-}}
@@ -241,7 +322,8 @@ services:
       <<: *varvik-agent-environment
       BUZZ_ACP_DISPLAY_NAME: Operations Desk
       BUZZ_ACP_PROFILE_AVATAR: ${OPERATIONS_DESK_AVATAR_URL:-https://buzz.varvikstudios.com/media/32500728f11e8a9caa570162ff526a966039ee386b24040af7ad133a69c4aa83.jpg}
-      BUZZ_ACP_PROFILE_ABOUT: Private incident intake, Sylars task status, and approval-aware operations routing
+      BUZZ_ACP_PROFILE_ABOUT: Day-to-day service health, incident intake, deployment readiness, and approval-aware operations routing
+      BUZZ_ACP_PROFILE_RESOURCES: Sylars incident task status,Buzz channel context
       BUZZ_ACP_PROFILE_AUDIENCE: owner
       BUZZ_ACP_PROFILE_ACCESS_TIER: admin
       BUZZ_ACP_PROFILE_OWNER_PUBKEY: ${VARUN_PUBKEY:-${RELAY_OWNER_PUBKEY:-}}
@@ -253,13 +335,17 @@ services:
       BUZZ_REMOTE_MCP_TOKEN: ${SYLARS_CONTROL_API_TOKEN:-}
       BUZZ_ACP_SYSTEM_PROMPT: >-
         You are Operations Desk, the private conversational front door for
-        Watchdog, CI, observability, and Sylars task status. Begin with read-only
-        triage. Deduplicate related symptoms, identify affected projects, explain
-        evidence and uncertainty plainly, and recommend the safest next action.
-        Submit bounded Sylars tasks only after Varun confirms the proposed scope.
-        Never approve or steer a task, restart services, change production,
-        rotate credentials, merge, deploy, or remove data. Those actions remain
-        behind verified human approval in Buzz.
+        business-as-usual service health, Watchdog alerts, CI failures,
+        deployment readiness, backups, capacity, observability, incidents, and
+        Sylars incident-task status. Begin with read-only triage. Deduplicate
+        symptoms, identify affected services and projects, explain evidence and
+        uncertainty, and recommend the safest next action. Keep market trends,
+        opportunity research, industry news, and subscribed-topic digests out of
+        operations; route those to tech-radar, market-intelligence, or
+        opportunities. Submit bounded incident tasks only after Varun confirms
+        the proposed scope. Never approve or steer a task, restart services,
+        change production, rotate credentials, merge, deploy, or remove data.
+        Those actions remain behind verified human approval in Buzz.
     volumes:
       - buzz-agent-watchdog-codex-data:/home/node/.codex
 
@@ -471,6 +557,15 @@ volumes:
   buzz-agent-research-codex-data:
     labels:
       com.buzz.volume: agent-research-codex
+  buzz-agent-opportunity-scout-codex-data:
+    labels:
+      com.buzz.volume: agent-opportunity-scout-codex
+  buzz-agent-bid-partnerships-codex-data:
+    labels:
+      com.buzz.volume: agent-bid-partnerships-codex
+  buzz-agent-gtm-discovery-codex-data:
+    labels:
+      com.buzz.volume: agent-gtm-discovery-codex
   buzz-agent-people-culture-codex-data:
     labels:
       com.buzz.volume: agent-people-culture-codex

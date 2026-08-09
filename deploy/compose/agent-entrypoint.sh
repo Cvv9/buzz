@@ -208,6 +208,7 @@ if [ -n "${BUZZ_ACP_PROFILE_OWNER_PUBKEY:-}" ]; then
   set -- buzz agents publish-profile \
     --display-name "${BUZZ_ACP_DISPLAY_NAME}" \
     --about "${BUZZ_ACP_PROFILE_ABOUT}" \
+    --resources "${BUZZ_ACP_PROFILE_RESOURCES:-}" \
     --audience "${BUZZ_ACP_PROFILE_AUDIENCE}" \
     --access-tier "${BUZZ_ACP_PROFILE_ACCESS_TIER}" \
     --channel-add-policy "${BUZZ_ACP_CHANNEL_ADD_POLICY}" \
@@ -216,6 +217,7 @@ else
   set -- buzz agents publish-profile \
     --display-name "${BUZZ_ACP_DISPLAY_NAME}" \
     --about "${BUZZ_ACP_PROFILE_ABOUT}" \
+    --resources "${BUZZ_ACP_PROFILE_RESOURCES:-}" \
     --audience "${BUZZ_ACP_PROFILE_AUDIENCE}" \
     --access-tier "${BUZZ_ACP_PROFILE_ACCESS_TIER}" \
     --channel-add-policy "${BUZZ_ACP_CHANNEL_ADD_POLICY}"

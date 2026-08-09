@@ -11,20 +11,36 @@ export async function installWorkspaceRelayMock(
       avatarUrl: string;
       model: string;
     };
+    searchEvents?: Array<{
+      kind: number;
+      pubkey: string;
+      tags: string[][];
+      content: string;
+      suffix: string;
+      createdAt?: number;
+    }>;
+    workflowChannelId?: string;
   } = {},
 ) {
   await page.addInitScript(
-    ({ pubkey, generalMemberPubkeys, hostedAgentConfig }) => {
+    ({
+      pubkey,
+      generalMemberPubkeys,
+      hostedAgentConfig,
+      searchEvents,
+      workflowChannelId,
+    }) => {
       const event = (
         kind: number,
         eventPubkey: string,
         tags: string[][],
         content = "",
         suffix = "0",
+        createdAt = 1,
       ) => ({
         id: suffix.padStart(64, "0"),
         pubkey: eventPubkey,
-        created_at: 1,
+        created_at: createdAt,
         kind,
         tags,
         content,
@@ -39,6 +55,14 @@ export async function installWorkspaceRelayMock(
           JSON.stringify({
             name: `Workspace Agent ${index + 1}`,
             aliases: index === 6 ? ["Research Agent"] : [],
+            about:
+              index === 6
+                ? "Investigates market questions and returns source-backed findings."
+                : undefined,
+            resources:
+              index === 6
+                ? ["Market Intelligence research", "Public web sources"]
+                : [],
             access_tier: index < 6 ? "personal" : "shared",
           }),
           (index + 10).toString(16),
@@ -47,7 +71,7 @@ export async function installWorkspaceRelayMock(
       const hostedConfigEvents = hostedAgentConfig
         ? [
             event(
-              30179,
+              30180,
               pubkey,
               [["d", hostedAgentConfig.agentPubkey]],
               JSON.stringify({
@@ -61,9 +85,63 @@ export async function installWorkspaceRelayMock(
             ),
           ]
         : [];
+      const seededSearchEvents = searchEvents.map((searchEvent) =>
+        event(
+          searchEvent.kind,
+          searchEvent.pubkey,
+          searchEvent.tags,
+          searchEvent.content,
+          searchEvent.suffix,
+          searchEvent.createdAt,
+        ),
+      );
+      const publishedEventsStorageKey = "buzz-web-e2e-published-events";
+      const receivedEventsStorageKey = "buzz-web-e2e-received-events";
+      const loadPublishedEvents = (): ReturnType<typeof event>[] => {
+        try {
+          const value = sessionStorage.getItem(publishedEventsStorageKey);
+          const parsed: unknown = value ? JSON.parse(value) : [];
+          return Array.isArray(parsed)
+            ? (parsed as ReturnType<typeof event>[])
+            : [];
+        } catch {
+          return [];
+        }
+      };
+      const persistPublishedEvents = (events: ReturnType<typeof event>[]) => {
+        sessionStorage.setItem(
+          publishedEventsStorageKey,
+          JSON.stringify(events),
+        );
+      };
+      const loadReceivedEvents = (): ReturnType<typeof event>[] => {
+        try {
+          const value = sessionStorage.getItem(receivedEventsStorageKey);
+          const parsed: unknown = value ? JSON.parse(value) : [];
+          return Array.isArray(parsed)
+            ? (parsed as ReturnType<typeof event>[])
+            : [];
+        } catch {
+          return [];
+        }
+      };
+      const persistReceivedEvents = (events: ReturnType<typeof event>[]) => {
+        sessionStorage.setItem(
+          receivedEventsStorageKey,
+          JSON.stringify(events),
+        );
+      };
       const sockets = new Set<MockWebSocket>();
-      const publishedEvents: ReturnType<typeof event>[] = [];
+      const publishedEvents = loadPublishedEvents();
+      const receivedEvents = loadReceivedEvents();
       let reactionQueryCount = 0;
+      let lastSearchFilter: Record<string, unknown> | null = null;
+
+      const knownEvents = () =>
+        [...publishedEvents, ...receivedEvents].filter(
+          (candidate, index, events) =>
+            events.findIndex((event) => event.id === candidate.id) === index,
+        );
 
       class MockWebSocket {
         static readonly CONNECTING = 0;
@@ -81,8 +159,14 @@ export async function installWorkspaceRelayMock(
           {
             kinds?: number[];
             authors?: string[];
+            search?: string;
+            since?: number;
+            until?: number;
+            "#d"?: string[];
             "#e"?: string[];
             "#h"?: string[];
+            "#p"?: string[];
+            "#a"?: string[];
           }
         >();
 
@@ -92,12 +176,24 @@ export async function installWorkspaceRelayMock(
           window.setTimeout(() => {
             this.readyState = MockWebSocket.OPEN;
             this.emit("open", new Event("open"));
-            this.emit(
-              "message",
-              new MessageEvent("message", {
-                data: JSON.stringify(["AUTH", "workspace-e2e-challenge"]),
-              }),
-            );
+            if (this.url.includes("/huddle/")) {
+              this.emit(
+                "message",
+                new MessageEvent("message", {
+                  data: JSON.stringify({
+                    type: "challenge",
+                    challenge: "workspace-e2e-huddle-challenge",
+                  }),
+                }),
+              );
+            } else {
+              this.emit(
+                "message",
+                new MessageEvent("message", {
+                  data: JSON.stringify(["AUTH", "workspace-e2e-challenge"]),
+                }),
+              );
+            }
           }, 0);
         }
 
@@ -111,8 +207,27 @@ export async function installWorkspaceRelayMock(
           this.listeners.get(type)?.delete(listener);
         }
 
-        send(payload: string) {
+        send(payload: string | ArrayBuffer | ArrayBufferView) {
+          if (typeof payload !== "string") return;
           const envelope = JSON.parse(payload) as unknown[];
+          if (
+            this.url.includes("/huddle/") &&
+            !Array.isArray(envelope) &&
+            (envelope as { type?: unknown }).type === "auth"
+          ) {
+            window.setTimeout(
+              () =>
+                this.emit(
+                  "message",
+                  new MessageEvent("message", {
+                    data: JSON.stringify({ type: "joined", peers: [] }),
+                  }),
+                ),
+              0,
+            );
+            return;
+          }
+          if (!Array.isArray(envelope)) return;
           if (envelope[0] === "AUTH") {
             const auth = envelope[1] as ReturnType<typeof event>;
             window.setTimeout(
@@ -130,6 +245,7 @@ export async function installWorkspaceRelayMock(
           if (envelope[0] === "EVENT") {
             const published = envelope[1] as ReturnType<typeof event>;
             publishedEvents.push(published);
+            persistPublishedEvents(publishedEvents);
             window.setTimeout(
               () =>
                 this.emit(
@@ -147,8 +263,14 @@ export async function installWorkspaceRelayMock(
           const filter = (envelope[2] ?? {}) as {
             kinds?: number[];
             authors?: string[];
+            search?: string;
+            since?: number;
+            until?: number;
+            "#d"?: string[];
             "#e"?: string[];
             "#h"?: string[];
+            "#p"?: string[];
+            "#a"?: string[];
           };
           this.subscriptions.set(subscriptionId, filter);
           const kinds = filter.kinds ?? [];
@@ -181,6 +303,20 @@ export async function installWorkspaceRelayMock(
                 "",
                 "3",
               ),
+              ...(workflowChannelId
+                ? [
+                    event(
+                      39002,
+                      "f".repeat(64),
+                      [
+                        ["d", workflowChannelId],
+                        ["p", pubkey, "", "owner"],
+                      ],
+                      "",
+                      "workflow-membership",
+                    ),
+                  ]
+                : []),
             ];
           } else if (kinds.length === 1 && kinds.includes(39000)) {
             events = [
@@ -204,8 +340,22 @@ export async function installWorkspaceRelayMock(
                 "",
                 "4",
               ),
+              ...(workflowChannelId
+                ? [
+                    event(
+                      39000,
+                      "f".repeat(64),
+                      [
+                        ["d", workflowChannelId],
+                        ["name", "automations"],
+                      ],
+                      "",
+                      "workflow-metadata",
+                    ),
+                  ]
+                : []),
             ];
-          } else if (kinds.includes(30179)) {
+          } else if (kinds.includes(30180)) {
             events = hostedConfigEvents;
           } else if (kinds.includes(10100) || kinds.includes(30177)) {
             events = agentEvents;
@@ -219,25 +369,91 @@ export async function installWorkspaceRelayMock(
                 "89",
               ),
             ];
-          } else if (
-            kinds.length === 1 &&
-            kinds.includes(0) &&
-            filter.authors?.includes(pubkey)
-          ) {
+          } else if (kinds.some((kind) => kind >= 48100 && kind <= 48106)) {
+            events = knownEvents().filter(
+              (candidate) =>
+                kinds.includes(candidate.kind) &&
+                (!filter["#h"]?.length ||
+                  candidate.tags.some(
+                    (tag) => tag[0] === "h" && filter["#h"]?.includes(tag[1]),
+                  )),
+            );
+          } else if (kinds.length === 1 && kinds.includes(0)) {
             events = [
-              event(
-                0,
-                pubkey,
-                [],
-                JSON.stringify({
-                  about: "Existing founder profile",
-                  picture:
-                    "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==",
-                  custom_field: "preserve-me",
-                }),
-                "5",
+              ...(filter.authors?.includes(pubkey)
+                ? [
+                    event(
+                      0,
+                      pubkey,
+                      [],
+                      JSON.stringify({
+                        about: "Existing founder profile",
+                        picture:
+                          "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==",
+                        custom_field: "preserve-me",
+                      }),
+                      "5",
+                    ),
+                  ]
+                : []),
+              ...knownEvents().filter(
+                (candidate) =>
+                  candidate.kind === 0 &&
+                  (!filter.authors?.length ||
+                    filter.authors.includes(candidate.pubkey)),
               ),
             ];
+          } else if (kinds.length === 1 && kinds.includes(30315)) {
+            events = knownEvents().filter(
+              (candidate) =>
+                candidate.kind === 30315 &&
+                (!filter.authors?.length ||
+                  filter.authors.includes(candidate.pubkey)) &&
+                (!filter["#d"]?.length ||
+                  candidate.tags.some(
+                    (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1]),
+                  )),
+            );
+          } else if (kinds.length === 1 && kinds.includes(30620)) {
+            events = knownEvents().filter(
+              (candidate) =>
+                candidate.kind === 30620 &&
+                (!filter["#h"]?.length ||
+                  candidate.tags.some(
+                    (tag) => tag[0] === "h" && filter["#h"]?.includes(tag[1]),
+                  )) &&
+                (!filter["#d"]?.length ||
+                  candidate.tags.some(
+                    (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1]),
+                  )),
+            );
+          } else if (kinds.length === 1 && kinds.includes(46010)) {
+            events = knownEvents().filter(
+              (candidate) =>
+                candidate.kind === 46010 &&
+                (!filter["#p"]?.length ||
+                  candidate.tags.some(
+                    (tag) => tag[0] === "p" && filter["#p"]?.includes(tag[1]),
+                  )),
+            );
+          } else if (filter.search) {
+            lastSearchFilter = filter;
+            const search = filter.search.toLowerCase();
+            events = seededSearchEvents.filter(
+              (candidate) =>
+                kinds.includes(candidate.kind) &&
+                candidate.content.toLowerCase().includes(search) &&
+                (!filter.authors?.length ||
+                  filter.authors.includes(candidate.pubkey)) &&
+                (!filter["#h"]?.length ||
+                  candidate.tags.some(
+                    (tag) => tag[0] === "h" && filter["#h"]?.includes(tag[1]),
+                  )) &&
+                (filter.since === undefined ||
+                  candidate.created_at >= filter.since) &&
+                (filter.until === undefined ||
+                  candidate.created_at <= filter.until),
+            );
           } else if (kinds.includes(9) && kinds.includes(40002)) {
             events = [
               event(
@@ -296,6 +512,25 @@ export async function installWorkspaceRelayMock(
                     filter.authors.includes(published.pubkey)),
               ),
             ];
+          } else {
+            events = knownEvents().filter(
+              (candidate) =>
+                (!kinds.length || kinds.includes(candidate.kind)) &&
+                (!filter.authors?.length ||
+                  filter.authors.includes(candidate.pubkey)) &&
+                (!filter["#a"]?.length ||
+                  candidate.tags.some(
+                    (tag) => tag[0] === "a" && filter["#a"]?.includes(tag[1]),
+                  )) &&
+                (!filter["#d"]?.length ||
+                  candidate.tags.some(
+                    (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1]),
+                  )) &&
+                (filter.since === undefined ||
+                  candidate.created_at >= filter.since) &&
+                (filter.until === undefined ||
+                  candidate.created_at <= filter.until),
+            );
           }
           window.setTimeout(() => {
             for (const relayEvent of events) {
@@ -322,7 +557,17 @@ export async function installWorkspaceRelayMock(
           this.emit("close", new CloseEvent("close"));
         }
 
+        hasKindSubscription(kind: number) {
+          return [...this.subscriptions.values()].some((filter) =>
+            filter.kinds?.includes(kind),
+          );
+        }
+
         emitRelayEvent(relayEvent: ReturnType<typeof event>) {
+          if (!receivedEvents.some((event) => event.id === relayEvent.id)) {
+            receivedEvents.push(relayEvent);
+            persistReceivedEvents(receivedEvents);
+          }
           for (const [subscriptionId, filter] of this.subscriptions) {
             if (
               filter.kinds?.length &&
@@ -339,9 +584,39 @@ export async function installWorkspaceRelayMock(
               continue;
             }
             if (
+              filter["#p"]?.length &&
+              !relayEvent.tags.some(
+                (tag) => tag[0] === "p" && filter["#p"]?.includes(tag[1]),
+              )
+            ) {
+              continue;
+            }
+            if (
               filter["#e"]?.length &&
               !relayEvent.tags.some(
                 (tag) => tag[0] === "e" && filter["#e"]?.includes(tag[1]),
+              )
+            ) {
+              continue;
+            }
+            if (
+              filter.authors?.length &&
+              !filter.authors.includes(relayEvent.pubkey)
+            ) {
+              continue;
+            }
+            if (
+              filter["#d"]?.length &&
+              !relayEvent.tags.some(
+                (tag) => tag[0] === "d" && filter["#d"]?.includes(tag[1]),
+              )
+            ) {
+              continue;
+            }
+            if (
+              filter["#a"]?.length &&
+              !relayEvent.tags.some(
+                (tag) => tag[0] === "a" && filter["#a"]?.includes(tag[1]),
               )
             ) {
               continue;
@@ -374,12 +649,17 @@ export async function installWorkspaceRelayMock(
         __BUZZ_WEB_E2E_EVENT__: event,
         __BUZZ_WEB_E2E_PUBLISHED__: publishedEvents,
         __BUZZ_WEB_E2E_REACTION_QUERY_COUNT__: () => reactionQueryCount,
+        __BUZZ_WEB_E2E_LAST_SEARCH_FILTER__: () => lastSearchFilter,
+        __BUZZ_WEB_E2E_HAS_KIND_SUBSCRIPTION__: (kind: number) =>
+          [...sockets].some((socket) => socket.hasKindSubscription(kind)),
       });
     },
     {
       pubkey: viewerPubkey,
       generalMemberPubkeys: options.generalMemberPubkeys ?? [],
       hostedAgentConfig: options.hostedAgentConfig ?? null,
+      searchEvents: options.searchEvents ?? [],
+      workflowChannelId: options.workflowChannelId ?? null,
     },
   );
 }

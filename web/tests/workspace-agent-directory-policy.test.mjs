@@ -26,3 +26,12 @@ test("hosted roster keeps only the latest directory head per agent", () => {
   ]);
   assert.equal(roster[0]?.id, "b");
 });
+
+test("hosted roster uses the canonical lowest-id same-second head", () => {
+  const hosted = "a".repeat(64);
+  const roster = hostedDirectoryEvents([
+    { id: "f", kind: 10100, pubkey: hosted, created_at: 10 },
+    { id: "0", kind: 10100, pubkey: hosted, created_at: 10 },
+  ]);
+  assert.equal(roster[0]?.id, "0");
+});

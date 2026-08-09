@@ -197,11 +197,7 @@ test("web workspace preserves profiles and applies live-event parity rules", asy
 
   await page.getByTestId("workspace-agents-button").click();
   await expect(page.getByTestId("workspace-agents")).toBeVisible();
-  await expect(
-    page.getByTestId("workspace-agents").getByText("Workspace Agent 1", {
-      exact: true,
-    }),
-  ).toBeVisible();
+  await expect(page.getByTestId("agent-row-workspace-agent-1")).toBeVisible();
 
   await expect
     .poll(() =>

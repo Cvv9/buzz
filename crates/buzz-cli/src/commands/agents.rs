@@ -14,6 +14,7 @@ pub async fn dispatch(command: AgentsCmd, client: &BuzzClient) -> Result<(), Cli
         AgentsCmd::PublishProfile {
             display_name,
             about,
+            resources,
             aliases,
             avatar,
             audience,
@@ -41,6 +42,21 @@ pub async fn dispatch(command: AgentsCmd, client: &BuzzClient) -> Result<(), Cli
                         .any(|existing| existing.eq_ignore_ascii_case(alias))
                     {
                         unique.push(alias.to_string());
+                    }
+                    unique
+                });
+            let resources = resources
+                .as_deref()
+                .unwrap_or_default()
+                .split(',')
+                .map(str::trim)
+                .filter(|resource| !resource.is_empty())
+                .fold(Vec::<String>::new(), |mut unique, resource| {
+                    if !unique
+                        .iter()
+                        .any(|existing| existing.eq_ignore_ascii_case(resource))
+                    {
+                        unique.push(resource.to_string());
                     }
                     unique
                 });
@@ -104,6 +120,7 @@ pub async fn dispatch(command: AgentsCmd, client: &BuzzClient) -> Result<(), Cli
                 "display_name": display_name,
                 "aliases": aliases,
                 "about": about,
+                "resources": resources,
                 "avatar_url": avatar,
                 "agent_type": "agent",
                 "status": "online",

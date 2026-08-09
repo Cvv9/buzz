@@ -1,19 +1,7 @@
-import {
-  ChevronLeft,
-  Hash,
-  Lock,
-  Menu,
-  Settings2,
-  Star,
-  Users,
-  X,
-} from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import * as React from "react";
 import { truncatePubkey } from "@/shared/lib/pubkey";
-import { Button } from "@/shared/ui/button";
-import { Input } from "@/shared/ui/input";
 import { IdentityGate } from "./IdentityGate";
 import { EmptyMembership } from "./EmptyMembership";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
@@ -21,25 +9,50 @@ import { WorkspaceInbox } from "./WorkspaceInbox";
 import { WorkspaceAgents } from "./WorkspaceAgents";
 import { WorkspaceGuide } from "./WorkspaceGuide";
 import { WorkspaceSettings } from "./WorkspaceSettings";
-import { WorkspaceComposer } from "./WorkspaceComposer";
-import { WorkspaceMessageRow } from "./WorkspaceMessageRow";
+import { WorkspaceConversation } from "./WorkspaceConversation";
+import { WorkspaceContentDialogs } from "./WorkspaceContentDialogs";
 import { WorkspaceChannelSettings } from "./WorkspaceChannelSettings";
+import { WorkspaceNewMessage } from "./WorkspaceNewMessage";
+import { RemindersPanel } from "@/features/reminders/ui/RemindersPanel";
+import { useCustomEmojiPalette } from "@/features/custom-emoji/custom-emoji-api";
+import {
+  addDirectMessageMembers,
+  hideDirectMessage,
+  openDirectMessage,
+  useDmVisibility,
+} from "../dm-visibility";
+import {
+  useChannelTyping,
+  usePresenceHeartbeat,
+  useTypingBroadcast,
+  useWorkspacePresence,
+} from "@/features/presence/workspace-presence";
 import { shouldMountWorkspaceTheme } from "../workspace-theme-mount-policy";
 import { useAgentMentionDelivery } from "../useAgentMentionDelivery";
 import { useWorkspaceIdentity } from "../useWorkspaceIdentity";
+import { useSyncedChannelState } from "@/features/channel-state/useSyncedChannelState";
+import { readBrowserPreferences } from "@/features/preferences/browser-preferences";
 import {
   type WorkspaceMessage,
   type WorkspaceProfile,
+  addWorkspaceMember,
   createWorkspaceChannel,
   deleteWorkspaceMessage,
   editWorkspaceMessage,
   listAgents,
   listChannelMessages,
   listProfiles,
+  listWorkspaceCommunityMembers,
   listWorkspaceChannels,
+  publishHostedAgentConfig,
   isConversationalWorkspaceMessage,
   publishWorkspaceProfile,
+  removeWorkspaceMember,
+  sendWorkspaceMessage,
   subscribeToChannels,
+  subscribeToWorkspaceChannelCatalog,
+  subscribeToWorkspaceDirectory,
+  subscribeToWorkspaceMembershipChanges,
 } from "@/features/workspace/workspace-api";
 import {
   materializeMessages,
@@ -48,35 +61,24 @@ import {
 import { useWorkspaceReactions } from "@/features/workspace/useWorkspaceReactions";
 import { useWorkspaceReadState } from "@/features/workspace/workspace-read-state";
 import { CommunityThemeController } from "@/shared/theme/CommunityThemeController";
+import { workspaceInvalidationTargets } from "../workspace-realtime-sync-policy";
+import {
+  listUserStatuses,
+  subscribeToProfiles,
+  subscribeToUserStatuses,
+} from "@/features/profiles/profile-api";
 
 type WorkspaceView = "agents" | "alerts" | "channel" | "inbox";
 
-const STARRED_CHANNELS_STORAGE_PREFIX = "buzz.web.starred-channels.v1";
-
-function starredChannelsStorageKey(pubkey: string) {
-  return `${STARRED_CHANNELS_STORAGE_PREFIX}:${pubkey.toLowerCase()}`;
-}
-
-function readStarredChannels(pubkey: string) {
-  if (!pubkey) return new Set<string>();
-  try {
-    const value = JSON.parse(
-      localStorage.getItem(starredChannelsStorageKey(pubkey)) ?? "[]",
-    );
-    return new Set(
-      Array.isArray(value)
-        ? value.filter(
-            (channelId): channelId is string =>
-              typeof channelId === "string" && channelId.length > 0,
-          )
-        : [],
-    );
-  } catch {
-    return new Set<string>();
-  }
-}
-
-export function WorkspacePage() {
+export function WorkspacePage({
+  routeMode = "workspace",
+  channelPermalink,
+  threadPermalink,
+}: {
+  routeMode?: "workspace" | "new-message" | "reminders";
+  channelPermalink?: string;
+  threadPermalink?: string;
+}) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const {
@@ -92,9 +94,6 @@ export function WorkspacePage() {
   );
   const [workspaceView, setWorkspaceView] =
     React.useState<WorkspaceView>("channel");
-  const [starredChannelIds, setStarredChannelIds] = React.useState<Set<string>>(
-    () => new Set(),
-  );
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
   const [threadRootId, setThreadRootId] = React.useState<string | null>(null);
   const [expandedThreadIds, setExpandedThreadIds] = React.useState<Set<string>>(
@@ -112,6 +111,15 @@ export function WorkspacePage() {
   const [channelSettingsOpen, setChannelSettingsOpen] = React.useState(false);
   const [editingMessage, setEditingMessage] =
     React.useState<TimelineMessage | null>(null);
+  const [addingDmMembers, setAddingDmMembers] = React.useState(false);
+  const [dmMemberQuery, setDmMemberQuery] = React.useState("");
+  const hiddenDmChannelIds = useDmVisibility(identity?.pubkey);
+  const {
+    mutedChannelIds,
+    starredChannelIds,
+    toggleMute: toggleMutedChannel,
+    toggleStar: toggleStarredChannel,
+  } = useSyncedChannelState(identity?.pubkey);
 
   const channelsQuery = useQuery({
     queryKey: ["workspace-channels", identity?.pubkey],
@@ -122,22 +130,59 @@ export function WorkspacePage() {
   const agentsQuery = useQuery({
     queryKey: ["workspace-agents", identity?.pubkey],
     queryFn: () => listAgents(identity?.pubkey ?? ""),
-    enabled: Boolean(identity && channelsQuery.data?.length),
+    enabled: Boolean(identity),
+    retry: false,
+  });
+  const communityMembersQuery = useQuery({
+    queryKey: ["workspace-community-members"],
+    queryFn: listWorkspaceCommunityMembers,
+    enabled: Boolean(identity),
     retry: false,
   });
 
   const channels = channelsQuery.data ?? [];
-  React.useEffect(() => {
-    setStarredChannelIds(readStarredChannels(identity?.pubkey ?? ""));
-  }, [identity?.pubkey]);
+  const visibleChannels = React.useMemo(
+    () =>
+      channels.filter(
+        (channel) =>
+          channel.type !== "dm" ||
+          !hiddenDmChannelIds.has(channel.id.toLowerCase()),
+      ),
+    [channels, hiddenDmChannelIds],
+  );
+  const recipientProfilesQuery = useQuery({
+    queryKey: [
+      "workspace-dm-recipient-profiles",
+      communityMembersQuery.data?.map((member) => member.pubkey).sort(),
+    ],
+    queryFn: () =>
+      listProfiles(
+        communityMembersQuery.data?.map((member) => member.pubkey) ?? [],
+      ),
+    enabled: Boolean(identity && communityMembersQuery.data?.length),
+  });
   React.useEffect(() => {
     if (
-      channels.length &&
-      !channels.some((channel) => channel.id === activeChannelId)
+      visibleChannels.length &&
+      !visibleChannels.some((channel) => channel.id === activeChannelId)
     ) {
-      setActiveChannelId(channels[0]?.id ?? null);
+      setActiveChannelId(visibleChannels[0]?.id ?? null);
     }
-  }, [activeChannelId, channels]);
+  }, [activeChannelId, visibleChannels]);
+  React.useEffect(() => {
+    if (
+      channelPermalink &&
+      visibleChannels.some((channel) => channel.id === channelPermalink)
+    ) {
+      setActiveChannelId(channelPermalink);
+      setWorkspaceView("channel");
+    }
+  }, [channelPermalink, visibleChannels]);
+  React.useEffect(() => {
+    if (!threadPermalink || !/^[0-9a-f]{64}$/i.test(threadPermalink)) return;
+    setThreadRootId(threadPermalink);
+    setWorkspaceView("channel");
+  }, [threadPermalink]);
   React.useEffect(() => {
     if (activeChannelId) {
       localStorage.setItem("buzz.web.active-channel", activeChannelId);
@@ -145,13 +190,85 @@ export function WorkspacePage() {
   }, [activeChannelId]);
 
   const activeChannel =
-    channels.find((channel) => channel.id === activeChannelId) ?? null;
+    visibleChannels.find((channel) => channel.id === activeChannelId) ?? null;
+  const presenceByPubkey = useWorkspacePresence(
+    identity?.pubkey,
+    activeChannel?.memberPubkeys ?? [],
+  );
+  usePresenceHeartbeat(identity?.pubkey);
+  const typingPubkeys = useChannelTyping(
+    activeChannel?.id ?? null,
+    identity?.pubkey,
+    activeChannel?.memberPubkeys ?? [],
+  );
+  const notifyTyping = useTypingBroadcast(activeChannel?.id ?? null);
   const { addAgentMutation, sendMutation } = useAgentMentionDelivery({
     activeChannel,
     activeChannelId,
     agents: agentsQuery.data ?? [],
     identity,
-    refetchChannels: channelsQuery.refetch,
+  });
+  const updateAgentMutation = useMutation({
+    mutationFn: async ({
+      agent,
+      update,
+    }: {
+      agent: WorkspaceProfile;
+      update: {
+        name: string;
+        avatarUrl: string | null;
+        model: string | null;
+      };
+    }) =>
+      publishHostedAgentConfig({
+        pubkey: agent.pubkey,
+        ...update,
+      }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["workspace-agents"] });
+    },
+  });
+  const channelAccessMutation = useMutation({
+    mutationFn: async ({
+      agent,
+      channel,
+      enabled,
+    }: {
+      agent: WorkspaceProfile;
+      channel: (typeof channels)[number];
+      enabled: boolean;
+    }) => {
+      if (enabled) return addWorkspaceMember(channel.id, agent.pubkey, "bot");
+      return removeWorkspaceMember(channel.id, agent.pubkey);
+    },
+    onMutate: async ({ agent, channel, enabled }) => {
+      const queryKey = ["workspace-channels", identity?.pubkey] as const;
+      await queryClient.cancelQueries({ queryKey });
+      const previous = queryClient.getQueryData<typeof channels>(queryKey);
+      queryClient.setQueryData<typeof channels>(queryKey, (current = []) =>
+        current.map((candidate) =>
+          candidate.id !== channel.id
+            ? candidate
+            : {
+                ...candidate,
+                memberPubkeys: enabled
+                  ? [...new Set([...candidate.memberPubkeys, agent.pubkey])]
+                  : candidate.memberPubkeys.filter(
+                      (pubkey) => pubkey !== agent.pubkey,
+                    ),
+              },
+        ),
+      );
+      return { previous, queryKey };
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(context.queryKey, context.previous);
+      }
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["workspace-channels"] });
+    },
   });
   const messagesQuery = useQuery({
     queryKey: ["channel-messages", activeChannelId],
@@ -179,39 +296,59 @@ export function WorkspacePage() {
   });
   const alertsUnreadCount = alertItems.filter((item) => !item.isRead).length;
   const inboxUnreadCount = inboxItems.filter((item) => !item.isRead).length;
-  const toggleStarredChannel = React.useCallback(
-    (channelId: string) => {
-      if (!identity) return;
-      setStarredChannelIds((current) => {
-        const next = new Set(current);
-        if (next.has(channelId)) next.delete(channelId);
-        else next.add(channelId);
-        localStorage.setItem(
-          starredChannelsStorageKey(identity.pubkey),
-          JSON.stringify([...next]),
-        );
-        return next;
-      });
-    },
-    [identity],
-  );
-  const { reactionActorPubkeys, reactions, toggleReaction } =
-    useWorkspaceReactions(materialized, identity?.pubkey ?? "");
-  const profilePubkeys = React.useMemo(
+  const emojiMemberPubkeys = React.useMemo(
     () => [
       ...(identity ? [identity.pubkey] : []),
-      ...materialized.map((message) => message.pubkey),
       ...channels.flatMap((channel) => channel.memberPubkeys),
-      ...(agentsQuery.data ?? []).map((agent) => agent.pubkey),
-      ...reactionActorPubkeys,
     ],
+    [channels, identity],
+  );
+  const customEmojiQuery = useCustomEmojiPalette(emojiMemberPubkeys);
+  const customEmoji = customEmojiQuery.data ?? [];
+  const { reactionActorPubkeys, reactions, toggleReaction } =
+    useWorkspaceReactions(materialized, identity?.pubkey ?? "", customEmoji);
+  const profilePubkeys = React.useMemo(
+    () =>
+      [
+        ...(identity ? [identity.pubkey] : []),
+        ...materialized.map((message) => message.pubkey),
+        ...channels.flatMap((channel) => channel.memberPubkeys),
+        ...(agentsQuery.data ?? []).map((agent) => agent.pubkey),
+        ...reactionActorPubkeys,
+      ]
+        .map((pubkey) => pubkey.toLowerCase())
+        .filter((pubkey) => /^[0-9a-f]{64}$/.test(pubkey))
+        .filter((pubkey, index, values) => values.indexOf(pubkey) === index)
+        .sort(),
     [agentsQuery.data, channels, identity, materialized, reactionActorPubkeys],
   );
   const profilesQuery = useQuery({
-    queryKey: ["workspace-profiles", [...new Set(profilePubkeys)].sort()],
+    queryKey: ["workspace-profiles", profilePubkeys],
     queryFn: () => listProfiles(profilePubkeys),
     enabled: profilePubkeys.length > 0,
   });
+  const userStatusesQuery = useQuery({
+    queryKey: ["user-status", ...profilePubkeys],
+    queryFn: () => listUserStatuses(profilePubkeys),
+    enabled: profilePubkeys.length > 0,
+    staleTime: 60_000,
+  });
+  const profilePubkeyKey = profilePubkeys.join(",");
+
+  React.useEffect(() => {
+    const renderedPubkeys = profilePubkeyKey ? profilePubkeyKey.split(",") : [];
+    if (!renderedPubkeys.length) return;
+    const stopProfiles = subscribeToProfiles(renderedPubkeys, () => {
+      void queryClient.invalidateQueries({ queryKey: ["workspace-profiles"] });
+    });
+    const stopStatuses = subscribeToUserStatuses(renderedPubkeys, () => {
+      void queryClient.invalidateQueries({ queryKey: ["user-status"] });
+    });
+    return () => {
+      stopProfiles();
+      stopStatuses();
+    };
+  }, [profilePubkeyKey, queryClient]);
 
   React.useEffect(() => {
     if (!identity || channels.length === 0) return;
@@ -242,6 +379,7 @@ export function WorkspacePage() {
         if (
           channel &&
           document.hidden &&
+          readBrowserPreferences(identity.pubkey).notifications &&
           typeof Notification !== "undefined" &&
           Notification.permission === "granted"
         ) {
@@ -251,11 +389,50 @@ export function WorkspacePage() {
                 ? `${event.content.slice(0, 177)}…`
                 : event.content,
             tag: `buzz-channel-${event.channelId}`,
+            silent: !readBrowserPreferences(identity.pubkey).notificationSound,
           });
         }
       },
     );
   }, [channels, identity, queryClient, recordIncomingMessage]);
+
+  React.useEffect(() => {
+    if (!identity) return;
+    const viewerPubkey = identity.pubkey;
+    const pending = new Set<"channels" | "agents">();
+    let flushTimer: number | null = null;
+    const invalidate = (event: { kind: number; tags: string[][] }) => {
+      for (const target of workspaceInvalidationTargets(event, viewerPubkey)) {
+        pending.add(target);
+      }
+      if (pending.size === 0 || flushTimer !== null) return;
+      flushTimer = window.setTimeout(() => {
+        flushTimer = null;
+        if (pending.delete("channels")) {
+          void queryClient.invalidateQueries({
+            queryKey: ["workspace-channels", viewerPubkey],
+          });
+        }
+        if (pending.delete("agents")) {
+          void queryClient.invalidateQueries({
+            queryKey: ["workspace-agents", viewerPubkey],
+          });
+        }
+      }, 0);
+    };
+    const stopCatalog = subscribeToWorkspaceChannelCatalog(invalidate);
+    const stopDirectory = subscribeToWorkspaceDirectory(invalidate);
+    const stopMembership = subscribeToWorkspaceMembershipChanges(
+      viewerPubkey,
+      invalidate,
+    );
+    return () => {
+      if (flushTimer !== null) window.clearTimeout(flushTimer);
+      stopCatalog();
+      stopDirectory();
+      stopMembership();
+    };
+  }, [identity, queryClient]);
 
   React.useEffect(() => {
     if (!identity || !channels.length) return;
@@ -279,14 +456,15 @@ export function WorkspacePage() {
         catalogSection: channelCatalogSection,
         visibility: channelVisibility,
       }),
-    onSuccess: async () => {
+    onSuccess: () => {
       setCreateChannelOpen(false);
       setChannelName("");
       setChannelAbout("");
       setChannelCatalogSection("");
       setChannelVisibility("public");
-      await new Promise((resolve) => window.setTimeout(resolve, 350));
-      await channelsQuery.refetch();
+      void queryClient.invalidateQueries({
+        queryKey: ["workspace-channels", identity?.pubkey],
+      });
     },
   });
   const editMutation = useMutation({
@@ -305,6 +483,67 @@ export function WorkspacePage() {
   const deleteMutation = useMutation({
     mutationFn: deleteWorkspaceMessage,
     onSuccess: () => messagesQuery.refetch(),
+  });
+  const openDmMutation = useMutation({
+    mutationFn: async ({
+      recipients,
+      content,
+    }: {
+      recipients: string[];
+      content: string;
+    }) => {
+      if (!identity)
+        throw new Error("Sign in before opening a direct message.");
+      await openDirectMessage(recipients);
+      const refreshed = (await channelsQuery.refetch()).data ?? [];
+      const participantSet = new Set(
+        [identity.pubkey, ...recipients].map((pubkey) => pubkey.toLowerCase()),
+      );
+      const directMessage = refreshed.find((channel) => {
+        const members = new Set(
+          channel.memberPubkeys.map((pubkey) => pubkey.toLowerCase()),
+        );
+        return (
+          channel.type === "dm" &&
+          members.size === participantSet.size &&
+          [...participantSet].every((pubkey) => members.has(pubkey))
+        );
+      });
+      if (!directMessage) {
+        throw new Error(
+          "The conversation opened, but is still syncing. Try again in a moment.",
+        );
+      }
+      if (content.trim()) await sendWorkspaceMessage(directMessage.id, content);
+      return directMessage.id;
+    },
+    onSuccess: (channelId) => {
+      setActiveChannelId(channelId);
+      setWorkspaceView("channel");
+      void navigate({ to: "/messages/$channelId", params: { channelId } });
+    },
+  });
+  const hideDmMutation = useMutation({
+    mutationFn: hideDirectMessage,
+    onSuccess: () => {
+      setActiveChannelId(null);
+      setThreadRootId(null);
+      void navigate({ to: "/" });
+    },
+  });
+  const addDmMemberMutation = useMutation({
+    mutationFn: ({
+      channelId,
+      pubkey,
+    }: {
+      channelId: string;
+      pubkey: string;
+    }) => addDirectMessageMembers(channelId, [pubkey]),
+    onSuccess: async () => {
+      setAddingDmMembers(false);
+      setDmMemberQuery("");
+      await channelsQuery.refetch();
+    },
   });
   if (identityLoading) {
     return (
@@ -387,6 +626,14 @@ export function WorkspacePage() {
   const currentProfile = profileFor(identity.pubkey);
   const reactionActorName = (pubkey: string) =>
     pubkey === identity.pubkey ? "You" : profileFor(pubkey).name;
+  const statusFor = (pubkey: string) =>
+    userStatusesQuery.data?.get(pubkey.toLowerCase()) ?? null;
+  const typingNames = typingPubkeys.map((pubkey) => profileFor(pubkey).name);
+  const onlineMemberCount = activeChannel
+    ? activeChannel.memberPubkeys.filter(
+        (pubkey) => presenceByPubkey[pubkey.toLowerCase()] === "online",
+      ).length
+    : 0;
   const replyCounts = new Map<string, number>();
   const repliesByThread = new Map<string, TimelineMessage[]>();
   for (const message of materialized) {
@@ -433,7 +680,12 @@ export function WorkspacePage() {
       <WorkspaceSidebar
         activeChannelId={activeChannelId}
         agents={agentsQuery.data ?? []}
-        channels={channels}
+        channels={visibleChannels}
+        hiddenDirectMessages={channels.filter(
+          (channel) =>
+            channel.type === "dm" &&
+            hiddenDmChannelIds.has(channel.id.toLowerCase()),
+        )}
         identity={identity}
         alertsUnreadCount={alertsUnreadCount}
         inboxUnreadCount={inboxUnreadCount}
@@ -450,6 +702,17 @@ export function WorkspacePage() {
         onOpenInbox={() => setWorkspaceView("inbox")}
         onOpenAlerts={() => setWorkspaceView("alerts")}
         onOpenAgents={() => setWorkspaceView("agents")}
+        onNewMessage={() => void navigate({ to: "/messages/new" })}
+        onOpenReminders={() => void navigate({ to: "/reminders" })}
+        onReopenDirectMessage={(channel) =>
+          openDmMutation.mutate({
+            recipients: channel.memberPubkeys.filter(
+              (pubkey) =>
+                pubkey.toLowerCase() !== identity.pubkey.toLowerCase(),
+            ),
+            content: "",
+          })
+        }
         onToggleStar={toggleStarredChannel}
         onSelectChannel={(channelId) => {
           setActiveChannelId(channelId);
@@ -460,9 +723,40 @@ export function WorkspacePage() {
       />
 
       <main className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
-        {workspaceView === "inbox" ? (
+        {routeMode === "new-message" ? (
+          <WorkspaceNewMessage
+            error={
+              openDmMutation.error instanceof Error
+                ? openDmMutation.error
+                : null
+            }
+            members={(communityMembersQuery.data ?? []).filter(
+              (member) =>
+                member.pubkey.toLowerCase() !== identity.pubkey.toLowerCase(),
+            )}
+            opening={openDmMutation.isPending}
+            profiles={recipientProfilesQuery.data}
+            onBack={() => void navigate({ to: "/" })}
+            onOpen={(recipients, content) =>
+              openDmMutation.mutate({ recipients, content })
+            }
+          />
+        ) : routeMode === "reminders" ? (
+          <RemindersPanel
+            pubkey={identity.pubkey}
+            onBack={() => void navigate({ to: "/" })}
+            onOpenTarget={(reminder) => {
+              const channelId = reminder.content.target?.channelId;
+              if (!channelId) return;
+              void navigate({
+                to: "/messages/$channelId",
+                params: { channelId },
+              });
+            }}
+          />
+        ) : workspaceView === "inbox" ? (
           <WorkspaceInbox
-            channels={channels}
+            channels={visibleChannels}
             items={inboxItems}
             onDismissAll={dismissAllInboxItems}
             onDismissItem={dismissInboxItem}
@@ -482,7 +776,7 @@ export function WorkspacePage() {
           />
         ) : workspaceView === "alerts" ? (
           <WorkspaceInbox
-            channels={channels}
+            channels={visibleChannels}
             items={alertItems}
             mode="alerts"
             onDismissAll={markAllRead}
@@ -505,403 +799,121 @@ export function WorkspacePage() {
           <WorkspaceAgents
             activeChannel={activeChannel}
             agents={agentsQuery.data ?? []}
+            channels={channels}
+            canManage={Boolean(
+              communityMembersQuery.data?.some(
+                (member) =>
+                  member.pubkey === identity.pubkey &&
+                  (member.role === "owner" || member.role === "admin"),
+              ),
+            )}
+            busy={
+              updateAgentMutation.isPending || channelAccessMutation.isPending
+            }
+            error={
+              updateAgentMutation.error instanceof Error
+                ? updateAgentMutation.error.message
+                : channelAccessMutation.error instanceof Error
+                  ? channelAccessMutation.error.message
+                  : null
+            }
             onAddAgent={(agent) => addAgentMutation.mutate(agent)}
+            onSetChannelAccess={async (agent, channel, enabled) => {
+              await channelAccessMutation.mutateAsync({
+                agent,
+                channel,
+                enabled,
+              });
+            }}
+            onUpdateAgent={async (agent, update) => {
+              await updateAgentMutation.mutateAsync({ agent, update });
+            }}
           />
         ) : (
-          <>
-            <section
-              className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
-              data-testid="workspace-chat-pane"
-            >
-              <header className="flex h-16 shrink-0 items-center gap-3 border-b border-black/8 px-4 dark:border-white/8 sm:px-6">
-                <button
-                  aria-label="Open navigation"
-                  className="rounded-lg p-2 hover:bg-black/5 md:hidden dark:hover:bg-white/5"
-                  type="button"
-                  onClick={() => setSidebarOpen(true)}
-                >
-                  <Menu className="size-4" />
-                </button>
-                {activeChannel ? (
-                  <>
-                    <div className="flex min-w-0 flex-1 items-center gap-2">
-                      {activeChannel.visibility === "private" ? (
-                        <Lock className="size-4 shrink-0 text-black/40 dark:text-white/35" />
-                      ) : (
-                        <Hash className="size-4 shrink-0 text-black/40 dark:text-white/35" />
-                      )}
-                      <div className="min-w-0">
-                        <h1 className="truncate text-sm font-semibold">
-                          {activeChannel.name}
-                        </h1>
-                        {activeChannel.topic || activeChannel.about ? (
-                          <p className="truncate text-xs text-black/40 dark:text-white/35">
-                            {activeChannel.topic || activeChannel.about}
-                          </p>
-                        ) : null}
-                      </div>
-                      {activeChannel.type !== "dm" ? (
-                        <button
-                          aria-label={`${starredChannelIds.has(activeChannel.id) ? "Remove" : "Add"} ${activeChannel.name} ${starredChannelIds.has(activeChannel.id) ? "from" : "to"} favorites`}
-                          className="rounded-lg p-2 text-black/35 hover:bg-black/5 hover:text-black/65 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a5a500] dark:text-white/30 dark:hover:bg-white/5 dark:hover:text-white/65"
-                          type="button"
-                          onClick={() => toggleStarredChannel(activeChannel.id)}
-                        >
-                          <Star
-                            className={`size-4 ${starredChannelIds.has(activeChannel.id) ? "fill-current text-[#8b8c00] dark:text-[#e4e55e]" : ""}`}
-                          />
-                        </button>
-                      ) : null}
-                      {activeChannel.type !== "dm" ? (
-                        <button
-                          aria-label={`Manage ${activeChannel.name}`}
-                          className="rounded-lg p-2 text-black/35 hover:bg-black/5 hover:text-black/65 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a5a500] dark:text-white/30 dark:hover:bg-white/5 dark:hover:text-white/65"
-                          type="button"
-                          onClick={() => setChannelSettingsOpen(true)}
-                        >
-                          <Settings2 className="size-4" />
-                        </button>
-                      ) : null}
-                    </div>
-                    <div className="flex items-center gap-1 text-black/40 dark:text-white/35">
-                      <span className="hidden items-center gap-1 rounded-lg px-2 py-1 text-xs sm:flex">
-                        <Users className="size-3.5" />
-                        {activeChannel.memberPubkeys.length}
-                      </span>
-                    </div>
-                  </>
-                ) : null}
-              </header>
-
-              <div className="min-h-0 flex-1 overflow-y-auto py-4">
-                {messagesQuery.isPending ? (
-                  <div className="space-y-4 px-6 py-4">
-                    {[0, 1, 2, 3].map((item) => (
-                      <div className="flex animate-pulse gap-3" key={item}>
-                        <div className="size-9 rounded-xl bg-black/8 dark:bg-white/8" />
-                        <div className="flex-1 space-y-2">
-                          <div className="h-3 w-32 rounded bg-black/8 dark:bg-white/8" />
-                          <div className="h-3 w-2/3 rounded bg-black/6 dark:bg-white/6" />
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : topLevel.length ? (
-                  topLevel.map((message) => {
-                    const replies = repliesByThread.get(message.id) ?? [];
-                    const inlineExpanded = expandedThreadIds.has(message.id);
-                    const replyTarget = replies[replies.length - 1] ?? message;
-                    return (
-                      <div key={message.id}>
-                        <WorkspaceMessageRow
-                          message={message}
-                          ownPubkey={identity.pubkey}
-                          profile={profileFor(message.pubkey)}
-                          reactions={reactions?.get(message.id) ?? []}
-                          replyCount={replyCounts.get(message.id) ?? 0}
-                          reactionActorName={reactionActorName}
-                          threadExpanded={inlineExpanded}
-                          onDelete={() => {
-                            if (window.confirm("Delete this message?")) {
-                              deleteMutation.mutate(message);
-                            }
-                          }}
-                          onEdit={() => setEditingMessage(message)}
-                          onOpenThreadPanel={() => {
-                            closeInlineThread(message.id);
-                            setThreadRootId(message.id);
-                          }}
-                          onReact={(emoji) => toggleReaction(message, emoji)}
-                          onReply={() => openInlineThread(message.id)}
-                          onToggleInlineThread={() =>
-                            toggleInlineThread(message.id)
-                          }
-                        />
-                        {inlineExpanded ? (
-                          <section
-                            aria-label={`Replies to ${profileFor(message.pubkey).name}`}
-                            className="mb-2 ml-10 border-l border-black/10 pl-2 dark:border-white/10 sm:ml-14 sm:pl-3"
-                            data-testid={`inline-thread-${message.id}`}
-                            id={`inline-thread-${message.id}`}
-                          >
-                            <p className="px-2 pt-2 text-xs font-medium text-black/40 dark:text-white/35">
-                              {replies.length}{" "}
-                              {replies.length === 1 ? "reply" : "replies"}
-                            </p>
-                            {replies.map((reply) => (
-                              <WorkspaceMessageRow
-                                key={reply.id}
-                                message={reply}
-                                ownPubkey={identity.pubkey}
-                                profile={profileFor(reply.pubkey)}
-                                reactions={reactions?.get(reply.id) ?? []}
-                                replyCount={0}
-                                reactionActorName={reactionActorName}
-                                onDelete={() => deleteMutation.mutate(reply)}
-                                onEdit={() => setEditingMessage(reply)}
-                                onOpenThreadPanel={() =>
-                                  setThreadRootId(message.id)
-                                }
-                                onReact={(emoji) =>
-                                  toggleReaction(reply, emoji)
-                                }
-                                onReply={() => openInlineThread(message.id)}
-                                onToggleInlineThread={() => {}}
-                              />
-                            ))}
-                            {activeChannel ? (
-                              <WorkspaceComposer
-                                agents={agentsQuery.data ?? []}
-                                channel={activeChannel}
-                                compact
-                                replyTo={replyTarget}
-                                sending={sendMutation.isPending}
-                                onCancelReply={() =>
-                                  closeInlineThread(message.id)
-                                }
-                                onSend={(content, mentions) =>
-                                  sendMutation.mutate({
-                                    content,
-                                    mentions,
-                                    replyTo: replyTarget,
-                                  })
-                                }
-                              />
-                            ) : null}
-                          </section>
-                        ) : null}
-                      </div>
-                    );
-                  })
-                ) : (
-                  <div className="flex h-full min-h-72 items-center justify-center px-6 text-center">
-                    <div className="max-w-sm">
-                      <div className="mx-auto flex size-12 items-center justify-center rounded-2xl bg-[#d7d72e]/25 text-[#7d7e00]">
-                        <Hash className="size-5" />
-                      </div>
-                      <h2 className="mt-4 font-semibold">
-                        Start the conversation in #{activeChannel?.name}
-                      </h2>
-                      <p className="mt-2 text-sm leading-6 text-black/45 dark:text-white/40">
-                        Share an update or mention a hosted agent to give it
-                        work.
-                      </p>
-                    </div>
-                  </div>
-                )}
-              </div>
-              {activeChannel ? (
-                <WorkspaceComposer
-                  agents={agentsQuery.data ?? []}
-                  channel={activeChannel}
-                  sending={sendMutation.isPending}
-                  onSend={(content, mentions) =>
-                    sendMutation.mutate({ content, mentions })
-                  }
-                />
-              ) : null}
-            </section>
-
-            {threadRoot ? (
-              <aside className="fixed inset-0 z-40 flex flex-col bg-[#f8f9f4] dark:bg-[#171916] md:static md:w-[24rem] md:border-l md:border-black/8 md:dark:border-white/8">
-                <header className="flex h-16 shrink-0 items-center gap-3 border-b border-black/8 px-4 dark:border-white/8">
-                  <button
-                    aria-label="Close thread"
-                    className="rounded-lg p-2 hover:bg-black/5 dark:hover:bg-white/5"
-                    type="button"
-                    onClick={() => setThreadRootId(null)}
-                  >
-                    <ChevronLeft className="size-4 md:hidden" />
-                    <X className="hidden size-4 md:block" />
-                  </button>
-                  <div>
-                    <h2 className="text-sm font-semibold">Thread</h2>
-                    <p className="text-xs text-black/40 dark:text-white/35">
-                      #{activeChannel?.name}
-                    </p>
-                  </div>
-                </header>
-                <div className="min-h-0 flex-1 overflow-y-auto py-4">
-                  {[threadRoot, ...threadReplies].map((message) => (
-                    <WorkspaceMessageRow
-                      key={message.id}
-                      message={message}
-                      ownPubkey={identity.pubkey}
-                      profile={profileFor(message.pubkey)}
-                      reactions={reactions?.get(message.id) ?? []}
-                      replyCount={0}
-                      reactionActorName={reactionActorName}
-                      onDelete={() => deleteMutation.mutate(message)}
-                      onEdit={() => setEditingMessage(message)}
-                      onOpenThreadPanel={() => {}}
-                      onReact={(emoji) => toggleReaction(message, emoji)}
-                      onReply={() => {}}
-                      onToggleInlineThread={() => {}}
-                    />
-                  ))}
-                </div>
-                {activeChannel ? (
-                  <WorkspaceComposer
-                    agents={agentsQuery.data ?? []}
-                    channel={activeChannel}
-                    replyTo={threadRoot}
-                    sending={sendMutation.isPending}
-                    onSend={(content, mentions) =>
-                      sendMutation.mutate({
-                        content,
-                        mentions,
-                        replyTo:
-                          threadReplies[threadReplies.length - 1] ?? threadRoot,
-                      })
-                    }
-                  />
-                ) : null}
-              </aside>
-            ) : null}
-          </>
+          <WorkspaceConversation
+            activeChannel={activeChannel}
+            agents={agentsQuery.data ?? []}
+            customEmoji={customEmoji}
+            expandedThreadIds={expandedThreadIds}
+            hideDirectMessagePending={hideDmMutation.isPending}
+            messagesPending={messagesQuery.isPending}
+            onlineMemberCount={onlineMemberCount}
+            ownPubkey={identity.pubkey}
+            reactionActorName={reactionActorName}
+            reactions={reactions}
+            repliesByThread={repliesByThread}
+            replyCounts={replyCounts}
+            sendPending={sendMutation.isPending}
+            mutedChannelIds={mutedChannelIds}
+            starredChannelIds={starredChannelIds}
+            statusFor={statusFor}
+            threadReplies={threadReplies}
+            threadRoot={threadRoot}
+            topLevel={topLevel}
+            typingNames={typingNames}
+            profileFor={profileFor}
+            onAddDmMembers={() => setAddingDmMembers(true)}
+            onCloseInlineThread={closeInlineThread}
+            onDeleteMessage={(message) => deleteMutation.mutate(message)}
+            onEditMessage={setEditingMessage}
+            onHideDirectMessage={() => {
+              if (activeChannel) hideDmMutation.mutate(activeChannel.id);
+            }}
+            onOpenNavigation={() => setSidebarOpen(true)}
+            onOpenThreadPanel={(messageId) => {
+              closeInlineThread(messageId);
+              setThreadRootId(messageId);
+            }}
+            onReply={openInlineThread}
+            onSend={(content, mentions, mediaTags, replyTo) =>
+              sendMutation.mutate({ content, mentions, mediaTags, replyTo })
+            }
+            onSetChannelSettingsOpen={() => setChannelSettingsOpen(true)}
+            onSetThreadRoot={setThreadRootId}
+            onToggleInlineThread={toggleInlineThread}
+            onToggleReaction={toggleReaction}
+            onToggleMute={toggleMutedChannel}
+            onToggleStar={toggleStarredChannel}
+            onTyping={notifyTyping}
+          />
         )}
       </main>
 
-      {createChannelOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
-          <form
-            className="w-full max-w-md rounded-2xl bg-[#fafbf6] p-6 shadow-xl dark:bg-[#20231e]"
-            onSubmit={(event) => {
-              event.preventDefault();
-              createChannelMutation.mutate();
-            }}
-          >
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-black/40 dark:text-white/35">
-                  VarVik Studios
-                </p>
-                <h2 className="mt-1 text-xl font-semibold">Create a channel</h2>
-              </div>
-              <button
-                aria-label="Close"
-                className="rounded-lg p-2 hover:bg-black/5 dark:hover:bg-white/5"
-                type="button"
-                onClick={() => setCreateChannelOpen(false)}
-              >
-                <X className="size-4" />
-              </button>
-            </div>
-            <label
-              className="mb-2 mt-6 block text-sm font-medium"
-              htmlFor="new-channel-name"
-            >
-              Name
-            </label>
-            <Input
-              id="new-channel-name"
-              autoFocus
-              placeholder="project-launch"
-              value={channelName}
-              onChange={(event) => setChannelName(event.target.value)}
-            />
-            <label
-              className="mb-2 mt-4 block text-sm font-medium"
-              htmlFor="new-channel-section"
-            >
-              Catalog section
-            </label>
-            <Input
-              id="new-channel-section"
-              maxLength={80}
-              placeholder="e.g. Command Center"
-              value={channelCatalogSection}
-              onChange={(event) => setChannelCatalogSection(event.target.value)}
-            />
-            <label
-              className="mb-2 mt-4 block text-sm font-medium"
-              htmlFor="new-channel-visibility"
-            >
-              Visibility
-            </label>
-            <select
-              className="h-10 w-full rounded-md border border-input bg-transparent px-3 text-sm"
-              id="new-channel-visibility"
-              value={channelVisibility}
-              onChange={(event) =>
-                setChannelVisibility(event.target.value as "public" | "private")
-              }
-            >
-              <option value="public">Public</option>
-              <option value="private">Private</option>
-            </select>
-            <label
-              className="mb-2 mt-4 block text-sm font-medium"
-              htmlFor="new-channel-description"
-            >
-              Description
-            </label>
-            <Input
-              id="new-channel-description"
-              placeholder="What belongs in this channel?"
-              value={channelAbout}
-              onChange={(event) => setChannelAbout(event.target.value)}
-            />
-            <div className="mt-6 flex justify-end gap-2">
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => setCreateChannelOpen(false)}
-              >
-                Cancel
-              </Button>
-              <Button
-                className="bg-[#d7d72e] text-[#171912] hover:bg-[#e5e54d]"
-                disabled={
-                  !channelName.trim() || createChannelMutation.isPending
-                }
-                type="submit"
-              >
-                Create channel
-              </Button>
-            </div>
-          </form>
-        </div>
-      ) : null}
-
-      {editingMessage ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
-          <form
-            className="w-full max-w-lg rounded-2xl bg-[#fafbf6] p-6 shadow-xl dark:bg-[#20231e]"
-            onSubmit={(event) => {
-              event.preventDefault();
-              const data = new FormData(event.currentTarget);
-              editMutation.mutate({
-                message: editingMessage,
-                content: String(data.get("content") ?? ""),
-              });
-            }}
-          >
-            <h2 className="text-lg font-semibold">Edit message</h2>
-            <textarea
-              className="mt-4 min-h-32 w-full rounded-xl border border-black/12 bg-transparent p-3 text-sm outline-none focus:border-[#b6b71e] dark:border-white/12"
-              defaultValue={editingMessage.content}
-              name="content"
-            />
-            <div className="mt-4 flex justify-end gap-2">
-              <Button
-                type="button"
-                variant="ghost"
-                onClick={() => setEditingMessage(null)}
-              >
-                Cancel
-              </Button>
-              <Button
-                className="bg-[#d7d72e] text-[#171912] hover:bg-[#e5e54d]"
-                type="submit"
-              >
-                Save
-              </Button>
-            </div>
-          </form>
-        </div>
-      ) : null}
-
+      <WorkspaceContentDialogs
+        activeChannel={activeChannel}
+        addingDmMembers={addingDmMembers}
+        addDmMemberError={
+          addDmMemberMutation.error instanceof Error
+            ? addDmMemberMutation.error.message
+            : null
+        }
+        addDmMemberPending={addDmMemberMutation.isPending}
+        channelAbout={channelAbout}
+        channelCatalogSection={channelCatalogSection}
+        channelName={channelName}
+        channelVisibility={channelVisibility}
+        communityMembers={communityMembersQuery.data ?? []}
+        createChannelOpen={createChannelOpen}
+        creatingChannel={createChannelMutation.isPending}
+        dmMemberQuery={dmMemberQuery}
+        editingMessage={editingMessage}
+        recipientProfiles={recipientProfilesQuery.data}
+        onAddDmMember={(channelId, pubkey) =>
+          addDmMemberMutation.mutate({ channelId, pubkey })
+        }
+        onCloseAddDmMembers={() => setAddingDmMembers(false)}
+        onCloseCreateChannel={() => setCreateChannelOpen(false)}
+        onCloseEditMessage={() => setEditingMessage(null)}
+        onCreateChannel={() => createChannelMutation.mutate()}
+        onSaveEditMessage={(message, content) =>
+          editMutation.mutate({ message, content })
+        }
+        onSetChannelAbout={setChannelAbout}
+        onSetChannelCatalogSection={setChannelCatalogSection}
+        onSetChannelName={setChannelName}
+        onSetChannelVisibility={setChannelVisibility}
+        onSetDmMemberQuery={setDmMemberQuery}
+      />
       {settingsOpen ? (
         <WorkspaceSettings
           identity={identity}

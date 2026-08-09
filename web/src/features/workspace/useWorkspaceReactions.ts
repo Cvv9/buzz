@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 import { toast } from "sonner";
 import type { WorkspaceMessage } from "./workspace-api";
+import type { CustomEmoji } from "@/features/custom-emoji/custom-emoji-policy";
 import {
   listReactions,
   reactToWorkspaceMessage,
@@ -26,6 +27,7 @@ type QueuedReaction = {
 export function useWorkspaceReactions(
   messages: WorkspaceMessage[],
   ownPubkey: string,
+  customEmoji: readonly CustomEmoji[] = [],
 ) {
   const queryClient = useQueryClient();
   const messageIds = React.useMemo(
@@ -57,11 +59,13 @@ export function useWorkspaceReactions(
     ({
       message,
       emoji,
+      emojiMetadata,
       remove,
       knownReactionEventId,
     }: {
       message: WorkspaceMessage;
       emoji: string;
+      emojiMetadata?: CustomEmoji;
       remove: boolean;
       knownReactionEventId?: string;
     }) => {
@@ -78,7 +82,7 @@ export function useWorkspaceReactions(
                 ownPubkey,
                 knownReactionEventId,
               )
-            : reactToWorkspaceMessage(message, emoji),
+            : reactToWorkspaceMessage(message, emoji, emojiMetadata),
         );
       reactionQueuesRef.current.set(key, { id, promise: operation });
       void operation
@@ -99,21 +103,24 @@ export function useWorkspaceReactions(
     mutationFn: ({
       message,
       emoji,
+      emojiMetadata,
       remove,
       knownReactionEventId,
     }: {
       message: WorkspaceMessage;
       emoji: string;
+      emojiMetadata?: CustomEmoji;
       remove: boolean;
       knownReactionEventId?: string;
     }) =>
       queueReactionOperation({
         message,
         emoji,
+        emojiMetadata,
         remove,
         knownReactionEventId,
       }),
-    onMutate: async ({ message, emoji, remove }) => {
+    onMutate: async ({ message, emoji, emojiMetadata, remove }) => {
       await queryClient.cancelQueries({ queryKey: ["workspace-reactions"] });
       const previous = queryClient.getQueriesData<WorkspaceReactionMap>({
         queryKey: ["workspace-reactions"],
@@ -125,6 +132,7 @@ export function useWorkspaceReactions(
             ? applyOptimisticReactionToggle(current, {
                 messageId: message.id,
                 emoji,
+                emojiUrl: emojiMetadata?.url,
                 ownPubkey,
                 remove,
               })
@@ -151,14 +159,19 @@ export function useWorkspaceReactions(
         ?.get(message.id)
         ?.find((summary) => summary.emoji === emoji);
       const remove = Boolean(reaction?.authors.includes(ownPubkey));
+      const emojiMetadata = customEmoji.find(
+        (candidate) =>
+          emoji.trim().toLowerCase() === `:${candidate.shortcode}:`,
+      );
       mutateReaction({
         message,
         emoji,
+        emojiMetadata,
         remove,
         knownReactionEventId: reaction?.reactionEventIdsByAuthor[ownPubkey],
       });
     },
-    [mutateReaction, ownPubkey, reactionsQuery.data],
+    [customEmoji, mutateReaction, ownPubkey, reactionsQuery.data],
   );
   const reactionActorPubkeys = React.useMemo(
     () => [

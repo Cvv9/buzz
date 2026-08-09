@@ -19,26 +19,27 @@ use buzz_core::kind::{
     KIND_FORUM_POST, KIND_FORUM_VOTE, KIND_GIFT_WRAP, KIND_GIT_ISSUE, KIND_GIT_PATCH,
     KIND_GIT_PR_UPDATE, KIND_GIT_PULL_REQUEST, KIND_GIT_REPO_ANNOUNCEMENT, KIND_GIT_REPO_STATE,
     KIND_GIT_STATUS_CLOSED, KIND_GIT_STATUS_DRAFT, KIND_GIT_STATUS_MERGED, KIND_GIT_STATUS_OPEN,
-    KIND_HUDDLE_ENDED, KIND_HUDDLE_GUIDELINES, KIND_HUDDLE_PARTICIPANT_JOINED,
-    KIND_HUDDLE_PARTICIPANT_LEFT, KIND_HUDDLE_STARTED, KIND_IA_ARCHIVE_REQUEST,
-    KIND_IA_UNARCHIVE_REQUEST, KIND_LONG_FORM, KIND_MANAGED_AGENT, KIND_MEMBER_ADDED_NOTIFICATION,
-    KIND_MEMBER_REMOVED_NOTIFICATION, KIND_MODERATION_BAN, KIND_MODERATION_RESOLVE_REPORT,
-    KIND_MODERATION_TIMEOUT, KIND_MODERATION_UNBAN, KIND_MODERATION_UNTIMEOUT, KIND_MUTE_LIST,
-    KIND_NIP29_CREATE_GROUP, KIND_NIP29_DELETE_EVENT, KIND_NIP29_DELETE_GROUP,
-    KIND_NIP29_EDIT_METADATA, KIND_NIP29_JOIN_REQUEST, KIND_NIP29_LEAVE_REQUEST,
-    KIND_NIP29_PUT_USER, KIND_NIP29_REMOVE_USER, KIND_NIP43_LEAVE_REQUEST,
-    KIND_NIP65_RELAY_LIST_METADATA, KIND_PERSONA, KIND_PIN_LIST, KIND_PRESENCE_UPDATE,
-    KIND_PRIVATE_MANAGED_AGENT, KIND_PRODUCT_FEEDBACK, KIND_PROFILE, KIND_PROJECT, KIND_REACTION,
-    KIND_READ_STATE, KIND_REPORT, KIND_STREAM_MESSAGE, KIND_STREAM_MESSAGE_BOOKMARKED,
-    KIND_STREAM_MESSAGE_DIFF, KIND_STREAM_MESSAGE_EDIT, KIND_STREAM_MESSAGE_PINNED,
-    KIND_STREAM_MESSAGE_SCHEDULED, KIND_STREAM_MESSAGE_V2, KIND_STREAM_REMINDER, KIND_TEAM,
-    KIND_TEAM_CATALOG, KIND_TEXT_NOTE, KIND_USER_STATUS, KIND_WORKFLOW_DEF, KIND_WORKFLOW_TRIGGER,
-    RELAY_ADMIN_ADD_MEMBER, RELAY_ADMIN_CHANGE_ROLE, RELAY_ADMIN_REMOVE_MEMBER,
-    RELAY_ADMIN_SET_WORKSPACE_PROFILE,
+    KIND_HOSTED_AGENT_CONFIG, KIND_HUDDLE_ENDED, KIND_HUDDLE_GUIDELINES,
+    KIND_HUDDLE_PARTICIPANT_JOINED, KIND_HUDDLE_PARTICIPANT_LEFT, KIND_HUDDLE_STARTED,
+    KIND_IA_ARCHIVE_REQUEST, KIND_IA_UNARCHIVE_REQUEST, KIND_LONG_FORM, KIND_MANAGED_AGENT,
+    KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION, KIND_MODERATION_BAN,
+    KIND_MODERATION_RESOLVE_REPORT, KIND_MODERATION_TIMEOUT, KIND_MODERATION_UNBAN,
+    KIND_MODERATION_UNTIMEOUT, KIND_MUTE_LIST, KIND_NIP29_CREATE_GROUP, KIND_NIP29_DELETE_EVENT,
+    KIND_NIP29_DELETE_GROUP, KIND_NIP29_EDIT_METADATA, KIND_NIP29_JOIN_REQUEST,
+    KIND_NIP29_LEAVE_REQUEST, KIND_NIP29_PUT_USER, KIND_NIP29_REMOVE_USER,
+    KIND_NIP43_LEAVE_REQUEST, KIND_NIP65_RELAY_LIST_METADATA, KIND_PERSONA, KIND_PIN_LIST,
+    KIND_PRESENCE_UPDATE, KIND_PRIVATE_MANAGED_AGENT, KIND_PRODUCT_FEEDBACK, KIND_PROFILE,
+    KIND_PROJECT, KIND_REACTION, KIND_READ_STATE, KIND_REPORT, KIND_STREAM_MESSAGE,
+    KIND_STREAM_MESSAGE_BOOKMARKED, KIND_STREAM_MESSAGE_DIFF, KIND_STREAM_MESSAGE_EDIT,
+    KIND_STREAM_MESSAGE_PINNED, KIND_STREAM_MESSAGE_SCHEDULED, KIND_STREAM_MESSAGE_V2,
+    KIND_STREAM_REMINDER, KIND_TEAM, KIND_TEAM_CATALOG, KIND_TEXT_NOTE, KIND_USER_STATUS,
+    KIND_WORKFLOW_DEF, KIND_WORKFLOW_TRIGGER, RELAY_ADMIN_ADD_MEMBER, RELAY_ADMIN_CHANGE_ROLE,
+    RELAY_ADMIN_REMOVE_MEMBER, RELAY_ADMIN_SET_WORKSPACE_PROFILE,
 };
 use buzz_core::tenant::TenantContext;
 use buzz_core::verification::verify_event;
 use buzz_core::CommunityId;
+use buzz_db::EventQuery;
 use nostr::Event;
 
 use crate::state::AppState;
@@ -330,6 +331,7 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
         KIND_TEXT_NOTE | KIND_LONG_FORM => Ok(Scope::MessagesWrite),
         KIND_CONTACT_LIST | KIND_READ_STATE | KIND_USER_STATUS | KIND_AGENT_ENGRAM
         | KIND_EVENT_REMINDER | KIND_PERSONA | KIND_TEAM | KIND_MANAGED_AGENT
+        | KIND_HOSTED_AGENT_CONFIG
         | KIND_PRIVATE_MANAGED_AGENT | KIND_TEAM_CATALOG | super::push_lease::KIND_PUSH_LEASE => {
             Ok(Scope::UsersWrite)
         }
@@ -544,6 +546,7 @@ pub(crate) fn is_global_only_kind(kind: u32) -> bool {
             | KIND_TEAM
             | KIND_MANAGED_AGENT
             | KIND_PRIVATE_MANAGED_AGENT
+            | KIND_HOSTED_AGENT_CONFIG
             | KIND_TEAM_CATALOG
             // NIP-34: git events use `a` tags (repo reference), not `h` tags (channel scope).
             // Parameterized replaceable kinds are keyed by (pubkey, kind, d_tag).
@@ -1282,6 +1285,183 @@ fn validate_team_catalog_envelope(event: &Event) -> Result<(), String> {
     validate_shared_tag(event, LABEL)?;
     single_bounded_d_tag(event, LABEL)?;
     Ok(())
+}
+
+/// Validate the public, secret-free hosted-agent configuration contract.
+///
+/// The document is deliberately exact: accepting a generic `30180` payload
+/// would make it impossible for clients to distinguish an authorized hosted
+/// presentation from an unrelated private aggregate. The target is duplicated
+/// in the NIP-33 `d` tag and JSON body so readers can reject mismatches before
+/// applying an overlay.
+fn validate_hosted_agent_config_envelope(event: &Event) -> Result<String, String> {
+    const LABEL: &str = "hosted-agent config event";
+    let d_tag = single_bounded_d_tag(event, LABEL)?;
+    if d_tag.len() != 64
+        || !d_tag
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    {
+        return Err(format!("{LABEL} `d` tag must be 64 lowercase hex chars"));
+    }
+
+    let tags_are_exact = event.tags.len() == 1
+        && event.tags.iter().next().is_some_and(|tag| {
+            let parts = tag.as_slice();
+            parts.len() == 2 && parts[0] == "d" && parts[1] == d_tag
+        });
+    if !tags_are_exact {
+        return Err(format!(
+            "{LABEL} tags must be exactly [[\"d\", agent_pubkey]]"
+        ));
+    }
+
+    let content: serde_json::Value = serde_json::from_str(&event.content)
+        .map_err(|_| format!("{LABEL} content must be JSON"))?;
+    let object = content
+        .as_object()
+        .ok_or_else(|| format!("{LABEL} content must be a JSON object"))?;
+    const REQUIRED_KEYS: [&str; 5] = ["schema", "agent_pubkey", "name", "avatar_url", "model"];
+    const ALLOWED_KEYS: [&str; 5] = ["schema", "agent_pubkey", "name", "avatar_url", "model"];
+    if REQUIRED_KEYS.iter().any(|key| !object.contains_key(*key))
+        || object
+            .keys()
+            .any(|key| !ALLOWED_KEYS.contains(&key.as_str()))
+    {
+        return Err(format!("{LABEL} content must contain exactly schema, agent_pubkey, name, avatar_url, and model"));
+    }
+    if object.get("schema").and_then(serde_json::Value::as_str)
+        != Some("buzz.hosted-agent-config.v1")
+    {
+        return Err(format!(
+            "{LABEL} schema must be buzz.hosted-agent-config.v1"
+        ));
+    }
+    let target = object
+        .get("agent_pubkey")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("{LABEL} agent_pubkey must be a string"))?;
+    if target != d_tag
+        || target.len() != 64
+        || !target
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    {
+        return Err(format!(
+            "{LABEL} agent_pubkey must equal the lowercase `d` tag"
+        ));
+    }
+    let name = object
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("{LABEL} name must be a string"))?
+        .trim();
+    if name.is_empty() || name.chars().count() > 256 {
+        return Err(format!("{LABEL} name must contain 1-256 characters"));
+    }
+    for (field, max_len) in [("avatar_url", 2_048usize), ("model", 256usize)] {
+        match object.get(field) {
+            Some(serde_json::Value::Null) => {}
+            Some(serde_json::Value::String(value)) if value.chars().count() <= max_len => {}
+            Some(serde_json::Value::String(_)) => {
+                return Err(format!("{LABEL} {field} exceeds {max_len} characters"));
+            }
+            _ => return Err(format!("{LABEL} {field} must be a string or null")),
+        }
+    }
+
+    Ok(target.to_string())
+}
+
+/// Check that a hosted-config writer is either a community administrator or
+/// the immutable owner declared by the target agent's NIP-OA relationship.
+async fn validate_hosted_agent_config_authorization(
+    tenant: &TenantContext,
+    state: &Arc<AppState>,
+    event: &Event,
+    target_pubkey: &str,
+) -> Result<(), IngestError> {
+    let actor_hex = event.pubkey.to_hex();
+    let is_community_admin = state
+        .db
+        .get_relay_member(tenant.community(), &actor_hex)
+        .await
+        .map_err(|error| {
+            IngestError::Internal(format!(
+                "error: db error checking hosted-agent config role: {error}"
+            ))
+        })?
+        .is_some_and(|member| member.role == "owner" || member.role == "admin");
+    let target_bytes = hex::decode(target_pubkey).map_err(|_| {
+        IngestError::Rejected("invalid: hosted-agent config target must be lowercase hex".into())
+    })?;
+    let is_owner = state
+        .db
+        .is_agent_owner(tenant.community(), &target_bytes, &event.pubkey.to_bytes())
+        .await
+        .map_err(|error| {
+            IngestError::Internal(format!(
+                "error: db error checking hosted-agent config ownership: {error}"
+            ))
+        })?;
+    if is_community_admin || is_owner {
+        return Ok(());
+    }
+
+    // Prefer NIP-OA's immutable ownership. For hosted agents that predate that
+    // attestation, accept only the target agent's self-authored kind:10100
+    // declaration; an unknown or malformed directory head still fails closed.
+    let mut profile_query = EventQuery::for_community(tenant.community());
+    profile_query.kinds = Some(vec![KIND_AGENT_PROFILE as i32]);
+    profile_query.pubkey = Some(target_bytes);
+    profile_query.global_only = true;
+    profile_query.limit = Some(1);
+    let declared_owner = state
+        .db
+        .query_events(&profile_query)
+        .await
+        .map_err(|error| {
+            IngestError::Internal(format!(
+                "error: db error reading hosted-agent profile: {error}"
+            ))
+        })?
+        .into_iter()
+        .next()
+        .and_then(|profile| serde_json::from_str::<serde_json::Value>(&profile.event.content).ok())
+        .and_then(|content| {
+            content
+                .get("owner_pubkey")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        });
+    if hosted_agent_config_authorized(
+        is_community_admin,
+        is_owner,
+        declared_owner.as_deref(),
+        &actor_hex,
+    ) {
+        return Ok(());
+    }
+
+    Err(IngestError::AuthFailed(
+        "restricted: hosted-agent config requires a community admin or declared agent owner".into(),
+    ))
+}
+
+/// Pure authorization decision for the public hosted presentation overlay.
+///
+/// The caller resolves the three trusted facts from the community role table,
+/// immutable NIP-OA owner mapping, and self-authored directory head before
+/// invoking this helper.
+fn hosted_agent_config_authorized(
+    is_community_admin: bool,
+    is_nip_oa_owner: bool,
+    declared_owner: Option<&str>,
+    actor_pubkey: &str,
+) -> bool {
+    is_community_admin
+        || is_nip_oa_owner
+        || declared_owner.is_some_and(|owner| owner.eq_ignore_ascii_case(actor_pubkey))
 }
 
 /// Maximum number of member `a` tags on a kind:30621 project.
@@ -2532,6 +2712,12 @@ async fn ingest_event_inner(
     if kind_u32 == KIND_TEAM_CATALOG {
         validate_team_catalog_envelope(&event)
             .map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
+    }
+
+    if kind_u32 == KIND_HOSTED_AGENT_CONFIG {
+        let target_pubkey = validate_hosted_agent_config_envelope(&event)
+            .map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
+        validate_hosted_agent_config_authorization(tenant, state, &event, &target_pubkey).await?;
     }
 
     if kind_u32 == KIND_PROJECT {
@@ -4399,6 +4585,79 @@ mod tests {
             err.contains("[\"shared\",\"true\"]"),
             "expected exact-shape error, got: {err}"
         );
+    }
+
+    // ─── hosted-agent config (30180) envelope tests ─────────────────────────
+
+    fn make_hosted_agent_config(content: &str, tags: &[&[&str]]) -> Event {
+        make_event_with_tags(KIND_HOSTED_AGENT_CONFIG, content, tags)
+    }
+
+    #[test]
+    fn hosted_agent_config_envelope_accepts_exact_public_projection() {
+        let agent = "a".repeat(64);
+        let content = format!(
+            r#"{{"schema":"buzz.hosted-agent-config.v1","agent_pubkey":"{agent}","name":"Helpdesk","avatar_url":null,"model":"gpt-5"}}"#
+        );
+        let event = make_hosted_agent_config(&content, &[&["d", &agent]]);
+        assert_eq!(validate_hosted_agent_config_envelope(&event), Ok(agent));
+    }
+
+    #[test]
+    fn hosted_agent_config_envelope_rejects_private_or_mismatched_shape() {
+        let agent = "a".repeat(64);
+        let other = "b".repeat(64);
+        let mismatched = format!(
+            r#"{{"schema":"buzz.hosted-agent-config.v1","agent_pubkey":"{other}","name":"Helpdesk","avatar_url":null,"model":null}}"#
+        );
+        let event = make_hosted_agent_config(&mismatched, &[&["d", &agent]]);
+        assert!(validate_hosted_agent_config_envelope(&event)
+            .unwrap_err()
+            .contains("must equal"));
+
+        let missing_schema = format!(
+            r#"{{"agent_pubkey":"{agent}","name":"Helpdesk","avatar_url":null,"model":null}}"#
+        );
+        let event = make_hosted_agent_config(&missing_schema, &[&["d", &agent]]);
+        assert!(validate_hosted_agent_config_envelope(&event)
+            .unwrap_err()
+            .contains("must contain"));
+
+        let invisible_about = format!(
+            r#"{{"schema":"buzz.hosted-agent-config.v1","agent_pubkey":"{agent}","name":"Helpdesk","about":"Directory description belongs to kind 10100","avatar_url":null,"model":null}}"#
+        );
+        let event = make_hosted_agent_config(&invisible_about, &[&["d", &agent]]);
+        assert!(validate_hosted_agent_config_envelope(&event)
+            .unwrap_err()
+            .contains("exactly"));
+    }
+
+    #[test]
+    fn hosted_agent_config_authorization_allows_only_admin_or_owner_sources() {
+        let actor = "a".repeat(64);
+        assert!(hosted_agent_config_authorized(
+            false,
+            false,
+            Some(&actor),
+            &actor
+        ));
+        assert!(hosted_agent_config_authorized(false, true, None, &actor));
+        assert!(hosted_agent_config_authorized(true, false, None, &actor));
+        assert!(!hosted_agent_config_authorized(
+            false,
+            false,
+            Some(&"b".repeat(64)),
+            &actor
+        ));
+    }
+
+    #[test]
+    fn private_managed_agent_remains_private_and_distinct_from_hosted_config() {
+        assert_ne!(KIND_PRIVATE_MANAGED_AGENT, KIND_HOSTED_AGENT_CONFIG);
+        assert!(buzz_core::kind::AUTHOR_ONLY_KINDS.contains(&KIND_PRIVATE_MANAGED_AGENT));
+        assert!(!buzz_core::kind::AUTHOR_ONLY_KINDS.contains(&KIND_HOSTED_AGENT_CONFIG));
+        assert!(is_global_only_kind(KIND_PRIVATE_MANAGED_AGENT));
+        assert!(is_global_only_kind(KIND_HOSTED_AGENT_CONFIG));
     }
 
     // ─── team-catalog (30178) envelope tests ─────────────────────────────────

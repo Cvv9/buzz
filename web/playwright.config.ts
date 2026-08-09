@@ -20,9 +20,18 @@ export default defineConfig({
       name: "smoke",
       testMatch: [
         "**/smoke.spec.ts",
+        "**/browser-local-devices.smoke.spec.ts",
         "**/workspace-identity-and-agents.spec.ts",
+        "**/workspace-appearance.spec.ts",
+        "**/workspace-reminders.spec.ts",
         "**/workspace-reactions.spec.ts",
         "**/workspace-threads.spec.ts",
+        "**/workspace-media.spec.ts",
+        "**/workspace-custom-emoji.spec.ts",
+        "**/workspace-huddles.spec.ts",
+        "**/workspace-profiles-search.spec.ts",
+        "**/workspace-workflows.spec.ts",
+        "**/projects.spec.ts",
       ],
       use: {
         ...devices["Desktop Chrome"],

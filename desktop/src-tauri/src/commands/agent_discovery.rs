@@ -1097,7 +1097,7 @@ pub async fn list_relay_agents(state: State<'_, AppState>) -> Result<Vec<RelayAg
                 .collect()
         })
         .unwrap_or_default();
-    let mut latest_config_at = std::collections::HashMap::<String, u64>::new();
+    let mut latest_config_head = std::collections::HashMap::<String, (u64, String)>::new();
 
     for event in config_events {
         let d_tag = event.tags.iter().find_map(|tag| {
@@ -1112,40 +1112,58 @@ pub async fn list_relay_agents(state: State<'_, AppState>) -> Result<Vec<RelayAg
         let Ok(config) = serde_json::from_str::<serde_json::Value>(&event.content) else {
             continue;
         };
-        let is_compat_projection =
-            event.kind.as_u16() as u32 == buzz_core_pkg::kind::KIND_MANAGED_AGENT;
-        if is_compat_projection
-            && (config.get("schema").and_then(serde_json::Value::as_str)
-                != Some("buzz.hosted-agent-config.v1")
-                || !d_tag.starts_with("hosted-agent:"))
+        let kind = event.kind.as_u16() as u32;
+        let is_canonical = kind == buzz_core_pkg::kind::KIND_HOSTED_AGENT_CONFIG;
+        let is_compat_projection = kind == buzz_core_pkg::kind::KIND_MANAGED_AGENT;
+        if !is_canonical && !is_compat_projection {
+            continue;
+        }
+        if config.get("schema").and_then(serde_json::Value::as_str)
+            != Some("buzz.hosted-agent-config.v1")
         {
             continue;
         }
-        let agent_pubkey = config
+        let declared_agent_pubkey = config
             .get("agent_pubkey")
             .and_then(serde_json::Value::as_str)
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| d_tag.strip_prefix("hosted-agent:").unwrap_or(&d_tag))
-            .to_string();
+            .map(str::trim)
+            .filter(|value| value.len() == 64 && value.chars().all(|c| c.is_ascii_hexdigit()))
+            .map(str::to_ascii_lowercase);
+        let d_target = if is_compat_projection {
+            d_tag.strip_prefix("hosted-agent:")
+        } else {
+            Some(d_tag.as_str())
+        }
+        .filter(|value| value.len() == 64 && value.chars().all(|c| c.is_ascii_hexdigit()))
+        .map(str::to_ascii_lowercase);
+        let (Some(agent_pubkey), Some(d_target)) = (declared_agent_pubkey, d_target) else {
+            continue;
+        };
+        // Both forms bind their JSON target to the NIP-33 coordinate. This
+        // prevents a valid admin signature over one agent's document from
+        // being applied as an overlay to another agent.
+        if agent_pubkey != d_target {
+            continue;
+        }
         let Some(agent) = agents
             .iter_mut()
             .find(|agent| agent.pubkey.eq_ignore_ascii_case(&agent_pubkey))
         else {
             continue;
         };
-        let author = event.pubkey.to_hex();
+        let author = event.pubkey.to_hex().to_ascii_lowercase();
         let declared_owner = agent.owner_pubkey.as_deref().unwrap_or_default();
         if !admin_pubkeys.contains(&author) && !declared_owner.eq_ignore_ascii_case(&author) {
             continue;
         }
-        let created_at = event.created_at.as_secs();
-        if latest_config_at
+        let head = (event.created_at.as_secs(), event.id.to_hex());
+        if latest_config_head
             .get(&agent_pubkey)
-            .is_some_and(|latest| *latest > created_at)
+            .is_some_and(|latest| *latest >= head)
         {
             continue;
         }
-        latest_config_at.insert(agent_pubkey.clone(), created_at);
+        latest_config_head.insert(agent_pubkey.clone(), head);
         if let Some(name) = config
             .get("name")
             .and_then(serde_json::Value::as_str)

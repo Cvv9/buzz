@@ -46,7 +46,7 @@ with a TypeScript lookup table or an id comparison in a component.
 Hosted-agent identity/config is a separate capability-driven path. The hosted
 runtime advertises its model catalog in its signed kind:10100 directory event;
 the frontend must render those options and must not maintain a provider/model
-table. Admin edits are stored in an admin-authored kind:30179 event keyed by the
+table. Admin edits are stored in an admin-authored public kind:30180 event keyed by the
 hosted agent pubkey. `list_relay_agents` accepts only community owner/admin
 authors (or the agent's declared owner), chooses the newest authorized head,
 and every presentation surface treats that merged name/avatar as

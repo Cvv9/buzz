@@ -32,11 +32,13 @@ export function applyOptimisticReactionToggle(
   {
     messageId,
     emoji,
+    emojiUrl,
     ownPubkey,
     remove,
   }: {
     messageId: string;
     emoji: string;
+    emojiUrl?: string;
     ownPubkey: string;
     remove: boolean;
   },
@@ -65,6 +67,7 @@ export function applyOptimisticReactionToggle(
     {
       eventId: messageId,
       emoji,
+      ...(emojiUrl ? { emojiUrl } : {}),
       authors: [ownPubkey],
       reactionEventIdsByAuthor: {},
     },

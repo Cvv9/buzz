@@ -12,6 +12,7 @@ import {
   DESKTOP_THEME_VARIABLE_NAMES,
   desktopThemeIsDark,
   desktopThemePalette,
+  isBuzzDesktopTheme,
   resolveCommunityThemeName,
 } from "./desktop-theme";
 
@@ -26,6 +27,8 @@ type ThemeContextValue = {
   selectedThemeName: string;
   isDark: boolean;
   appearance: CommunityAppearance;
+  accentColor: string;
+  followSystem: boolean;
   setTheme: (theme: Theme) => void;
   applyAppearance: (appearance: CommunityAppearance) => void;
 };
@@ -41,10 +44,6 @@ export const DEFAULT_COMMUNITY_APPEARANCE: CommunityAppearance = {
 
 function getSystemDark(): boolean {
   return window.matchMedia("(prefers-color-scheme: dark)").matches;
-}
-
-function isBuzzTheme(theme: string): boolean {
-  return theme === "buzz" || theme === "buzz-dark";
 }
 
 function themeIsDark(themeName: string): boolean {
@@ -124,9 +123,12 @@ function applyRootAppearance(themeName: string, accent: string) {
     const value = palette.vars[name];
     root.style.setProperty(name, value);
   }
-  if (isBuzzTheme(themeName)) root.setAttribute("data-buzz-theme", themeName);
-  else root.removeAttribute("data-buzz-theme");
-  applyAccent(root, accent, palette.vars, isBuzzTheme(themeName));
+  if (isBuzzDesktopTheme(themeName)) {
+    root.setAttribute("data-buzz-theme", themeName);
+  } else {
+    root.removeAttribute("data-buzz-theme");
+  }
+  applyAccent(root, accent, palette.vars, isBuzzDesktopTheme(themeName));
   return isDark;
 }
 
@@ -173,6 +175,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       selectedThemeName: appearance.theme,
       isDark,
       appearance,
+      accentColor: appearance.accent,
+      followSystem: appearance.followSystem,
       setTheme,
       applyAppearance,
     }),

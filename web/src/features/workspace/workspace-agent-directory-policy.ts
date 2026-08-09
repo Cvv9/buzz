@@ -20,7 +20,7 @@ export function hostedDirectoryEvents<T extends DirectoryEvent>(
     if (
       !current ||
       event.created_at > current.created_at ||
-      (event.created_at === current.created_at && event.id > current.id)
+      (event.created_at === current.created_at && event.id < current.id)
     ) {
       latest.set(event.pubkey, event);
     }

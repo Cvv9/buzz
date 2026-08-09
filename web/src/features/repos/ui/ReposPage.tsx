@@ -154,9 +154,14 @@ export function ReposPage() {
           <ConnectButton className="w-full" />
         </div>
 
-        <h2 className="mb-4 flex items-center gap-2 text-lg font-semibold text-black dark:text-white">
-          <BookMarked className="h-4 w-4" /> Repositories
-        </h2>
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <h2 className="flex items-center gap-2 text-lg font-semibold text-black dark:text-white">
+            <BookMarked className="h-4 w-4" /> Repositories
+          </h2>
+          <a className="text-sm text-primary hover:underline" href="/projects">
+            Browse projects
+          </a>
+        </div>
 
         {/* Search + Sort bar */}
         <div className="mb-4 flex gap-3">

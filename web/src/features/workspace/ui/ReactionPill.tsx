@@ -1,4 +1,5 @@
 import { cn } from "@/shared/lib/cn";
+import { CustomEmojiImage } from "@/features/custom-emoji/ui/CustomEmojiImage";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/tooltip";
 import type { ReactionSummary } from "../workspace-api";
 
@@ -23,6 +24,15 @@ export function ReactionPill({
   const names = reaction.authors.map(actorName);
   const reactedBy = names.join(", ");
   const action = ownReaction ? "remove your reaction" : "add your reaction";
+  const customEmoji =
+    reaction.emojiUrl &&
+    reaction.emoji.startsWith(":") &&
+    reaction.emoji.endsWith(":")
+      ? {
+          shortcode: reaction.emoji.slice(1, -1).toLowerCase(),
+          url: reaction.emojiUrl,
+        }
+      : null;
 
   return (
     <Tooltip>
@@ -38,7 +48,12 @@ export function ReactionPill({
           type="button"
           onClick={() => onToggle(reaction.emoji)}
         >
-          {reaction.emoji} {reaction.authors.length}
+          {customEmoji ? (
+            <CustomEmojiImage className="size-4" emoji={customEmoji} />
+          ) : (
+            reaction.emoji
+          )}{" "}
+          {reaction.authors.length}
         </button>
       </TooltipTrigger>
       <TooltipContent side="top">Reacted by {reactedBy}</TooltipContent>

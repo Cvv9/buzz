@@ -319,10 +319,16 @@ pub const KIND_MANAGED_AGENT: u32 = 30177;
 pub const KIND_TEAM_CATALOG: u32 = 30178;
 /// Buzz hosted-agent configuration (parameterized replaceable, admin-authored).
 ///
-/// Addressed by `(admin pubkey, kind, agent pubkey)`. Clients use this public,
-/// secret-free projection to override a hosted agent's display name, avatar,
-/// and desired model without requiring custody of the agent's signing key.
-pub const KIND_HOSTED_AGENT_CONFIG: u32 = 30179;
+/// Public hosted-agent configuration addressed by `(admin pubkey, kind, agent
+/// pubkey)`. Clients use this secret-free projection to override a hosted
+/// agent's display name, avatar, and desired model without requiring custody
+/// of the agent's signing key.
+///
+/// Kind `30179` is intentionally reserved for private managed-agent
+/// aggregates. Hosted configuration must never use it: the two documents have
+/// overlapping NIP-33 coordinates and making a content-shaped exception would
+/// risk exposing an author's encrypted managed-agent state.
+pub const KIND_HOSTED_AGENT_CONFIG: u32 = 30180;
 
 // NIP-56 reporting
 /// NIP-56: Report an event, pubkey, or blob to relay moderators (kind:1984).
@@ -663,6 +669,7 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_MANAGED_AGENT,
     KIND_TEAM_CATALOG,
     KIND_PRIVATE_MANAGED_AGENT,
+    KIND_HOSTED_AGENT_CONFIG,
     KIND_REPORT,
     KIND_PRODUCT_FEEDBACK,
     KIND_NIP29_PUT_USER,
@@ -864,6 +871,7 @@ const _: () = assert!(is_parameterized_replaceable(KIND_TEAM)); // 30176 ∈ 300
 const _: () = assert!(is_parameterized_replaceable(KIND_MANAGED_AGENT)); // 30177 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_TEAM_CATALOG)); // 30178 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_PRIVATE_MANAGED_AGENT)); // 30179 ∈ 30000–39999
+const _: () = assert!(is_parameterized_replaceable(KIND_HOSTED_AGENT_CONFIG)); // 30180 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_WORKFLOW_DEF)); // 30620 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_EVENT_REMINDER)); // 30300 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_DM_VISIBILITY)); // 30622 ∈ 30000–39999

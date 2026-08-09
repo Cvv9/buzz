@@ -1,5 +1,9 @@
 # Agent surface map
 
+VarVik's production channel-to-agent responsibility boundaries and the
+distinction between channel membership and runtime-declared external resources
+are documented in [`varvik-channel-routing.md`](varvik-channel-routing.md).
+
 This is the change-impact map for agent identity, configuration, discovery,
 membership, and message presentation in Buzz. Read it before changing an agent
 name, avatar, model, access rule, channel relationship, mention, or historical
@@ -27,12 +31,12 @@ historical event.
 | Data | Event/storage | Writer | Precedence and purpose |
 | --- | --- | --- | --- |
 | Human compatibility profile | kind `0` | Profile owner | Human profile source. For hosted agents this is fallback presentation only. |
-| Hosted agent directory | kind `10100` (`KIND_AGENT_PROFILE`) | Agent | Base hosted identity, owner, access tier, audience, response policy, channels, status, capabilities, desired/default model, and signed runtime model catalog. |
+| Hosted agent directory | kind `10100` (`KIND_AGENT_PROFILE`) | Agent | Base hosted identity, owner, access tier, audience, response policy, channels, status, capabilities, runtime-declared resources, desired/default model, and signed runtime model catalog. |
 | Persona definition | kind `30175` (`KIND_PERSONA`) | Owner | Durable persona name, avatar, behavior, provider, model, runtime, and sharing definition for managed agents. |
 | Team definition | kind `30176` (`KIND_TEAM`) | Owner | Owner-private grouping of persona ids. |
 | Managed-agent projection | kind `30177` (`KIND_MANAGED_AGENT`) | Owner | Public, secret-free managed-agent projection keyed by agent pubkey. Also supports the namespaced compatibility form `hosted-agent:<pubkey>` on older relays. |
 | Team catalog | kind `30178` (`KIND_TEAM_CATALOG`) | Owner | Shareable team projection with embedded public persona projections. |
-| Hosted admin override | kind `30179` (`KIND_HOSTED_AGENT_CONFIG`) | Community owner/admin or declared agent owner | Current hosted name, avatar, and desired model. Newest authorized head wins over kind `10100` and kind `0`. |
+| Hosted admin override | kind `30180` (`KIND_HOSTED_AGENT_CONFIG`) | Community owner/admin or declared agent owner | Public, secret-free hosted name, avatar, and desired model. Runtime-authored kind `10100` remains the source for a description. Exact schema and matching `d`/`agent_pubkey` are required; newest authorized `(created_at, event_id)` head wins over kind `10100` and kind `0`. Kind `30179` is exclusively the encrypted, author-only managed-agent aggregate. |
 | Channel membership | NIP-29 membership events; channel state uses `h` tags, membership addressables use `d` tags | Channel owner/admin | Determines whether an agent is already in a channel. It does not determine whether a shared agent is discoverable before its first invitation. |
 | Channel catalog section | Relay `channels.catalog_section`, emitted as kind `39000` `catalog_section` tag | Channel owner/admin or community owner/admin via kind `9007`/`9002` | Shared web/desktop organization. It is not a local sidebar preference. An empty value explicitly clears the section. |
 | Agent channel-add admission | Community-scoped `users.agent_owner_pubkey` plus `users.channel_add_policy` | Relay-authenticated agent or root operator | Owner mapping is immutable. `buzz-admin set-agent-owner` atomically ensures both principals, binds the owner, and sets `owner_only`; it never opens an `anyone` window. |
@@ -44,10 +48,11 @@ historical event.
 
 | Field | Canonical read |
 | --- | --- |
-| Hosted name/avatar | Authorized kind `30179` override, then kind `10100`, then kind `0`. Desktop projection: `getHostedAgentPresentation` / `overlayHostedAgentProfiles`. Web projection: `applyHostedAgentConfigs`. |
+| Hosted name/avatar | Authorized kind `30180` override, then kind `10100`, then kind `0`. Desktop projection: `getHostedAgentPresentation` / `overlayHostedAgentProfiles`. Web projection: `applyHostedAgentConfigs`. Only the namespaced `30177` `d=hosted-agent:<pubkey>` form is a compatibility read; `30179` is never read as hosted configuration. |
 | Managed name/avatar | Managed record plus its persona definition; kind `0` is republished for compatibility. Cache invalidation must follow successful edits. |
 | Hosted model options | Signed `models` catalog from kind `10100`; never a frontend provider/model table. |
-| Hosted selected model | Authorized kind `30179` desired model. A live save also sends observer `switch_model` to known agent channels. |
+| Hosted selected model | Authorized kind `30180` desired model. A live save also sends observer `switch_model` to known agent channels. |
+| Hosted resources | Signed kind `10100` `resources` list published by the runtime. It is descriptive metadata only; kind `30180` and browser UI cannot grant external credentials. Buzz channel access is enforced separately through NIP-29 membership. |
 | Managed model options | Rust `KnownAcpRuntime` capability catalog and live discovery. Frontend fields are projected through `agentConfigCore.ts`. |
 | Discovery/access | `audience` and `accessTier` are authoritative. `shared/community` is community-discoverable before channel membership. `personal/admin` is restricted to its owner. Legacy records without those fields fall back to `respondTo` and its allowlist. Desktop policy: `relayAgentIsSharedWithUser`. |
 | Channel invocation | Mention send flow adds an eligible missing agent with role `bot`, then sends a message carrying its `p` tag. Other users' private agents must not be suggested or added. |
@@ -79,9 +84,13 @@ Primary files:
 
 ### Edit a hosted agent
 
-1. Desktop `/agents` opens `HostedAgentEditDialog.tsx`.
-2. `publishHostedAgentConfig` signs kind `30179`; an old relay that reports an
-   unknown kind receives the namespaced kind `30177` compatibility projection.
+1. Desktop `/agents` opens `HostedAgentEditDialog.tsx`; web's internal Agents
+   view opens the editor in `WorkspaceAgents.tsx`.
+2. `publishHostedAgentConfig` signs public kind `30180` with exactly one
+   `d=<agent-pubkey>` tag and the matching `buzz.hosted-agent-config.v1` JSON
+   body. An old relay that reports an unknown kind receives only the namespaced
+   kind `30177` `d=hosted-agent:<pubkey>` compatibility projection. It never
+   writes kind `30179`.
 3. `list_relay_agents` and web `listAgents` select the newest authorized head
    and merge it onto kind `10100`.
 4. The relay-agent query is invalidated/refetched.
@@ -89,6 +98,11 @@ Primary files:
    known channel for that agent.
 6. Rosters, profiles, search, mentions, messages, and Inbox resolve the merged
    name/avatar/model by pubkey.
+
+Migration: historic `30179` documents are intentionally not read or migrated,
+because their NIP-33 coordinate overlaps the encrypted private managed-agent
+aggregate. An authorized owner/admin must republish the secret-free hosted
+presentation as a new `30180` event.
 
 Primary files:
 
@@ -142,8 +156,10 @@ Primary files:
    NIP-29 events. Channel owners/admins control their own channel; relay
    community owners/admins retain global recovery control.
 4. The relay emits the updated relay-signed kind `39000`/`39002` discovery
-   heads. Desktop and web refetch those heads, so neither client owns a second
-   catalog.
+   heads. The relay fans those heads to exclusively discovery-only live
+   subscriptions, then rechecks channel access before delivery. Web subscribes
+   to the catalog plus recipient `44100`/`44101` membership signals and
+   invalidates immediately; neither client owns a second catalog.
 5. Agent automation uses `buzz channels create --catalog-section <section>`
    and `buzz channels update --catalog-section <section>`. An update can
    explicitly remove the assignment with `--clear-catalog-section`; these CLI
@@ -192,10 +208,15 @@ Primary files:
 
 1. Desktop persists the active per-user, per-relay appearance locally and
    publishes its encrypted NIP-78 kind `30078` event with `d=community-theme`.
-2. Web queries and subscribes to that exact author/tag coordinate after the
-   browser identity is unlocked, validates/decrypts the newest event, and
-   applies the contained appearance to its root theme provider.
-3. The event is encrypted to the author. A browser identity with a different
+2. Web restores an optimistic per-user, per-relay local cache/outbox, queries
+   and subscribes to that exact author/tag coordinate after the browser
+   identity is unlocked, and validates/decrypts the newest event before
+   applying it to its root theme provider.
+3. Browser appearance edits write that scoped outbox immediately, then publish
+   the same encrypted kind `30078` coordinate with a monotonic timestamp; the
+   outbox survives temporary relay failure and is cleared only on accepted
+   publication.
+4. The event is encrypted to the author. A browser identity with a different
    pubkey cannot read it and must keep the default appearance rather than
    inheriting a different user's look.
 
@@ -205,6 +226,8 @@ Primary files:
 - `desktop/src/shared/theme/communityThemeSync.ts`
 - `web/src/shared/theme/CommunityThemeController.tsx`
 - `web/src/shared/theme/community-theme.ts`
+- `web/src/shared/theme/community-theme-preference.ts`
+- `web/src/shared/theme/community-theme-sync.ts`
 
 ## Consumer matrix
 
@@ -261,6 +284,34 @@ and `profileTab`. Profile views are parsed centrally by
 - `/repos`
 - `/repos/$repoId`
 - `/repos/$repoId/blob/$`
+- `/projects` — global NIP-MP collection plus implicit NIP-34 repositories.
+- `/projects/$projectAddress` — strict addressable `30621:<owner>:<d>` project.
+- `/repos/$repositoryAddress/work-items` — exact-address NIP-34 issue/PR list
+  and activity; it never treats a repository `d` tag as globally unique.
+- `/repos/$repositoryAddress/work-items/$workItemId` — read-only issue/PR
+  detail, comments, updates, trusted status, and review projection.
+- `/workflows` — browser workflow definition list/create and approval queue.
+- `/workflows/$workflowId` — browser workflow definition, manual command, and
+  event-trace view.
+- `/channel-state` — browser-local drafts plus encrypted relay/identity-scoped
+  channel mute/star state; accepts `channel` and optional `thread` search keys.
+- `/moderation` — NIP-98-authorized moderator reports/restrictions/audit view.
+- `/identity-archive` — relay-signed archive snapshot and protected archive
+  request controls; archive is presentation state, never membership removal.
+- `/huddles/$channelId` — parent-channel-scoped lifecycle history, guideline
+  editor, and an explicitly joined browser audio session. Historical lifecycle
+  membership is presentation only and never grants audio admission.
+- `/offline` — browser-local, encrypted read archive. Its IndexedDB v1 scope is
+  normalized relay URL plus unlocked identity; it stores only verified ordinary
+  events received through explicit `h`-scoped channel reads/subscriptions.
+  Archive records are never a relay source of truth and exclude private/decrypted
+  payloads.
+- `/pairing` — user-gesture-only NIP-AB browser pairing using the relay's
+  advertised sidecar and kind `24134`; ephemeral session material and recovered
+  key payloads are memory-only.
+- `/preferences` — relay+identity-scoped browser-only notification and
+  accessibility settings. It does not represent a relay setting or desktop
+  system preference.
 
 The browser workspace consumes the same relay events but does not share the
 desktop TypeScript bundle. Any change to event shape, precedence, access, or
@@ -270,14 +321,24 @@ mention delivery must therefore update and test both clients explicitly.
 
 | Cache/query | What it contains | Required invalidation |
 | --- | --- | --- |
-| `relayAgentsQueryKey` | Merged kind `10100` plus authorized kind `30179`/compat configuration | Hosted identity/model/access edits; community switch. |
+| `relayAgentsQueryKey` | Merged kind `10100` plus authorized kind `30180`/namespaced `30177` compatibility configuration | Hosted identity/model/access edits; community switch. |
 | `managedAgentsQueryKey` | Local managed instances | Managed create/edit/delete and runtime lifecycle changes. |
 | `['user-profile', pubkey]` | Kind `0` profile | Profile or managed presentation update. |
 | `['users-batch-entry', pubkey]` and `['users-batch', ...]` | Timeline, member, Inbox profile projection | Evict entry before invalidating aggregate queries after name/avatar changes. |
 | Channel members/details | Membership and member presentation | Add/remove role changes and managed identity edits. |
-| Web `['workspace-agents', viewerPubkey]` | Merged browser agent directory | Hosted config publication and identity/community change. |
-| Web `['workspace-channels', viewerPubkey]` | Membership projection | Agent auto-add and explicit add/remove. |
+| Web `['workspace-agents', viewerPubkey]` | Merged browser agent directory | Immediate invalidation on live kind `10100`, `30180`, namespaced `30177`, or `13534`, plus local hosted config publication and identity/community change. |
+| Web `['workspace-channels', viewerPubkey]` | Membership projection | Immediate invalidation on live relay kind `39000`/`39002`, addressed `44100`/`44101`, or `13534`, plus local channel create/update/archive/delete/member writes. |
 | Web/desktop channel detail and list queries | Relay kind `39000` channel metadata, including `catalog_section` | Channel metadata, catalog section, archive/visibility, and membership mutations. |
+| Web `['workflow-channel', channel]` and `['workflow-detail', id]` | Strictly projected kind `30620` workflow definition heads | Live kind `30620` scoped by `h` or `d`, plus local definition replacement/delete. Keep timestamp then lowest-id replacement order. |
+| Web `['workflow-trace', id]` and `['workflow-approvals', viewer]` | Explicit relay kinds `46001`–`46007` and viewer-tagged `46010` | Matching live workflow trace or approval event, and successful `46020`/`46030`/`46031` command. Approval events must retain a matching `p` tag locally; relay filter results alone are not authoritative. |
+| Web `['projects','collection']` / `['projects','detail', projectAddress]` | Strict NIP-MP `30621` and NIP-34 `30617` heads plus owner-authorized NIP-09 `5` deletion edges | Live `30621`/`30617` heads and known-coordinate deletion events refetch the bounded, timestamp-bucket-safe fold. Same-second replaceable heads select the lowest id; foreign project membership remains visible but cannot suppress the repository's implicit card. |
+| Web `['projects','work-items', repositoryAddress]` | Exact `30617:<owner>:<d>` scoped NIP-34 issues `1621`, PRs/patches/updates `1617`–`1619`, status `1630`–`1633`, and kind `1` comments | One explicit-kind `#a` subscription invalidates list/detail/activity. The client locally validates exact repository/root edges and trusted lifecycle/review actors; relay authorization remains the access authority. |
+| Web `['channel-mutes', pubkey]` / `['channel-stars', pubkey]` | Encrypted NIP-78 `30078` heads with exact `d`/`t` coordinates | Same-author live head, local publish, and relay/identity boundary. Both registers merge a persisted outbox with the observed remote head and publish a strictly newer timestamp. |
+| Web `['archived-identities']` | Verified relay-signed kind `13535` archive snapshot | Relay-signer `13535` live event or successful `9035`/`9036` request. Never accept an unsigned/foreign snapshot. |
+| Web `['moderation-reports']`, `['moderation-audit']`, `['moderation-restrictions']` | NIP-98-authorized moderator views | Successful `9040`–`9044` command and bounded refresh; reports/direct commands have no normal WS fan-out. |
+| Web `['channel-huddles', parentChannelId]` | Validated kinds `48100`–`48103` scoped by the parent `h` tag | Matching live lifecycle event, successful browser start, or lifecycle subscription reconnect. Fold exact ids by `(created_at ASC, id ASC)`; ending clears active participants. |
+| Web `['huddle-guideline', ephemeralChannelId]` | Latest nonempty kind `48106` scoped by backing-channel `h` | Matching live guideline event or successful local guideline write. Select newest `(created_at DESC, id ASC)` head. Audio capture/packets are intentionally never query-cached. |
+| Web `['offline-archive-channels', pubkey]`, `['offline-archive-page', pubkey, cursor]`, `['offline-archive-usage', pubkey]` | Browser-local encrypted IndexedDB archive for the current normalized relay + identity partition | User-triggered archive/read/clear/import/export and its optional foreground exact-kind + `h` subscription. Remove all three caches on identity lock; changing relay or identity selects a different partition. |
 
 Community switching remounts the React tree, but module-level caches must also
 be reset in `resetCommunityState()` as described in the root `AGENTS.md`.
@@ -347,7 +408,8 @@ be reset in `resetCommunityState()` as described in the root `AGENTS.md`.
 - `agentSurfaceMapContract.test.mjs` — route inventory and canonical consumer
   wiring.
 - `onboarding-agent-defaults.spec.ts` — managed runtime/provider/model setup.
-- Relay ingest and agent-discovery tests — accepted kinds, authorization, and
+- Relay ingest, privacy, subscription, and agent-discovery tests — `30180`
+  schema/authorization, `30179` author-only privacy, live catalog fan-out, and
   newest authorized hosted override.
 
 ## Known consolidation work
@@ -363,9 +425,9 @@ The following seams remain intentionally visible here until removed:
    some generic human-profile consumers still read kind `0` directly. New
    agent-aware surfaces must consume the directory projection, never add
    another precedence rule.
-4. Relay-agent discovery polls because kind `10100` and kind `30179` do not yet
-   drive one unified desktop invalidation event. Realtime invalidation would
-   reduce stale windows and repeated manual refreshes.
+4. Desktop relay-agent discovery still polls rather than subscribing to one
+   unified `10100`/`30180` invalidation event. Web now subscribes directly;
+   desktop realtime invalidation remains consolidation work.
 5. The web composer detects typed names rather than providing the desktop's
    structured autocomplete. It uses the current merged directory, but parity
    should eventually share generated policy fixtures.

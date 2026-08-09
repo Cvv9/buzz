@@ -321,6 +321,31 @@ impl SubscriptionRegistry {
                     );
                 }
             }
+
+            // NIP-29 discovery projections are stored with a channel routing
+            // scope so ordinary global subscriptions can never leak private
+            // channel traffic. A global subscription that *only* asks for the
+            // metadata/admin/member projections is the narrow exception: the
+            // caller still passes through filter_fanout_by_access, while the
+            // web and desktop catalogs receive live replacement heads.
+            if is_channel_discovery_kind(event.event.kind) {
+                if let Some(candidates) = self
+                    .global_kind_index
+                    .get(&(community_id, event.event.kind))
+                    .map(|entry| entry.value().clone())
+                {
+                    for (conn_id, sub_id) in candidates {
+                        self.push_match(
+                            conn_id,
+                            &sub_id,
+                            community_id,
+                            event,
+                            &mut results,
+                            &mut seen,
+                        );
+                    }
+                }
+            }
         } else {
             // Global event (channel_id = None) — use global indexes for sub-linear fan-out.
             // Channel-scoped subscriptions are never in these indexes, preserving the
@@ -383,7 +408,8 @@ impl SubscriptionRegistry {
             }
         }
 
-        // NOTE: The scoping invariant is symmetric:
+        // NOTE: The scoping invariant is symmetric, except for an exclusively
+        // NIP-29 discovery subscription which remains access-filtered later:
         // - Global subscriptions (channel_id = None) do NOT receive channel-scoped events.
         // - Channel-scoped subscriptions do NOT receive global events.
         // This prevents both directions of information leakage: channel content
@@ -445,8 +471,12 @@ impl SubscriptionRegistry {
                 // Candidate snapshots can become stale while a same-ID replacement
                 // moves the subscription. Re-check its authoritative scope before
                 // matching so an old index entry cannot deliver across scopes.
+                let scope_matches = *sub_channel_id == event.channel_id
+                    || (*sub_channel_id == None
+                        && event.channel_id.is_some()
+                        && is_channel_discovery_subscription(filters));
                 if *sub_community_id == community_id
-                    && *sub_channel_id == event.channel_id
+                    && scope_matches
                     && filters_match(filters, event)
                 {
                     let entry = (conn_id, sub_id.to_string());
@@ -549,6 +579,28 @@ impl SubscriptionRegistry {
             }
         }
     }
+}
+
+/// Whether this kind is a relay-generated NIP-29 channel discovery projection.
+fn is_channel_discovery_kind(kind: Kind) -> bool {
+    matches!(
+        kind.as_u16() as u32,
+        buzz_core::kind::KIND_NIP29_GROUP_METADATA
+            | buzz_core::kind::KIND_NIP29_GROUP_ADMINS
+            | buzz_core::kind::KIND_NIP29_GROUP_MEMBERS
+    )
+}
+
+/// Global catalog subscriptions are eligible for the discovery exception only
+/// when every OR branch has an explicit, non-empty set of discovery kinds.
+/// A mixed or wildcard filter must retain the normal channel/global isolation.
+fn is_channel_discovery_subscription(filters: &[Filter]) -> bool {
+    !filters.is_empty()
+        && filters.iter().all(|filter| {
+            filter.kinds.as_ref().is_some_and(|kinds| {
+                !kinds.is_empty() && kinds.iter().copied().all(is_channel_discovery_kind)
+            })
+        })
 }
 
 fn p_tag() -> SingleLetterTag {
@@ -1233,6 +1285,40 @@ mod tests {
             "global sub should still receive non-channel events"
         );
         assert_eq!(matches[0].0, conn_id);
+    }
+
+    #[test]
+    fn global_channel_catalog_subscription_receives_metadata_without_leaking_messages() {
+        let registry = SubscriptionRegistry::new();
+        let catalog_conn = Uuid::new_v4();
+        let message_conn = Uuid::new_v4();
+        let channel_id = Uuid::new_v4();
+        let metadata_kind = Kind::Custom(buzz_core::kind::KIND_NIP29_GROUP_METADATA as u16);
+
+        registry.register(
+            catalog_conn,
+            "catalog".to_string(),
+            vec![Filter::new().kind(metadata_kind)],
+            None,
+        );
+        registry.register(
+            message_conn,
+            "messages".to_string(),
+            vec![Filter::new().kind(Kind::TextNote)],
+            None,
+        );
+
+        let metadata = make_stored_event(metadata_kind, Some(channel_id));
+        assert_eq!(
+            registry.fan_out(&metadata),
+            vec![(catalog_conn, "catalog".to_string())]
+        );
+
+        let message = make_stored_event(Kind::TextNote, Some(channel_id));
+        assert!(
+            registry.fan_out(&message).is_empty(),
+            "a global message subscription must not cross the channel boundary"
+        );
     }
 
     #[test]

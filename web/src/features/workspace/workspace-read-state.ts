@@ -384,11 +384,11 @@ export function deriveWorkspaceUnread(args: {
   return {
     alertItems: alertItems.sort(
       (left, right) =>
-        right.createdAt - left.createdAt || right.id.localeCompare(left.id),
+        right.createdAt - left.createdAt || left.id.localeCompare(right.id),
     ),
     inboxItems: inboxItems.sort(
       (left, right) =>
-        right.createdAt - left.createdAt || right.id.localeCompare(left.id),
+        right.createdAt - left.createdAt || left.id.localeCompare(right.id),
     ),
     unreadChannelCounts,
     unreadChannelIds,
