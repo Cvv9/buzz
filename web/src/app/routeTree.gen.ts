@@ -6,6 +6,7 @@
 
 import { Route as rootRouteImport } from "./routes/root";
 import { Route as workflowsRouteImport } from "./routes/workflows";
+import { Route as settingsRouteImport } from "./routes/settings";
 import { Route as searchRouteImport } from "./routes/search";
 import { Route as reposRouteImport } from "./routes/repos";
 import { Route as remindersRouteImport } from "./routes/reminders";
@@ -16,6 +17,7 @@ import { Route as pairingRouteImport } from "./routes/pairing";
 import { Route as offlineRouteImport } from "./routes/offline";
 import { Route as moderationRouteImport } from "./routes/moderation";
 import { Route as identityArchiveRouteImport } from "./routes/identity-archive";
+import { Route as customEmojiRouteImport } from "./routes/custom-emoji";
 import { Route as channelStateRouteImport } from "./routes/channel-state";
 import { Route as indexRouteImport } from "./routes/index";
 import { Route as workflowsDotworkflowIdRouteImport } from "./routes/workflows.$workflowId";
@@ -35,6 +37,11 @@ import { Route as channelsDotchannelIdDotpostsDotpostIdRouteImport } from "./rou
 const workflowsRoute = workflowsRouteImport.update({
   id: "/workflows",
   path: "/workflows",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const settingsRoute = settingsRouteImport.update({
+  id: "/settings",
+  path: "/settings",
   getParentRoute: () => rootRouteImport,
 } as any);
 const searchRoute = searchRouteImport.update({
@@ -85,6 +92,11 @@ const moderationRoute = moderationRouteImport.update({
 const identityArchiveRoute = identityArchiveRouteImport.update({
   id: "/identity-archive",
   path: "/identity-archive",
+  getParentRoute: () => rootRouteImport,
+} as any);
+const customEmojiRoute = customEmojiRouteImport.update({
+  id: "/custom-emoji",
+  path: "/custom-emoji",
   getParentRoute: () => rootRouteImport,
 } as any);
 const channelStateRoute = channelStateRouteImport.update({
@@ -172,6 +184,7 @@ const channelsDotchannelIdDotpostsDotpostIdRoute =
 export interface FileRoutesByFullPath {
   "/": typeof indexRoute;
   "/channel-state": typeof channelStateRoute;
+  "/custom-emoji": typeof customEmojiRoute;
   "/identity-archive": typeof identityArchiveRoute;
   "/moderation": typeof moderationRoute;
   "/offline": typeof offlineRoute;
@@ -182,6 +195,7 @@ export interface FileRoutesByFullPath {
   "/reminders": typeof remindersRoute;
   "/repos": typeof reposRoute;
   "/search": typeof searchRoute;
+  "/settings": typeof settingsRoute;
   "/workflows": typeof workflowsRoute;
   "/huddles/$channelId": typeof huddlesDotchannelIdRoute;
   "/invite/$code": typeof inviteDotcodeRoute;
@@ -200,6 +214,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   "/": typeof indexRoute;
   "/channel-state": typeof channelStateRoute;
+  "/custom-emoji": typeof customEmojiRoute;
   "/identity-archive": typeof identityArchiveRoute;
   "/moderation": typeof moderationRoute;
   "/offline": typeof offlineRoute;
@@ -210,6 +225,7 @@ export interface FileRoutesByTo {
   "/reminders": typeof remindersRoute;
   "/repos": typeof reposRoute;
   "/search": typeof searchRoute;
+  "/settings": typeof settingsRoute;
   "/workflows": typeof workflowsRoute;
   "/huddles/$channelId": typeof huddlesDotchannelIdRoute;
   "/invite/$code": typeof inviteDotcodeRoute;
@@ -229,6 +245,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport;
   "/": typeof indexRoute;
   "/channel-state": typeof channelStateRoute;
+  "/custom-emoji": typeof customEmojiRoute;
   "/identity-archive": typeof identityArchiveRoute;
   "/moderation": typeof moderationRoute;
   "/offline": typeof offlineRoute;
@@ -239,6 +256,7 @@ export interface FileRoutesById {
   "/reminders": typeof remindersRoute;
   "/repos": typeof reposRoute;
   "/search": typeof searchRoute;
+  "/settings": typeof settingsRoute;
   "/workflows": typeof workflowsRoute;
   "/huddles/$channelId": typeof huddlesDotchannelIdRoute;
   "/invite/$code": typeof inviteDotcodeRoute;
@@ -259,6 +277,7 @@ export interface FileRouteTypes {
   fullPaths:
     | "/"
     | "/channel-state"
+    | "/custom-emoji"
     | "/identity-archive"
     | "/moderation"
     | "/offline"
@@ -269,6 +288,7 @@ export interface FileRouteTypes {
     | "/reminders"
     | "/repos"
     | "/search"
+    | "/settings"
     | "/workflows"
     | "/huddles/$channelId"
     | "/invite/$code"
@@ -287,6 +307,7 @@ export interface FileRouteTypes {
   to:
     | "/"
     | "/channel-state"
+    | "/custom-emoji"
     | "/identity-archive"
     | "/moderation"
     | "/offline"
@@ -297,6 +318,7 @@ export interface FileRouteTypes {
     | "/reminders"
     | "/repos"
     | "/search"
+    | "/settings"
     | "/workflows"
     | "/huddles/$channelId"
     | "/invite/$code"
@@ -315,6 +337,7 @@ export interface FileRouteTypes {
     | "__root__"
     | "/"
     | "/channel-state"
+    | "/custom-emoji"
     | "/identity-archive"
     | "/moderation"
     | "/offline"
@@ -325,6 +348,7 @@ export interface FileRouteTypes {
     | "/reminders"
     | "/repos"
     | "/search"
+    | "/settings"
     | "/workflows"
     | "/huddles/$channelId"
     | "/invite/$code"
@@ -344,6 +368,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   indexRoute: typeof indexRoute;
   channelStateRoute: typeof channelStateRoute;
+  customEmojiRoute: typeof customEmojiRoute;
   identityArchiveRoute: typeof identityArchiveRoute;
   moderationRoute: typeof moderationRoute;
   offlineRoute: typeof offlineRoute;
@@ -354,6 +379,7 @@ export interface RootRouteChildren {
   remindersRoute: typeof remindersRoute;
   reposRoute: typeof reposRoute;
   searchRoute: typeof searchRoute;
+  settingsRoute: typeof settingsRoute;
   workflowsRoute: typeof workflowsRoute;
   huddlesDotchannelIdRoute: typeof huddlesDotchannelIdRoute;
   inviteDotcodeRoute: typeof inviteDotcodeRoute;
@@ -377,6 +403,13 @@ declare module "@tanstack/react-router" {
       path: "/workflows";
       fullPath: "/workflows";
       preLoaderRoute: typeof workflowsRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/settings": {
+      id: "/settings";
+      path: "/settings";
+      fullPath: "/settings";
+      preLoaderRoute: typeof settingsRouteImport;
       parentRoute: typeof rootRouteImport;
     };
     "/search": {
@@ -447,6 +480,13 @@ declare module "@tanstack/react-router" {
       path: "/identity-archive";
       fullPath: "/identity-archive";
       preLoaderRoute: typeof identityArchiveRouteImport;
+      parentRoute: typeof rootRouteImport;
+    };
+    "/custom-emoji": {
+      id: "/custom-emoji";
+      path: "/custom-emoji";
+      fullPath: "/custom-emoji";
+      preLoaderRoute: typeof customEmojiRouteImport;
       parentRoute: typeof rootRouteImport;
     };
     "/channel-state": {
@@ -560,6 +600,7 @@ declare module "@tanstack/react-router" {
 const rootRouteChildren: RootRouteChildren = {
   indexRoute: indexRoute,
   channelStateRoute: channelStateRoute,
+  customEmojiRoute: customEmojiRoute,
   identityArchiveRoute: identityArchiveRoute,
   moderationRoute: moderationRoute,
   offlineRoute: offlineRoute,
@@ -570,6 +611,7 @@ const rootRouteChildren: RootRouteChildren = {
   remindersRoute: remindersRoute,
   reposRoute: reposRoute,
   searchRoute: searchRoute,
+  settingsRoute: settingsRoute,
   workflowsRoute: workflowsRoute,
   huddlesDotchannelIdRoute: huddlesDotchannelIdRoute,
   inviteDotcodeRoute: inviteDotcodeRoute,

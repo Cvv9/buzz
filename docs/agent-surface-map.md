@@ -85,7 +85,9 @@ Primary files:
 ### Edit a hosted agent
 
 1. Desktop `/agents` opens `HostedAgentEditDialog.tsx`; web's internal Agents
-   view opens the editor in `WorkspaceAgents.tsx`.
+   view opens the editor in `WorkspaceAgents.tsx`. Both surfaces accept a local
+   picture file and upload it to the authenticated community media service
+   before persisting the returned URL.
 2. `publishHostedAgentConfig` signs public kind `30180` with exactly one
    `d=<agent-pubkey>` tag and the matching `buzz.hosted-agent-config.v1` JSON
    body. An old relay that reports an unknown kind receives only the namespaced
@@ -95,7 +97,9 @@ Primary files:
    and merge it onto kind `10100`.
 4. The relay-agent query is invalidated/refetched.
 5. If a model was selected, the desktop sends `switch_model` control to every
-   known channel for that agent.
+   known channel for that agent. Web exposes only models advertised by the
+   signed runtime catalog and persists the desired selection; it does not
+   claim that a presentation event can install a provider or grant credentials.
 6. Rosters, profiles, search, mentions, messages, and Inbox resolve the merged
    name/avatar/model by pubkey.
 
@@ -111,6 +115,8 @@ Primary files:
 - `desktop/src-tauri/src/commands/agent_discovery.rs`
 - `desktop/src/features/agents/lib/hostedAgentPresentation.ts`
 - `web/src/features/workspace/workspace-api.ts`
+- `web/src/features/workspace/workspace-agent-models.ts`
+- `web/src/features/workspace/ui/WorkspaceAgents.tsx`
 
 ### Edit a managed agent/persona
 

@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
 import { LinkIcon, Search, UserRound } from "lucide-react";
 import { WorkspaceIdentityGate } from "@/features/access/WorkspaceIdentityGate";
+import { uploadBrowserMedia } from "@/features/media/browser-media";
 import {
   listAgents,
   type WorkspaceProfile,
@@ -310,6 +311,10 @@ function ProfileEditor({
   onChange: (draft: { name: string; picture: string; about: string }) => void;
   onSave: () => void;
 }) {
+  const [uploadProgress, setUploadProgress] = React.useState<number | null>(
+    null,
+  );
+  const [uploadError, setUploadError] = React.useState<string | null>(null);
   return (
     <section className="rounded-2xl border border-border bg-card p-5 shadow-sm">
       <div className="flex items-center gap-2">
@@ -330,15 +335,56 @@ function ProfileEditor({
             }
           />
         </FormField>
-        <FormField label="Picture URL">
-          <Input
-            aria-label="Picture URL"
-            placeholder="https://…"
-            value={draft.picture}
-            onChange={(event) =>
-              onChange({ ...draft, picture: event.target.value })
-            }
-          />
+        <FormField label="Profile picture">
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="inline-flex cursor-pointer items-center rounded-md border border-input bg-background px-3 py-2 text-sm font-medium hover:bg-accent">
+              {uploadProgress === null
+                ? "Choose picture"
+                : `Uploading ${uploadProgress}%`}
+              <input
+                accept="image/jpeg,image/png,image/gif,image/webp"
+                className="sr-only"
+                disabled={uploadProgress !== null}
+                type="file"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  event.target.value = "";
+                  if (!file) return;
+                  setUploadError(null);
+                  setUploadProgress(0);
+                  void uploadBrowserMedia(file, {
+                    onProgress: setUploadProgress,
+                  })
+                    .then((media) => onChange({ ...draft, picture: media.url }))
+                    .catch((nextError) =>
+                      setUploadError(
+                        nextError instanceof Error
+                          ? nextError.message
+                          : "The picture could not be uploaded.",
+                      ),
+                    )
+                    .finally(() => setUploadProgress(null));
+                }}
+              />
+            </label>
+            {draft.picture ? (
+              <button
+                className="text-sm text-muted-foreground hover:text-foreground"
+                type="button"
+                onClick={() => onChange({ ...draft, picture: "" })}
+              >
+                Remove picture
+              </button>
+            ) : null}
+          </div>
+          <p className="mt-2 text-xs font-normal text-muted-foreground">
+            Stored by the current Buzz relay and synced through your profile.
+          </p>
+          {uploadError ? (
+            <p className="mt-2 text-xs font-normal text-destructive">
+              {uploadError}
+            </p>
+          ) : null}
         </FormField>
         <FormField label="About">
           <textarea

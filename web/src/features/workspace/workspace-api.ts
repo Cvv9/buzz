@@ -7,6 +7,7 @@ import {
 import { truncatePubkey } from "@/shared/lib/pubkey";
 import { relayWsUrl } from "@/shared/lib/relay-url";
 import { hostedDirectoryEvents } from "./workspace-agent-directory-policy";
+import { parseWorkspaceAgentModels } from "./workspace-agent-models";
 import { canDiscoverPrivateWorkspaceChannels } from "./workspace-channel-discovery-policy";
 import {
   buildHostedAgentConfigTemplate,
@@ -91,7 +92,6 @@ export type WorkspaceChannelMember = {
   pubkey: string;
   role: "owner" | "admin" | "member" | "guest" | "bot";
 };
-
 export type WorkspaceCommunityMember = {
   pubkey: string;
   role: "owner" | "admin" | "member";
@@ -108,7 +108,7 @@ export type WorkspaceProfile = {
   ownerPubkey?: string;
   accessTier?: "shared" | "personal" | "admin";
   model?: string;
-  /** Runtime-declared integrations and data sources. Presentation configs cannot grant these. */
+  models?: import("./workspace-agent-models").WorkspaceAgentModel[];
   resources?: string[];
 };
 
@@ -122,7 +122,6 @@ export type ReactionSummary = {
   /** The message that received this reaction. */
   eventId: string;
   emoji: string;
-  /** Safe NIP-30 image metadata for a custom reaction, when unambiguous. */
   emojiUrl?: string;
   authors: string[];
   /** The latest reaction event from each author, used for NIP-09 removal. */
@@ -530,6 +529,7 @@ export async function listAgents(
           ? content.access_tier
           : "shared",
       model: typeof content.model === "string" ? content.model : undefined,
+      models: parseWorkspaceAgentModels(content.models),
       resources: Array.isArray(content.resources)
         ? content.resources
             .filter(

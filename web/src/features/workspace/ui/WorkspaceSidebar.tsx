@@ -16,6 +16,7 @@ import {
   Workflow,
   X,
 } from "lucide-react";
+import { Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { makeBlossomGetAuthHeader } from "@/shared/lib/blossom-auth";
 import { cn } from "@/shared/lib/cn";
@@ -24,6 +25,7 @@ import type {
   WorkspaceChannel,
   WorkspaceProfile,
 } from "@/features/workspace/workspace-api";
+import { agentRoleLabel } from "../agent-presentation";
 import type { BrowserIdentity } from "@/shared/lib/browser-identity";
 
 const SECTION_STORAGE_PREFIX = "buzz-web:channel-sections:v1";
@@ -167,7 +169,7 @@ export function WorkspaceSidebar({
   inboxUnreadCount,
   alertsUnreadCount,
   selectedView,
-  unreadChannelIds,
+  unreadChannelCounts,
   channels,
   agents,
   activeChannelId,
@@ -175,7 +177,6 @@ export function WorkspaceSidebar({
   onClose,
   onSelectChannel,
   onCreateChannel,
-  onOpenSettings,
   onOpenGuide,
   onOpenInbox,
   onOpenAlerts,
@@ -193,7 +194,7 @@ export function WorkspaceSidebar({
   inboxUnreadCount: number;
   alertsUnreadCount: number;
   selectedView: "agents" | "alerts" | "channel" | "inbox";
-  unreadChannelIds: ReadonlySet<string>;
+  unreadChannelCounts: ReadonlyMap<string, number>;
   channels: WorkspaceChannel[];
   agents: WorkspaceProfile[];
   activeChannelId: string | null;
@@ -201,7 +202,6 @@ export function WorkspaceSidebar({
   onClose: () => void;
   onSelectChannel: (channelId: string) => void;
   onCreateChannel: () => void;
-  onOpenSettings: () => void;
   onOpenGuide: () => void;
   onOpenInbox: () => void;
   onOpenAlerts: () => void;
@@ -445,7 +445,7 @@ export function WorkspaceSidebar({
                   onToggle={() => toggleSection("favorites")}
                   onToggleStar={onToggleStar}
                   starredChannelIds={starredChannelIds}
-                  unreadChannelIds={unreadChannelIds}
+                  unreadChannelCounts={unreadChannelCounts}
                 />
               ) : null}
               {[...catalogSections.entries()].map(
@@ -461,7 +461,7 @@ export function WorkspaceSidebar({
                     onToggle={() => toggleSection(section)}
                     onToggleStar={onToggleStar}
                     starredChannelIds={starredChannelIds}
-                    unreadChannelIds={unreadChannelIds}
+                    unreadChannelCounts={unreadChannelCounts}
                   />
                 ),
               )}
@@ -489,7 +489,7 @@ export function WorkspaceSidebar({
                     active={activeChannelId === channel.id}
                     channel={channel}
                     key={channel.id}
-                    unread={unreadChannelIds.has(channel.id)}
+                    unreadCount={unreadChannelCounts.get(channel.id) ?? 0}
                     starred={starredChannelIds.has(channel.id)}
                     onToggleStar={() => onToggleStar(channel.id)}
                     onSelect={() => {
@@ -613,23 +613,10 @@ export function WorkspaceSidebar({
               </p>
             </div>
           </button>
-          <a
-            className="mt-1 flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left text-sm text-sidebar-foreground/70 hover:bg-sidebar-accent"
-            href={`/profiles/${identity.pubkey}`}
+          <Link
+            className="mt-1 flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left hover:bg-sidebar-accent"
+            to="/settings"
             onClick={onClose}
-          >
-            <ProfileAvatar profile={profile} size="sm" />
-            <div className="min-w-0 flex-1">
-              <p className="truncate font-medium">View profile</p>
-              <p className="truncate text-xs text-muted-foreground">
-                Status and profile settings
-              </p>
-            </div>
-          </a>
-          <button
-            className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left hover:bg-sidebar-accent"
-            type="button"
-            onClick={onOpenSettings}
           >
             <ProfileAvatar profile={profile} size="sm" />
             <div className="min-w-0 flex-1">
@@ -641,7 +628,7 @@ export function WorkspaceSidebar({
               </p>
             </div>
             <Settings className="size-4 text-muted-foreground" />
-          </button>
+          </Link>
         </footer>
       </aside>
     </>
@@ -700,7 +687,9 @@ function AgentGroup({
             >
               <ProfileAvatar profile={agent} size="sm" />
               <div className="min-w-0 flex-1">
-                <p className="truncate text-sm">{agent.name}</p>
+                <p className="truncate text-sm">
+                  {agent.name} — {agentRoleLabel(agent)}
+                </p>
                 <p className="text-[0.6875rem] text-emerald-700 dark:text-emerald-400">
                   {agent.accessTier === "personal"
                     ? "Personal assistant"
@@ -747,7 +736,7 @@ function ChannelSection({
   activeChannelId,
   onToggle,
   onSelectChannel,
-  unreadChannelIds,
+  unreadChannelCounts,
   starredChannelIds,
   onToggleStar,
 }: {
@@ -758,7 +747,7 @@ function ChannelSection({
   activeChannelId: string | null;
   onToggle: () => void;
   onSelectChannel: (channelId: string) => void;
-  unreadChannelIds: ReadonlySet<string>;
+  unreadChannelCounts: ReadonlyMap<string, number>;
   starredChannelIds: ReadonlySet<string>;
   onToggleStar: (channelId: string) => void;
 }) {
@@ -779,7 +768,6 @@ function ChannelSection({
           )}
         />
         <span className="min-w-0 flex-1 truncate">{label}</span>
-        <span className="font-normal tabular-nums">{channels.length}</span>
       </button>
       {!collapsed ? (
         <div className="mt-0.5 space-y-0.5" id={contentId}>
@@ -788,7 +776,7 @@ function ChannelSection({
               active={activeChannelId === channel.id}
               channel={channel}
               key={channel.id}
-              unread={unreadChannelIds.has(channel.id)}
+              unreadCount={unreadChannelCounts.get(channel.id) ?? 0}
               starred={starredChannelIds.has(channel.id)}
               onToggleStar={() => onToggleStar(channel.id)}
               onSelect={() => onSelectChannel(channel.id)}
@@ -804,14 +792,14 @@ function ChannelButton({
   channel,
   active,
   onSelect,
-  unread = false,
+  unreadCount = 0,
   starred = false,
   onToggleStar,
 }: {
   channel: WorkspaceChannel;
   active: boolean;
   onSelect: () => void;
-  unread?: boolean;
+  unreadCount?: number;
   starred?: boolean;
   onToggleStar: () => void;
 }) {
@@ -825,7 +813,7 @@ function ChannelButton({
       )}
     >
       <button
-        aria-label={`${channel.name}${unread ? ", unread messages" : ""}`}
+        aria-label={`${channel.name}${unreadCount ? `, ${unreadCount} unread message${unreadCount === 1 ? "" : "s"}` : ""}`}
         className="flex min-w-0 flex-1 items-center gap-2 px-2.5 py-2 text-left"
         type="button"
         onClick={onSelect}
@@ -838,11 +826,10 @@ function ChannelButton({
           <Hash className="size-3.5 shrink-0" />
         )}
         <span className="truncate">{channel.name}</span>
-        {unread ? (
-          <span
-            aria-hidden="true"
-            className="ml-auto size-2 shrink-0 rounded-full bg-orange-500"
-          />
+        {unreadCount ? (
+          <span className="ml-auto min-w-5 shrink-0 rounded-full bg-orange-500 px-1.5 py-0.5 text-center text-[0.6875rem] font-semibold tabular-nums text-white">
+            {unreadCount > 99 ? "99+" : unreadCount}
+          </span>
         ) : null}
       </button>
       {channel.type !== "dm" ? (

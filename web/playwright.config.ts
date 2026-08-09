@@ -31,6 +31,7 @@ export default defineConfig({
         "**/workspace-huddles.spec.ts",
         "**/workspace-profiles-search.spec.ts",
         "**/workspace-workflows.spec.ts",
+        "**/workspace-read-state.spec.ts",
         "**/projects.spec.ts",
       ],
       use: {

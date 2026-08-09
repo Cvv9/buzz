@@ -20,6 +20,8 @@ export const routes = rootRoute("root.tsx", [
   route("/offline", "offline.tsx"),
   route("/pairing", "pairing.tsx"),
   route("/preferences", "preferences.tsx"),
+  route("/settings", "settings.tsx"),
+  route("/custom-emoji", "custom-emoji.tsx"),
   route("/repos", "repos.tsx"),
   route("/repos/$repoId", "repos.$repoId.tsx"),
   route("/repos/$repoId/blob/$", "repos.$repoId.blob.$.tsx"),

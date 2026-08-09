@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { App } from "@/app/App";
+import { WorkspaceThemeRoot } from "@/features/workspace/ui/WorkspaceThemeRoot";
 import "@fontsource-variable/inter/wght.css";
 import "@/shared/styles/globals.css";
 import { ThemeProvider } from "@/shared/theme/ThemeProvider";
@@ -26,6 +27,7 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
+        <WorkspaceThemeRoot />
         <TooltipProvider delayDuration={300}>
           <App />
           <Toaster />
