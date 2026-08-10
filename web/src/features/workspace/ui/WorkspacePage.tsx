@@ -52,6 +52,7 @@ import {
   subscribeToWorkspaceDirectory,
   subscribeToWorkspaceMembershipChanges,
 } from "@/features/workspace/workspace-api";
+import { listChannelThreadMessages } from "@/features/workspace/workspace-thread-api";
 import {
   materializeMessages,
   type TimelineMessage,
@@ -278,9 +279,25 @@ export function WorkspacePage({
     queryFn: () => listChannelMessages(activeChannelId ?? ""),
     enabled: Boolean(activeChannelId),
   });
+  const permalinkThreadQuery = useQuery({
+    queryKey: ["channel-thread", activeChannelId, threadRootId],
+    queryFn: () =>
+      listChannelThreadMessages(activeChannelId ?? "", threadRootId ?? ""),
+    enabled: Boolean(activeChannelId && threadRootId),
+  });
+  const channelEvents = React.useMemo(() => {
+    const byId = new Map<string, WorkspaceMessage>();
+    for (const event of [
+      ...(messagesQuery.data ?? []),
+      ...(permalinkThreadQuery.data ?? []),
+    ]) {
+      byId.set(event.id, event);
+    }
+    return [...byId.values()];
+  }, [messagesQuery.data, permalinkThreadQuery.data]);
   const materialized = React.useMemo(
-    () => materializeMessages(messagesQuery.data ?? []),
-    [messagesQuery.data],
+    () => materializeMessages(channelEvents),
+    [channelEvents],
   );
   const {
     alertItems,

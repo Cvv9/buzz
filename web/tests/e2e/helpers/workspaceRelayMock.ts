@@ -455,7 +455,7 @@ export async function installWorkspaceRelayMock(
                   candidate.created_at <= filter.until),
             );
           } else if (kinds.includes(9) && kinds.includes(40002)) {
-            events = [
+            const messageEvents = [
               event(
                 9,
                 "a".repeat(64),
@@ -474,7 +474,23 @@ export async function installWorkspaceRelayMock(
                 "A threaded reply",
                 "7",
               ),
+              ...seededSearchEvents.filter((candidate) =>
+                [9, 40002, 40003, 40099].includes(candidate.kind),
+              ),
             ];
+            events = messageEvents.filter(
+              (candidate) =>
+                kinds.includes(candidate.kind) &&
+                (!filter.ids?.length || filter.ids.includes(candidate.id)) &&
+                (!filter["#h"]?.length ||
+                  candidate.tags.some(
+                    (tag) => tag[0] === "h" && filter["#h"]?.includes(tag[1]),
+                  )) &&
+                (!filter["#e"]?.length ||
+                  candidate.tags.some(
+                    (tag) => tag[0] === "e" && filter["#e"]?.includes(tag[1]),
+                  )),
+            );
           } else if (kinds.length === 1 && kinds.includes(7)) {
             if (subscriptionId.startsWith("q-")) reactionQueryCount += 1;
             const targetIds = filter["#e"] ?? [];

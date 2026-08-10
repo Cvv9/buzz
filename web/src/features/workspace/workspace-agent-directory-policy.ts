@@ -6,6 +6,14 @@ type DirectoryEvent = {
 };
 
 /**
+ * General author presentation comes only from NIP-01 profiles. Hosted-agent
+ * directory/config events are applied separately by listAgents(). Keeping
+ * them out of this query prevents retired agent projections from relabeling a
+ * human author's historical messages.
+ */
+export const GENERAL_PROFILE_KINDS: readonly number[] = [0];
+
+/**
  * The hosted roster is a kind:10100 directory, never a grab bag of managed
  * kind:30177 projections. The latter are local/persona projections and may
  * describe agents that are intentionally not shared with this community.

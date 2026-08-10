@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { hostedDirectoryEvents } from "../src/features/workspace/workspace-agent-directory-policy.ts";
+import {
+  GENERAL_PROFILE_KINDS,
+  hostedDirectoryEvents,
+} from "../src/features/workspace/workspace-agent-directory-policy.ts";
+
+test("general author profiles cannot be relabeled by retired agent projections", () => {
+  assert.deepEqual([...GENERAL_PROFILE_KINDS], [0]);
+  assert.equal(GENERAL_PROFILE_KINDS.includes(10100), false);
+  assert.equal(GENERAL_PROFILE_KINDS.includes(30177), false);
+});
 
 test("hosted roster excludes managed projections that lack a kind:10100 directory entry", () => {
   const hosted = "a".repeat(64);

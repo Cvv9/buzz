@@ -250,6 +250,14 @@ test("global search sends bounded NIP-50 filters and provides thread navigation"
       {
         kind: 40002,
         pubkey,
+        tags: [["h", "random"]],
+        content: "Original discussion context",
+        suffix: rootId,
+        createdAt: Math.floor(Date.now() / 1_000) - 1,
+      },
+      {
+        kind: 40002,
+        pubkey,
         tags: [
           ["h", "random"],
           ["e", rootId, "", "root"],
@@ -293,4 +301,11 @@ test("global search sends bounded NIP-50 filters and provides thread navigation"
 
   await page.getByRole("link", { name: "Open channel thread" }).click();
   await expect(page).toHaveURL(`/?channel=random&thread=${rootId}`);
+  await expect(page.getByRole("heading", { name: "Thread" })).toBeVisible();
+  await expect(
+    page.getByText("Original discussion context").first(),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Launch decision confirmed").first(),
+  ).toBeVisible();
 });
