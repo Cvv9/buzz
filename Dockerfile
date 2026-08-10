@@ -196,7 +196,7 @@ FROM node:${NODE_VERSION}-${DEBIAN_VERSION}-slim AS agent-runtime
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/* \
-    && npm install --global @agentclientprotocol/codex-acp@1.1.7
+    && npm install --global @agentclientprotocol/codex-acp@1.1.14
 COPY --from=stripped-binaries /build/target/release/buzz-acp /usr/local/bin/buzz-acp
 COPY --from=stripped-binaries /build/target/release/buzz /usr/local/bin/buzz
 COPY --from=stripped-binaries /build/target/release/buzz-admin /usr/local/bin/buzz-admin
