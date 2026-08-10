@@ -39,54 +39,6 @@ const appearanceModes = [
   { mode: "dark", label: "Dark", Icon: Moon },
 ] as const;
 
-const browserTools = [
-  {
-    href: "/preferences",
-    label: "Notifications & accessibility",
-    description: "Sound, motion, and browser text size",
-  },
-  {
-    href: "/reminders",
-    label: "Reminders",
-    description: "Review encrypted message reminders",
-  },
-  {
-    href: "/projects",
-    label: "Projects & work items",
-    description: "Browse project and repository activity",
-  },
-  {
-    href: "/workflows",
-    label: "Workflows",
-    description: "Definitions, triggers, and approvals",
-  },
-  {
-    href: "/offline",
-    label: "Local archive",
-    description: "Encrypted, browser-local channel archive",
-  },
-  {
-    href: "/pairing",
-    label: "Pair another browser",
-    description: "Transfer this identity with confirmation",
-  },
-  {
-    href: "/channel-state",
-    label: "Saved channel state",
-    description: "Muted, starred, pinned, and bookmarked items",
-  },
-  {
-    href: "/moderation",
-    label: "Moderation",
-    description: "Community moderation tools for authorized members",
-  },
-  {
-    href: "/identity-archive",
-    label: "Identity archive",
-    description: "Inspect identity state stored by the relay",
-  },
-] as const;
-
 function activeAppearanceMode(
   appearance: CommunityAppearance,
   isDark: boolean,
@@ -314,36 +266,10 @@ export function WorkspaceSettings({
 
         <WorkspaceAppearanceSettings />
 
-        <section
-          aria-labelledby="workspace-browser-tools-heading"
-          className="mt-7 border-t border-border pt-6"
-          data-testid="workspace-browser-tools"
-        >
-          <h3
-            className="text-sm font-semibold"
-            id="workspace-browser-tools-heading"
-          >
-            Web tools
-          </h3>
-          <p className="mt-2 text-sm leading-6 text-muted-foreground">
-            Browser-safe settings and management pages available in Buzz Web.
-          </p>
-          <div className="mt-3 divide-y divide-border overflow-hidden rounded-xl border border-border">
-            {browserTools.map((tool) => (
-              <Link
-                className="block px-4 py-3 transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
-                data-testid={`workspace-tool-${tool.href.slice(1)}`}
-                to={tool.href}
-                key={tool.href}
-              >
-                <span className="block text-sm font-medium">{tool.label}</span>
-                <span className="mt-0.5 block text-xs leading-5 text-muted-foreground">
-                  {tool.description}
-                </span>
-              </Link>
-            ))}
-          </div>
-        </section>
+        <p className="mt-7 border-t border-border pt-6 text-sm leading-6 text-muted-foreground">
+          Use the settings menu to move between browser-safe preferences and
+          workspace tools without returning to the app first.
+        </p>
 
         <div className="mt-7 rounded-2xl border border-border p-4">
           <p className="font-medium">{identity.displayName}</p>

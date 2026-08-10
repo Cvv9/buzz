@@ -1,6 +1,8 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearch } from "@tanstack/react-router";
+import { BrowserSettingsBreadcrumb } from "@/features/settings/ui/BrowserSettingsBreadcrumb";
+import { listWorkspaceChannels } from "@/features/workspace/workspace-api";
 import { useWorkspaceIdentity } from "@/features/workspace/useWorkspaceIdentity";
 import { Button } from "@/shared/ui/button";
 import {
@@ -94,6 +96,12 @@ export function ChannelStatePage() {
   const [draft, setDraft] = React.useState("");
   const mutesQuery = useChannelMutes(identity?.pubkey);
   const starsQuery = useChannelStars(identity?.pubkey);
+  const channelsQuery = useQuery({
+    queryKey: ["workspace-channels", identity?.pubkey],
+    queryFn: () => listWorkspaceChannels(identity?.pubkey ?? ""),
+    enabled: Boolean(identity),
+    staleTime: 30_000,
+  });
   const drafts = identity ? readLocalChannelDrafts(identity.pubkey) : null;
   const [draftStore, setDraftStore] = React.useState<ChannelDraftStore>(
     drafts ?? { version: 1, drafts: {} },
@@ -187,6 +195,7 @@ export function ChannelStatePage() {
     );
   return (
     <main className="mx-auto w-full max-w-2xl p-4 sm:p-7">
+      <BrowserSettingsBreadcrumb current="Saved channel state" />
       <h1 className="text-2xl font-semibold">Channel state</h1>
       <p className="mt-1 text-sm text-muted-foreground">
         Drafts are local to this browser, relay, identity, channel, and thread.
@@ -202,9 +211,24 @@ export function ChannelStatePage() {
         <input
           className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
           id="channel-state-channel"
+          list="channel-state-catalog"
+          placeholder="Choose a channel or paste its identifier"
           value={channelId}
           onChange={(event) => setChannelId(event.target.value)}
         />
+        <datalist id="channel-state-catalog">
+          {channelsQuery.data?.map((channel) => (
+            <option
+              key={channel.id}
+              label={`#${channel.name}${channel.catalogSection ? ` · ${channel.catalogSection}` : ""}`}
+              value={channel.id}
+            />
+          ))}
+        </datalist>
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">
+          Start typing a channel name to select it from your catalog. You can
+          still paste an exact channel identifier for a shared link.
+        </p>
         <label
           className="mt-3 block text-sm font-medium"
           htmlFor="channel-state-thread"

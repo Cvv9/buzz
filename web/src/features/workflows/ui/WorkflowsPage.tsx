@@ -19,7 +19,13 @@ import {
   subscribeToWorkflowApprovalRequests,
   type WorkflowApprovalRequest,
 } from "../workflow-api";
+import {
+  selectWorkflowChannel,
+  workflowChannelStorageKey,
+} from "../workflow-builder-policy";
+import { validateBrowserWorkflowPublication } from "../workflow-policy";
 import { WorkflowVisualBuilder } from "./WorkflowVisualBuilder";
+import { relayWsUrl } from "@/shared/lib/relay-url";
 
 const channelWorkflowsKey = (channelId: string) =>
   ["workflow-channel", channelId] as const;
@@ -67,26 +73,42 @@ function WorkflowsPageContent({ viewerPubkey }: { viewerPubkey: string }) {
     queryFn: () => listAgents(viewerPubkey),
     staleTime: 30_000,
   });
-  const workflowChannels = (channelsQuery.data ?? []).filter(
-    (channel) => channel.type !== "dm",
+  const workflowChannels = React.useMemo(
+    () => (channelsQuery.data ?? []).filter((channel) => channel.type !== "dm"),
+    [channelsQuery.data],
   );
-  const initialChannel = new URLSearchParams(window.location.search).get(
-    "channel",
+  const requestedChannel = React.useMemo(
+    () => new URLSearchParams(window.location.search).get("channel"),
+    [],
   );
-  const [channelId, setChannelId] = React.useState(initialChannel ?? "");
+  const channelStorageKey = React.useMemo(
+    () => workflowChannelStorageKey(viewerPubkey, relayWsUrl()),
+    [viewerPubkey],
+  );
+  const [channelId, setChannelId] = React.useState(requestedChannel ?? "");
   const [yaml, setYaml] = React.useState(starterYaml);
   const [webhookSecret, setWebhookSecret] = React.useState<string | null>(null);
   const [notice, setNotice] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    setChannelId((current) =>
+      selectWorkflowChannel(workflowChannels, [
+        current,
+        requestedChannel,
+        localStorage.getItem(channelStorageKey),
+        localStorage.getItem("buzz.web.active-channel"),
+      ]),
+    );
+  }, [channelStorageKey, requestedChannel, workflowChannels]);
 
   React.useEffect(() => {
     if (
       channelId &&
       workflowChannels.some((channel) => channel.id === channelId)
     ) {
-      return;
+      localStorage.setItem(channelStorageKey, channelId);
     }
-    setChannelId(workflowChannels[0]?.id ?? "");
-  }, [channelId, workflowChannels]);
+  }, [channelId, channelStorageKey, workflowChannels]);
 
   const workflowsQuery = useQuery({
     queryKey: channelWorkflowsKey(channelId),
@@ -119,7 +141,10 @@ function WorkflowsPageContent({ viewerPubkey }: { viewerPubkey: string }) {
   );
 
   const createMutation = useMutation({
-    mutationFn: () => publishWorkflowDefinition({ channelId, yaml }),
+    mutationFn: () => {
+      validateBrowserWorkflowPublication(yaml);
+      return publishWorkflowDefinition({ channelId, yaml });
+    },
     onSuccess: (receipt) => {
       setWebhookSecret(receipt.webhookSecret ?? null);
       setNotice(

@@ -1,6 +1,5 @@
 import {
   Bot,
-  Check,
   ChevronRight,
   CirclePlus,
   Database,
@@ -17,6 +16,7 @@ import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
 import { cn } from "@/shared/lib/cn";
 import type { WorkspaceChannel, WorkspaceProfile } from "../workspace-api";
+import { groupWorkspaceAgentChannels } from "../workspace-agent-access-policy";
 import {
   agentAccessLabel as accessLabel,
   agentRoleLabel,
@@ -30,13 +30,11 @@ type AgentUpdate = {
 };
 
 type Props = {
-  activeChannel: WorkspaceChannel | null;
   agents: readonly WorkspaceProfile[];
   channels: readonly WorkspaceChannel[];
   canManage: boolean;
   busy?: boolean;
   error?: string | null;
-  onAddAgent: (agent: WorkspaceProfile) => void;
   onSetChannelAccess: (
     agent: WorkspaceProfile,
     channel: WorkspaceChannel,
@@ -49,13 +47,11 @@ type Props = {
 };
 
 export function WorkspaceAgents({
-  activeChannel,
   agents,
   channels,
   canManage,
   busy = false,
   error,
-  onAddAgent,
   onSetChannelAccess,
   onUpdateAgent,
 }: Props) {
@@ -155,13 +151,11 @@ export function WorkspaceAgents({
               />
             ) : (
               <AgentDetails
-                activeChannel={activeChannel}
                 agent={selected}
                 busy={busy}
                 canManage={canManage}
                 channels={channels}
                 error={error}
-                onAddAgent={onAddAgent}
                 onEdit={() => setEditing(true)}
                 onSetChannelAccess={onSetChannelAccess}
               />
@@ -200,28 +194,26 @@ export function WorkspaceAgents({
 }
 
 function AgentDetails({
-  activeChannel,
   agent,
   busy,
   canManage,
   channels,
   error,
-  onAddAgent,
   onEdit,
   onSetChannelAccess,
 }: {
-  activeChannel: WorkspaceChannel | null;
   agent: WorkspaceProfile;
   busy: boolean;
   canManage: boolean;
   channels: readonly WorkspaceChannel[];
   error?: string | null;
-  onAddAgent: (agent: WorkspaceProfile) => void;
   onEdit: () => void;
   onSetChannelAccess: Props["onSetChannelAccess"];
 }) {
-  const isInActiveChannel = Boolean(
-    activeChannel?.memberPubkeys.includes(agent.pubkey),
+  const [channelSearch, setChannelSearch] = React.useState("");
+  const accessGroups = React.useMemo(
+    () => groupWorkspaceAgentChannels(channels, channelSearch),
+    [channelSearch, channels],
   );
   return (
     <div className="mx-auto max-w-2xl">
@@ -282,27 +274,6 @@ function AgentDetails({
         </p>
       </section>
 
-      {activeChannel && agent.accessTier !== "personal" ? (
-        <div className="mt-6 rounded-xl border border-black/8 bg-black/2 p-4 dark:border-white/8 dark:bg-white/3">
-          <p className="text-sm font-medium">Current channel</p>
-          <p className="mt-1 text-xs text-black/45 dark:text-white/40">
-            {isInActiveChannel
-              ? `${agent.name} can participate in #${activeChannel.name}.`
-              : `${agent.name} does not have access to #${activeChannel.name}.`}
-          </p>
-          {!isInActiveChannel ? (
-            <Button
-              className="mt-3"
-              disabled={busy}
-              size="sm"
-              onClick={() => onAddAgent(agent)}
-            >
-              <Check /> Add to #{activeChannel.name}
-            </Button>
-          ) : null}
-        </div>
-      ) : null}
-
       <section className="mt-6 border-t border-black/8 pt-5 dark:border-white/8">
         <div className="flex items-center gap-2">
           <LockKeyhole className="size-4 text-black/40 dark:text-white/35" />
@@ -310,37 +281,76 @@ function AgentDetails({
             Channel access
           </h3>
         </div>
-        <div className="mt-3 divide-y divide-black/6 overflow-hidden rounded-xl border border-black/8 dark:divide-white/6 dark:border-white/8">
-          {channels.map((channel) => {
-            const enabled = channel.memberPubkeys.includes(agent.pubkey);
-            return (
-              <label
-                className="flex items-center gap-3 px-3 py-2.5"
-                key={channel.id}
-              >
-                <span className="min-w-0 flex-1 truncate text-sm">
-                  #{channel.name}
-                </span>
-                <input
-                  aria-label={`${channel.name} access for ${agent.name}`}
-                  checked={enabled}
-                  className="size-4 accent-black dark:accent-white"
-                  disabled={
-                    !canManage || busy || agent.accessTier === "personal"
-                  }
-                  type="checkbox"
-                  onChange={(event) =>
-                    void onSetChannelAccess(
-                      agent,
-                      channel,
-                      event.target.checked,
-                    )
-                  }
-                />
-              </label>
-            );
-          })}
-        </div>
+        <p className="mt-2 text-xs leading-5 text-black/45 dark:text-white/40">
+          Membership is shared with the channel catalog. Search by channel,
+          description, or catalog section.
+        </p>
+        <Input
+          aria-label={`Find a channel for ${agent.name}`}
+          className="mt-3"
+          placeholder="Find a channel"
+          type="search"
+          value={channelSearch}
+          onChange={(event) => setChannelSearch(event.target.value)}
+        />
+        {agent.accessTier === "personal" ? (
+          <p className="mt-3 rounded-xl border border-black/8 bg-black/2 p-3 text-xs leading-5 text-black/50 dark:border-white/8 dark:bg-white/3 dark:text-white/45">
+            Personal agents are private to their owner, so their channel access
+            cannot be changed here.
+          </p>
+        ) : accessGroups.length ? (
+          <div className="mt-3 space-y-4">
+            {accessGroups.map((group) => (
+              <section key={group.label}>
+                <h4 className="px-1 text-xs font-semibold text-black/50 dark:text-white/45">
+                  {group.label}
+                </h4>
+                <div className="mt-1 divide-y divide-black/6 overflow-hidden rounded-xl border border-black/8 dark:divide-white/6 dark:border-white/8">
+                  {group.channels.map((channel) => {
+                    const enabled = channel.memberPubkeys.includes(
+                      agent.pubkey,
+                    );
+                    return (
+                      <label
+                        className="flex items-center gap-3 px-3 py-2.5"
+                        key={channel.id}
+                      >
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-sm">
+                            #{channel.name}
+                          </span>
+                          {channel.about ? (
+                            <span className="mt-0.5 block truncate text-xs text-black/40 dark:text-white/35">
+                              {channel.about}
+                            </span>
+                          ) : null}
+                        </span>
+                        <input
+                          aria-label={`${channel.name} access for ${agent.name}`}
+                          checked={enabled}
+                          className="size-4 accent-black dark:accent-white"
+                          disabled={!canManage || busy}
+                          type="checkbox"
+                          onChange={(event) =>
+                            void onSetChannelAccess(
+                              agent,
+                              channel,
+                              event.target.checked,
+                            )
+                          }
+                        />
+                      </label>
+                    );
+                  })}
+                </div>
+              </section>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-3 rounded-xl border border-dashed border-black/10 p-4 text-sm text-black/45 dark:border-white/10 dark:text-white/40">
+            No channels match “{channelSearch.trim()}”.
+          </p>
+        )}
         {error ? (
           <p className="mt-3 text-xs text-red-600 dark:text-red-400">{error}</p>
         ) : null}

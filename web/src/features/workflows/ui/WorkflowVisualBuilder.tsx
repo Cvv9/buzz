@@ -27,20 +27,20 @@ import type {
   WorkflowStep,
   WorkflowTrigger,
 } from "../workflow-policy";
-import { parseWorkflowDefinition } from "../workflow-policy";
-
-type BuilderNodeKind =
-  | "agent_task"
-  | "web_search"
-  | "library_tool"
-  | "send_message"
-  | "request_approval"
-  | "call_webhook"
-  | "delay";
+import {
+  parseWorkflowDefinition,
+  validateBrowserWorkflowPublication,
+} from "../workflow-policy";
+import {
+  agentsForWorkflowNode,
+  publishedAgentResources,
+  type WorkflowBuilderNodeKind,
+  workflowNodeUnavailableReason,
+} from "../workflow-builder-policy";
 
 type BuilderStep = {
   id: string;
-  kind: BuilderNodeKind;
+  kind: WorkflowBuilderNodeKind;
   name: string;
   condition: string;
   agent: string;
@@ -60,7 +60,7 @@ export type WorkflowBuilderState = {
 };
 
 const NODE_LIBRARY: Array<{
-  kind: BuilderNodeKind;
+  kind: WorkflowBuilderNodeKind;
   label: string;
   description: string;
   icon: React.ComponentType<{ className?: string }>;
@@ -118,7 +118,10 @@ const TRIGGERS: Array<{ value: WorkflowTrigger["on"]; label: string }> = [
   { value: "webhook", label: "A webhook arrives" },
 ];
 
-function nextId(kind: BuilderNodeKind, steps: readonly BuilderStep[]): string {
+function nextId(
+  kind: WorkflowBuilderNodeKind,
+  steps: readonly BuilderStep[],
+): string {
   const base = kind.replace(/[^a-z0-9_]/g, "_");
   let index = 1;
   while (steps.some((step) => step.id === `${base}_${index}`)) index += 1;
@@ -126,17 +129,18 @@ function nextId(kind: BuilderNodeKind, steps: readonly BuilderStep[]): string {
 }
 
 function createStep(
-  kind: BuilderNodeKind,
+  kind: WorkflowBuilderNodeKind,
   steps: readonly BuilderStep[],
   agents: readonly WorkspaceProfile[],
 ): BuilderStep {
   const definition = NODE_LIBRARY.find((node) => node.kind === kind);
+  const eligibleAgents = agentsForWorkflowNode(agents, kind);
   return {
     id: nextId(kind, steps),
     kind,
     name: definition?.label ?? "Workflow step",
     condition: "",
-    agent: agents[0]?.name ?? "",
+    agent: eligibleAgents[0]?.name ?? "",
     prompt: kind === "send_message" ? "Workflow received a message" : "",
     tool: "",
     url: "https://",
@@ -322,10 +326,21 @@ export function WorkflowVisualBuilder({
   const [validationError, setValidationError] = React.useState<string | null>(
     null,
   );
-  const [draggedKind, setDraggedKind] = React.useState<BuilderNodeKind | null>(
-    null,
-  );
+  const [draggedKind, setDraggedKind] =
+    React.useState<WorkflowBuilderNodeKind | null>(null);
   const selected = state.steps.find((step) => step.id === selectedId) ?? null;
+  const eligibleAgents = selected
+    ? agentsForWorkflowNode(agents, selected.kind)
+    : [];
+  const selectedAgent = selected?.agent
+    ? (agents.find((agent) => agent.name === selected.agent) ?? null)
+    : null;
+  const selectedAgentResources = selectedAgent
+    ? publishedAgentResources(selectedAgent)
+    : [];
+  const selectedNodeUnavailableReason = selected
+    ? workflowNodeUnavailableReason(selected.kind, agents)
+    : null;
 
   const commit = React.useCallback(
     (next: WorkflowBuilderState) => {
@@ -349,7 +364,8 @@ export function WorkflowVisualBuilder({
     commit(defaultState(agents));
   }, [agents, commit, yaml]);
 
-  const addNode = (kind: BuilderNodeKind) => {
+  const addNode = (kind: WorkflowBuilderNodeKind) => {
+    if (workflowNodeUnavailableReason(kind, agents)) return;
     const node = createStep(kind, state.steps, agents);
     commit({ ...state, steps: [...state.steps, node] });
     setSelectedId(node.id);
@@ -381,8 +397,9 @@ export function WorkflowVisualBuilder({
         <div>
           <h2 className="font-semibold">Workflow builder</h2>
           <p className="mt-1 text-sm text-muted-foreground">
-            Connect a trigger to agent tasks and actions. Buzz compiles the flow
-            to signed, relay-validated YAML when you save.
+            Connect a trigger to a typed, linear sequence of agent tasks and
+            actions. Buzz compiles the flow to signed, relay-validated YAML when
+            you save. Branches and parallel paths need a relay schema upgrade.
           </p>
         </div>
         <Button
@@ -432,20 +449,31 @@ export function WorkflowVisualBuilder({
           <aside className="border-b border-border bg-muted/20 p-4 lg:border-r lg:border-b-0">
             <p className="text-sm font-semibold">Nodes</p>
             <p className="mt-1 text-xs leading-5 text-muted-foreground">
-              Drag a node into the flow, or click to add it.
+              Drag a supported node into the flow, or click to add it. Agent
+              nodes use only resources their runtime has published.
             </p>
             <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-1">
               {NODE_LIBRARY.map((node) => {
                 const Icon = node.icon;
+                const unavailableReason = workflowNodeUnavailableReason(
+                  node.kind,
+                  agents,
+                );
                 return (
                   <button
-                    className="flex items-start gap-3 rounded-xl border border-border bg-background p-3 text-left transition-colors hover:border-primary/45 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    draggable
+                    aria-description={unavailableReason ?? undefined}
+                    className="flex items-start gap-3 rounded-xl border border-border bg-background p-3 text-left transition-colors hover:border-primary/45 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-55"
+                    data-testid={`workflow-node-${node.kind}`}
+                    disabled={Boolean(unavailableReason)}
+                    draggable={!unavailableReason}
                     key={node.kind}
+                    title={unavailableReason ?? undefined}
                     type="button"
                     onClick={() => addNode(node.kind)}
                     onDragEnd={() => setDraggedKind(null)}
-                    onDragStart={() => setDraggedKind(node.kind)}
+                    onDragStart={() => {
+                      if (!unavailableReason) setDraggedKind(node.kind);
+                    }}
                   >
                     <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-primary/12 text-primary">
                       <Icon className="size-4" />
@@ -455,7 +483,7 @@ export function WorkflowVisualBuilder({
                         {node.label}
                       </span>
                       <span className="mt-0.5 block text-xs leading-4 text-muted-foreground">
-                        {node.description}
+                        {unavailableReason ?? node.description}
                       </span>
                     </span>
                   </button>
@@ -618,7 +646,15 @@ export function WorkflowVisualBuilder({
                       }
                     >
                       <option value="">Choose an agent</option>
-                      {agents.map((agent) => (
+                      {selected.agent &&
+                      !eligibleAgents.some(
+                        (agent) => agent.name === selected.agent,
+                      ) ? (
+                        <option disabled value={selected.agent}>
+                          {selected.agent} (resource unavailable)
+                        </option>
+                      ) : null}
+                      {eligibleAgents.map((agent) => (
                         <option key={agent.pubkey} value={agent.name}>
                           {agent.name}
                         </option>
@@ -628,14 +664,28 @@ export function WorkflowVisualBuilder({
                 ) : null}
                 {selected.kind === "library_tool" ? (
                   <Field label="Tool or skill name">
-                    <Input
-                      placeholder="e.g. company knowledge, GitHub, browser"
+                    <select
+                      aria-label="Tool or skill name"
+                      className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                      disabled={!selectedAgentResources.length}
                       value={selected.tool}
                       onChange={(event) =>
                         updateSelected({ tool: event.target.value })
                       }
-                    />
+                    >
+                      <option value="">Choose a connected resource</option>
+                      {selectedAgentResources.map((resource) => (
+                        <option key={resource} value={resource}>
+                          {resource}
+                        </option>
+                      ))}
+                    </select>
                   </Field>
+                ) : null}
+                {selectedNodeUnavailableReason ? (
+                  <p className="rounded-lg border border-amber-500/30 bg-amber-500/8 px-3 py-2 text-xs leading-5 text-amber-800 dark:text-amber-200">
+                    {selectedNodeUnavailableReason}
+                  </p>
                 ) : null}
                 {selected.kind === "call_webhook" ? (
                   <Field label="HTTPS endpoint">
@@ -779,7 +829,7 @@ export function WorkflowVisualBuilder({
             type="button"
             onClick={() => {
               try {
-                parseWorkflowDefinition(yaml);
+                validateBrowserWorkflowPublication(yaml);
                 setValidationError(null);
                 onSave();
               } catch (nextError) {
@@ -832,7 +882,9 @@ function InlineError({ error }: { error: unknown }) {
     <p className="mt-4 text-sm text-destructive" role="alert">
       {error instanceof Error
         ? error.message
-        : "The relay rejected this change."}
+        : typeof error === "string"
+          ? error
+          : "The relay rejected this change."}
     </p>
   );
 }

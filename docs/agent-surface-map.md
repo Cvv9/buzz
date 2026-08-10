@@ -36,7 +36,7 @@ historical event.
 | Team definition | kind `30176` (`KIND_TEAM`) | Owner | Owner-private grouping of persona ids. |
 | Managed-agent projection | kind `30177` (`KIND_MANAGED_AGENT`) | Owner | Public, secret-free managed-agent projection keyed by agent pubkey. Also supports the namespaced compatibility form `hosted-agent:<pubkey>` on older relays. |
 | Team catalog | kind `30178` (`KIND_TEAM_CATALOG`) | Owner | Shareable team projection with embedded public persona projections. |
-| Hosted admin override | kind `30180` (`KIND_HOSTED_AGENT_CONFIG`) | Community owner/admin or declared agent owner | Public, secret-free hosted name, avatar, and desired model. Runtime-authored kind `10100` remains the source for a description. Exact schema and matching `d`/`agent_pubkey` are required; newest authorized `(created_at, event_id)` head wins over kind `10100` and kind `0`. Kind `30179` is exclusively the encrypted, author-only managed-agent aggregate. |
+| Hosted admin override | kind `30180` (`KIND_HOSTED_AGENT_CONFIG`) | Community owner/admin or declared agent owner | Public, secret-free hosted name, avatar, and desired model. Runtime-authored kind `10100` remains the source for a description and aliases. Its exact v1 schema accepts only `schema`, `agent_pubkey`, `name`, `avatar_url`, and `model`; a browser must never add a role, alias, or summary field to this event. Newest authorized `(created_at, event_id)` head wins over kind `10100` and kind `0`. Kind `30179` is exclusively the encrypted, author-only managed-agent aggregate. |
 | Channel membership | NIP-29 membership events; channel state uses `h` tags, membership addressables use `d` tags | Channel owner/admin | Determines whether an agent is already in a channel. It does not determine whether a shared agent is discoverable before its first invitation. |
 | Channel catalog section | Relay `channels.catalog_section`, emitted as kind `39000` `catalog_section` tag | Channel owner/admin or community owner/admin via kind `9007`/`9002` | Shared web/desktop organization. It is not a local sidebar preference. An empty value explicitly clears the section. |
 | Agent channel-add admission | Community-scoped `users.agent_owner_pubkey` plus `users.channel_add_policy` | Relay-authenticated agent or root operator | Owner mapping is immutable. `buzz-admin set-agent-owner` atomically ensures both principals, binds the owner, and sets `owner_only`; it never opens an `anyone` window. |
@@ -53,6 +53,7 @@ historical event.
 | Hosted model options | Signed `models` catalog from kind `10100`; never a frontend provider/model table. |
 | Hosted selected model | Authorized kind `30180` desired model. A live save also sends observer `switch_model` to known agent channels. |
 | Hosted resources | Signed kind `10100` `resources` list published by the runtime. It is descriptive metadata only; kind `30180` and browser UI cannot grant external credentials. Buzz channel access is enforced separately through NIP-29 membership. |
+| Hosted role/summary | The first sentence of signed kind `10100` `about`, then a signed `aliases` entry as a presentation fallback. Kind `30180` deliberately cannot override either field. Correct a stale or incorrect role by republishing the hosted runtime directory entry; do not add a browser-only override. |
 | Managed model options | Rust `KnownAcpRuntime` capability catalog and live discovery. Frontend fields are projected through `agentConfigCore.ts`. |
 | Discovery/access | `audience` and `accessTier` are authoritative. `shared/community` is community-discoverable before channel membership. `personal/admin` is restricted to its owner. Legacy records without those fields fall back to `respondTo` and its allowlist. Desktop policy: `relayAgentIsSharedWithUser`. |
 | Channel invocation | Mention send flow adds an eligible missing agent with role `bot`, then sends a message carrying its `p` tag. Other users' private agents must not be suggested or added. |
@@ -96,11 +97,15 @@ Primary files:
 3. `list_relay_agents` and web `listAgents` select the newest authorized head
    and merge it onto kind `10100`.
 4. The relay-agent query is invalidated/refetched.
-5. If a model was selected, the desktop sends `switch_model` control to every
+5. The web editor intentionally exposes only name, picture, and desired model.
+   It cannot edit a hosted agent's role or summary: the relay rejects any extra
+   `30180` JSON key, and kind `10100` remains runtime-authored. Correct that
+   source and let the signed directory refresh both clients.
+6. If a model was selected, the desktop sends `switch_model` control to every
    known channel for that agent. Web exposes only models advertised by the
    signed runtime catalog and persists the desired selection; it does not
    claim that a presentation event can install a provider or grant credentials.
-6. Rosters, profiles, search, mentions, messages, and Inbox resolve the merged
+7. Rosters, profiles, search, mentions, messages, and Inbox resolve the merged
    name/avatar/model by pubkey.
 
 Migration: historic `30179` documents are intentionally not read or migrated,
@@ -287,6 +292,21 @@ and `profileTab`. Profile views are parsed centrally by
 - `/` — workspace shell. Its internal state views are `channel`, `inbox`,
   `alerts`, and `agents`; these are not separate URLs.
 - `/invite/$code`
+- `/messages/new` — direct-message recipient and agent discovery.
+- `/messages/$channelId` — direct-message timeline; agent-authored messages use
+  the same profile, directory, mention, and workflow-attribution contracts as
+  channel messages.
+- `/channels/$channelId/posts` — channel forum index with agent-authored posts,
+  current profile presentation, mentions, reactions, and reminder actions.
+- `/channels/$channelId/posts/$postId` — forum post and comment detail using
+  the same author/profile projection as the channel timeline.
+- `/reminders` — encrypted reminders can link back to agent-authored messages.
+- `/profiles/$pubkey` — person or agent profile and status presentation.
+- `/pulse` — bounded channel activity that can contain agent authors.
+- `/settings` — browser-relevant identity, appearance, notification, agent,
+  archive, pairing, and management settings.
+- `/custom-emoji` — identity-owned emoji sets used by messages and reactions.
+- `/search` — message and profile search results can contain agent identities.
 - `/repos`
 - `/repos/$repoId`
 - `/repos/$repoId/blob/$`
@@ -299,6 +319,12 @@ and `profileTab`. Profile views are parsed centrally by
 - `/workflows` — browser workflow definition list/create and approval queue.
 - `/workflows/$workflowId` — browser workflow definition, manual command, and
   event-trace view.
+
+Relay-generated workflow messages remain signed by the relay key but carry the
+workflow owner's pubkey in `actor`, the stable workflow UUID in
+`buzz:workflow`, and the trusted display name in `workflow-name`. Web clients
+must present these as workflow automation, not as an unnamed relay user; the
+signing pubkey remains authoritative for edit/delete ownership checks.
 - `/channel-state` — browser-local drafts plus encrypted relay/identity-scoped
   channel mute/star state; accepts `channel` and optional `thread` search keys.
 - `/moderation` — NIP-98-authorized moderator reports/restrictions/audit view.
@@ -313,8 +339,11 @@ and `profileTab`. Profile views are parsed centrally by
   Archive records are never a relay source of truth and exclude private/decrypted
   payloads.
 - `/pairing` — user-gesture-only NIP-AB browser pairing using the relay's
-  advertised sidecar and kind `24134`; ephemeral session material and recovered
-  key payloads are memory-only.
+  advertised sidecar and kind `24134`; source devices render the same
+  short-lived URI as a QR code, while target devices may use a capability-gated
+  camera scanner or the manual URI field. QR camera streams, ephemeral session
+  material, and recovered key payloads are memory-only and stop/clear on scan,
+  cancel, timeout, or route exit.
 - `/preferences` — relay+identity-scoped browser-only notification and
   accessibility settings. It does not represent a relay setting or desktop
   system preference.

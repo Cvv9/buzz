@@ -1,7 +1,12 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { listWorkspaceCommunityMembers } from "@/features/workspace/workspace-api";
+import {
+  listProfiles,
+  listWorkspaceCommunityMembers,
+} from "@/features/workspace/workspace-api";
 import { useWorkspaceIdentity } from "@/features/workspace/useWorkspaceIdentity";
+import { BrowserSettingsBreadcrumb } from "@/features/settings/ui/BrowserSettingsBreadcrumb";
+import { truncatePubkey } from "@/shared/lib/pubkey";
 import { Button } from "@/shared/ui/button";
 import {
   listArchivedIdentitySnapshot,
@@ -26,6 +31,17 @@ export function IdentityArchivePage() {
   const role = membersQuery.data?.find(
     (member) => member.pubkey === identity?.pubkey.toLowerCase(),
   )?.role;
+  const memberPubkeys = React.useMemo(
+    () => membersQuery.data?.map((member) => member.pubkey) ?? [],
+    [membersQuery.data],
+  );
+  const profilesQuery = useQuery({
+    queryKey: ["identity-archive-profiles", memberPubkeys.sort().join(",")],
+    queryFn: () => listProfiles(memberPubkeys),
+    enabled: memberPubkeys.length > 0,
+  });
+  const profileName = (pubkey: string) =>
+    profilesQuery.data?.get(pubkey)?.name ?? truncatePubkey(pubkey);
   const snapshotQuery = useQuery({
     queryKey: ["archived-identities"],
     queryFn: listArchivedIdentitySnapshot,
@@ -74,6 +90,7 @@ export function IdentityArchivePage() {
   };
   return (
     <main className="mx-auto w-full max-w-3xl p-4 sm:p-7">
+      <BrowserSettingsBreadcrumb current="Identity archive" />
       <h1 className="text-2xl font-semibold">Identity archive</h1>
       <p className="mt-1 text-sm text-muted-foreground">
         This relay-signed list is presentation state, not a ban or a
@@ -87,9 +104,24 @@ export function IdentityArchivePage() {
         <input
           className="mt-1 w-full rounded-md border border-input bg-background px-3 py-2 text-sm"
           id="archive-pubkey"
+          list="archive-community-members"
+          placeholder="Choose a community member or paste a public key"
           value={targetPubkey}
           onChange={(event) => setTargetPubkey(event.target.value)}
         />
+        <datalist id="archive-community-members">
+          {membersQuery.data?.map((member) => (
+            <option
+              key={member.pubkey}
+              label={`${profileName(member.pubkey)} · ${truncatePubkey(member.pubkey)}`}
+              value={member.pubkey}
+            />
+          ))}
+        </datalist>
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">
+          Community members appear by name; pasting another public key remains
+          available for relay-authorized archive requests.
+        </p>
         <label
           className="mt-3 block text-sm font-medium"
           htmlFor="archive-reason"
@@ -130,7 +162,10 @@ export function IdentityArchivePage() {
         <ul className="mt-3 space-y-2 text-sm">
           {[...(snapshotQuery.data?.archived ?? [])].sort().map((pubkey) => (
             <li className="rounded-md bg-muted p-2" key={pubkey}>
-              <code>{pubkey}</code>
+              <span className="font-medium">{profileName(pubkey)}</span>
+              <code className="ml-2 text-xs text-muted-foreground">
+                {truncatePubkey(pubkey)}
+              </code>
               {pubkey === identity?.pubkey.toLowerCase() ? (
                 <span className="ml-2 font-medium text-foreground">(you)</span>
               ) : null}

@@ -107,6 +107,7 @@ type WorkspaceMessageRowProps = {
   replyCount: number;
   reactionActorName: (pubkey: string) => string;
   threadExpanded?: boolean;
+  workflowName?: string;
   onOpenThreadPanel: () => void;
   onReply: () => void;
   onToggleInlineThread: () => void;
@@ -125,6 +126,7 @@ export function WorkspaceMessageRow({
   replyCount,
   reactionActorName,
   threadExpanded,
+  workflowName,
   onOpenThreadPanel,
   onReply,
   onToggleInlineThread,
@@ -144,6 +146,11 @@ export function WorkspaceMessageRow({
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline gap-2">
           <span className="truncate text-sm font-semibold">{profile.name}</span>
+          {workflowName ? (
+            <span className="rounded bg-accent px-1.5 py-0.5 text-xs font-medium text-accent-foreground">
+              Workflow
+            </span>
+          ) : null}
           {status ? (
             <span
               aria-label={

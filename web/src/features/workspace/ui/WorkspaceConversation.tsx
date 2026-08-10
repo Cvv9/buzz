@@ -21,6 +21,29 @@ import type {
   WorkspaceProfile,
 } from "@/features/workspace/workspace-api";
 import type { TimelineMessage } from "../workspace-messages";
+import { workflowMessagePresentation } from "../workspace-message-presentation";
+
+function messagePresentation(
+  message: TimelineMessage,
+  profileFor: (pubkey: string) => WorkspaceProfile,
+): { profile: WorkspaceProfile; statusPubkey: string; workflowName?: string } {
+  const workflow = workflowMessagePresentation(message);
+  if (!workflow) {
+    return {
+      profile: profileFor(message.pubkey),
+      statusPubkey: message.pubkey,
+    };
+  }
+  return {
+    profile: {
+      pubkey: message.pubkey,
+      name: workflow.workflowName,
+      about: `Relay workflow owned by ${profileFor(workflow.actorPubkey).name}`,
+    },
+    statusPubkey: workflow.actorPubkey,
+    workflowName: workflow.workflowName,
+  };
+}
 
 type WorkspaceConversationProps = {
   activeChannel: WorkspaceChannel | null;
@@ -243,14 +266,20 @@ export function WorkspaceConversation({
               const replies = repliesByThread.get(message.id) ?? [];
               const inlineExpanded = expandedThreadIds.has(message.id);
               const replyTarget = replies[replies.length - 1] ?? message;
+              const presentation = messagePresentation(message, profileFor);
               return (
                 <div key={message.id}>
                   <WorkspaceMessageRow
                     customEmoji={customEmoji}
                     message={message}
                     ownPubkey={ownPubkey}
-                    profile={profileFor(message.pubkey)}
-                    status={statusFor(message.pubkey)}
+                    profile={presentation.profile}
+                    status={
+                      presentation.workflowName
+                        ? null
+                        : statusFor(presentation.statusPubkey)
+                    }
+                    workflowName={presentation.workflowName}
                     reactions={reactions?.get(message.id) ?? []}
                     replyCount={replyCounts.get(message.id) ?? 0}
                     reactionActorName={reactionActorName}
@@ -270,7 +299,7 @@ export function WorkspaceConversation({
                   />
                   {inlineExpanded ? (
                     <section
-                      aria-label={`Replies to ${profileFor(message.pubkey).name}`}
+                      aria-label={`Replies to ${presentation.profile.name}`}
                       className="mb-2 ml-10 border-l border-black/10 pl-2 dark:border-white/10 sm:ml-14 sm:pl-3"
                       data-testid={`inline-thread-${message.id}`}
                       id={`inline-thread-${message.id}`}
@@ -279,25 +308,38 @@ export function WorkspaceConversation({
                         {replies.length}{" "}
                         {replies.length === 1 ? "reply" : "replies"}
                       </p>
-                      {replies.map((reply) => (
-                        <WorkspaceMessageRow
-                          customEmoji={customEmoji}
-                          key={reply.id}
-                          message={reply}
-                          ownPubkey={ownPubkey}
-                          profile={profileFor(reply.pubkey)}
-                          status={statusFor(reply.pubkey)}
-                          reactions={reactions?.get(reply.id) ?? []}
-                          replyCount={0}
-                          reactionActorName={reactionActorName}
-                          onDelete={() => onDeleteMessage(reply)}
-                          onEdit={() => onEditMessage(reply)}
-                          onOpenThreadPanel={() => onSetThreadRoot(message.id)}
-                          onReact={(emoji) => onToggleReaction(reply, emoji)}
-                          onReply={() => onReply(message.id)}
-                          onToggleInlineThread={() => {}}
-                        />
-                      ))}
+                      {replies.map((reply) => {
+                        const replyPresentation = messagePresentation(
+                          reply,
+                          profileFor,
+                        );
+                        return (
+                          <WorkspaceMessageRow
+                            customEmoji={customEmoji}
+                            key={reply.id}
+                            message={reply}
+                            ownPubkey={ownPubkey}
+                            profile={replyPresentation.profile}
+                            status={
+                              replyPresentation.workflowName
+                                ? null
+                                : statusFor(replyPresentation.statusPubkey)
+                            }
+                            workflowName={replyPresentation.workflowName}
+                            reactions={reactions?.get(reply.id) ?? []}
+                            replyCount={0}
+                            reactionActorName={reactionActorName}
+                            onDelete={() => onDeleteMessage(reply)}
+                            onEdit={() => onEditMessage(reply)}
+                            onOpenThreadPanel={() =>
+                              onSetThreadRoot(message.id)
+                            }
+                            onReact={(emoji) => onToggleReaction(reply, emoji)}
+                            onReply={() => onReply(message.id)}
+                            onToggleInlineThread={() => {}}
+                          />
+                        );
+                      })}
                       {activeChannel ? (
                         <WorkspaceComposer
                           agents={agents}
@@ -382,25 +424,33 @@ export function WorkspaceConversation({
             </div>
           </header>
           <div className="min-h-0 flex-1 overflow-y-auto py-4">
-            {[threadRoot, ...threadReplies].map((message) => (
-              <WorkspaceMessageRow
-                customEmoji={customEmoji}
-                key={message.id}
-                message={message}
-                ownPubkey={ownPubkey}
-                profile={profileFor(message.pubkey)}
-                status={statusFor(message.pubkey)}
-                reactions={reactions?.get(message.id) ?? []}
-                replyCount={0}
-                reactionActorName={reactionActorName}
-                onDelete={() => onDeleteMessage(message)}
-                onEdit={() => onEditMessage(message)}
-                onOpenThreadPanel={() => {}}
-                onReact={(emoji) => onToggleReaction(message, emoji)}
-                onReply={() => {}}
-                onToggleInlineThread={() => {}}
-              />
-            ))}
+            {[threadRoot, ...threadReplies].map((message) => {
+              const presentation = messagePresentation(message, profileFor);
+              return (
+                <WorkspaceMessageRow
+                  customEmoji={customEmoji}
+                  key={message.id}
+                  message={message}
+                  ownPubkey={ownPubkey}
+                  profile={presentation.profile}
+                  status={
+                    presentation.workflowName
+                      ? null
+                      : statusFor(presentation.statusPubkey)
+                  }
+                  workflowName={presentation.workflowName}
+                  reactions={reactions?.get(message.id) ?? []}
+                  replyCount={0}
+                  reactionActorName={reactionActorName}
+                  onDelete={() => onDeleteMessage(message)}
+                  onEdit={() => onEditMessage(message)}
+                  onOpenThreadPanel={() => {}}
+                  onReact={(emoji) => onToggleReaction(message, emoji)}
+                  onReply={() => {}}
+                  onToggleInlineThread={() => {}}
+                />
+              );
+            })}
           </div>
           {activeChannel ? (
             <WorkspaceComposer

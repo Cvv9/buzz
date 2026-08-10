@@ -58,6 +58,9 @@ pub trait ActionSink: Send + Sync {
     /// - `author_pubkey`: hex-encoded pubkey of the workflow owner (used for
     ///   the relay-signed `actor` attribution tag; the relay keypair signs the
     ///   event). It is not an implicit mention recipient.
+    /// - `workflow_id` and `workflow_name`: trusted workflow metadata attached
+    ///   to the relay-signed event so clients can identify the automation
+    ///   without presenting the relay signing key as a person.
     ///
     /// Returns the event ID hex string on success.
     fn send_message(
@@ -66,5 +69,7 @@ pub trait ActionSink: Send + Sync {
         channel_id: &str,
         text: &str,
         author_pubkey: &str,
+        workflow_id: &str,
+        workflow_name: &str,
     ) -> Pin<Box<dyn Future<Output = Result<String, ActionSinkError>> + Send + '_>>;
 }

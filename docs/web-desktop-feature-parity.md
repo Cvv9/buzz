@@ -280,7 +280,11 @@ they must not make private `30179` payloads visible to browser readers.
 - **Web current state.** `/repos` reads NIP-34 heads and
   `web/src/features/repos/git-client.ts` clones/fetches shallow repos into
   LightningFS/IndexedDB with a NIP-98 auth header. It renders tree, README,
-  commits, blobs, safe raster previews, and sandboxed HTML behavior.
+  commits, blobs, safe raster previews, and sandboxed HTML behavior. Its
+  loading, empty, error, and populated states use the same tokenized
+  Workspace/Repositories/Projects navigation shell as the project collection;
+  desktop/CLI-only publishing is labelled rather than presented as a browser
+  action.
 - **Implementation tasks.** Preserve this as the web foundation. Project grouping,
   issues/PRs, and write operations are scoped separately below; do not replace
   the existing safe byte caps or SVG treatment.
@@ -290,7 +294,8 @@ they must not make private `30179` payloads visible to browser readers.
 - **Security/authorization.** Keep NIP-98 request URL/method binding, same-origin
   relay selection, binary/text/image size caps, and no active SVG rendering.
 - **Tests/dependencies.** Retain `web/tests/buzz-download.test.ts` and repo
-  E2E; add private-repo denial, ref-state update, malicious HTML/SVG, and cache
+  E2E, including empty and populated shell/navigation coverage; add
+  private-repo denial, ref-state update, malicious HTML/SVG, and cache
   isolation tests. **P1 / M.**
 
 ## Directly portable in browser
@@ -667,10 +672,15 @@ they must not make private `30179` payloads visible to browser readers.
 - **Web current state.** `/workflows` and `/workflows/$workflowId` list
   channel definitions, create/edit/delete owner definitions, toggle the portable
   YAML `enabled` flag, submit manual runs, and action any relay-delivered
-  approval request. The editor uses a strict browser schema parser; it rejects
-  malformed, duplicate-coordinate, or non-canonical-author event envelopes.
-  A webhook secret is shown only from the accepted event acknowledgement and is
-  never placed in URL, storage, or analytics.
+  approval request. The visual editor is a typed **linear** flow that compiles
+  to the existing YAML contract: web-search choices require a runtime-published
+  web resource and library-tool choices come from that agent's published
+  resource catalog. It remembers the most recently selected workflow channel
+  per identity and otherwise follows the active workspace channel, rather than
+  selecting an arbitrary catalog entry. The editor uses a strict browser schema
+  parser; it rejects malformed, duplicate-coordinate, or non-canonical-author
+  event envelopes. A webhook secret is shown only from the accepted event
+  acknowledgement and is never placed in URL, storage, or analytics.
 - **Remaining implementation limits.** The relay currently stores run history
   only in `workflow_runs`; it does not emit `46001`–`46007`, so the browser
   truthfully renders an unavailable trace rather than using a new endpoint.
@@ -680,6 +690,11 @@ they must not make private `30179` payloads visible to browser readers.
   a YAML `enabled: false` replacement disables automatic matching, while current
   manual trigger behavior remains server-controlled. Desktop Tauri run-history
   projection and local CLI/YAML-file affordances therefore remain desktop-only.
+  Buzz Web therefore disables the approval node and refuses to publish a YAML
+  replacement containing `request_approval`; it continues to parse those
+  historical definitions read-only. A true n8n-style graph (branching, joins,
+  parallel paths, and typed edges) is intentionally out of scope until the
+  canonical relay schema adds graph topology rather than overloading step order.
 - **Cache/realtime.** `['workflow-channel', channel]`,
   `['workflow-detail', id]`, `['workflow-trace', id]`, and
   `['workflow-approvals', viewer]` use explicit-kind queries and live
@@ -887,12 +902,17 @@ they must not make private `30179` payloads visible to browser readers.
   NIP-AB SAS derivation rather than a NIP-44 conversation key, validates relay
   URL/version/URI/message shape, and does not auto-import an identity. There is
   no browser filesystem/native keychain/system notification or Wake Lock
-  integration. Manual copy/paste is available; QR image rendering/camera scan,
-  Bunker/remote signer transfer, and background push remain unsupported.
+  integration. Source devices render the exact one-time URI as an in-page QR
+  image. Target devices expose camera scanning only when both `BarcodeDetector`
+  and `getUserMedia` are present; scanning is an explicit gesture, never joins
+  automatically, stops its tracks after a result/error/route cleanup, and shares
+  the two-minute cap. Manual copy/paste remains available on every browser.
+  Bunker/remote signer transfer and background push remain unsupported.
 - **Tests/dependencies.** Policy coverage asserts strict pairing URI/message
-  schemas and constant-time material comparison. Browser WebSocket/permission
-  E2E remains follow-up coverage because it needs a NIP-AB sidecar and browser
-  permission harness. **P2 / M (portable bounded foundation).**
+  schemas, constant-time material comparison, camera capability gating, and
+  camera-track cleanup after a scan. Browser E2E verifies a source QR is
+  rendered and that unsupported browsers keep the manual fallback. **P2 / M
+  (portable bounded foundation).**
 
 ## Needs new browser-safe/server architecture
 

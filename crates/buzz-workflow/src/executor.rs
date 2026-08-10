@@ -567,7 +567,14 @@ pub async fn dispatch_action(
 
             let event_id = engine
                 .action_sink()?
-                .send_message(community_id, &channel_id, text, &owner_pubkey_hex)
+                .send_message(
+                    community_id,
+                    &channel_id,
+                    text,
+                    &owner_pubkey_hex,
+                    &workflow.id.to_string(),
+                    &workflow.name,
+                )
                 .await
                 .map_err(WorkflowError::from)?;
 

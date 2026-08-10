@@ -39,7 +39,7 @@ test("workflow definitions, automatic dispatch toggle, runs, and approvals use r
     .getByRole("button", { name: /Search the web/ })
     .first()
     .click();
-  await page.getByLabel("Agent").selectOption({ label: "Workspace Agent 1" });
+  await page.getByLabel("Agent").selectOption({ label: "Workspace Agent 7" });
   await page
     .getByLabel("Instructions")
     .fill("Find the latest source-backed market signal for our launch.");
@@ -83,7 +83,7 @@ test("workflow definitions, automatic dispatch toggle, runs, and approvals use r
     enabled: true,
   });
   expect(savedWorkflowYaml).toContain(
-    "@Workspace Agent 1 Search the web using current, source-linked information.",
+    "@Workspace Agent 7 Search the web using current, source-linked information.",
   );
   await page.getByRole("link", { name: "New workflow" }).click();
   await expect(
@@ -178,4 +178,54 @@ test("workflow definitions, automatic dispatch toggle, runs, and approvals use r
       ),
     )
     .toMatchObject({ kind: 46030, tags: [["d", "e".repeat(64)]] });
+});
+
+test("workflow builder gates runtime resources and unavailable approval paths", async ({
+  page,
+}) => {
+  const secret = generateSecretKey();
+  const viewerPubkey = getPublicKey(secret);
+  await installWorkspaceRelayMock(page, viewerPubkey, {
+    workflowChannelId: "22222222-2222-4222-8222-222222222222",
+  });
+  await signIn(page, secret);
+  await expect(
+    page.getByRole("heading", { name: "Workflow builder" }),
+  ).toBeVisible();
+
+  await expect(
+    page.getByTestId("workflow-node-request_approval"),
+  ).toBeDisabled();
+  await page.getByRole("button", { name: /Search the web/ }).click();
+  await expect(page.getByLabel("Agent").locator("option")).toHaveText([
+    "Choose an agent",
+    "Workspace Agent 7",
+  ]);
+
+  await page.getByRole("button", { name: /Use a library tool/ }).click();
+  await expect(
+    page.getByLabel("Tool or skill name").locator("option"),
+  ).toHaveText([
+    "Choose a connected resource",
+    "Market Intelligence research",
+    "Public web sources",
+  ]);
+
+  await page.getByRole("button", { name: "View YAML" }).click();
+  await page.getByLabel("Workflow YAML").fill(`name: Approval gate
+trigger:
+  on: message_posted
+steps:
+  - id: request
+    action: request_approval
+    from: "@owner"
+    message: "Approve this change"
+`);
+  await expect(page.getByLabel("Workflow YAML")).toHaveValue(
+    /action: request_approval/,
+  );
+  await page.getByRole("button", { name: "Save workflow" }).click();
+  await expect(page.getByRole("alert")).toContainText(
+    "does not yet deliver approval requests end-to-end",
+  );
 });
