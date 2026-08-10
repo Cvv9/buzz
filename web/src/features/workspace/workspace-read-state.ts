@@ -365,6 +365,7 @@ export function deriveWorkspaceUnread(args: {
   }
   const unreadChannelIds = new Set<string>();
   const unreadChannelCounts = new Map<string, number>();
+  const firstUnreadMessageIds = new Map<string, string>();
   const inboxItems: WorkspaceInboxItem[] = [];
   const alertItems: WorkspaceInboxItem[] = [];
   for (const [channelId, events] of eventsByChannel) {
@@ -373,7 +374,12 @@ export function deriveWorkspaceUnread(args: {
       if (!isExternalMessage(event, pubkey)) continue;
       const isRead =
         event.created_at <= readMarkerForEvent(markers, channelId, event);
-      if (!isRead && isConversationalMessage(event)) unreadCount += 1;
+      if (!isRead && isConversationalMessage(event)) {
+        unreadCount += 1;
+        if (!firstUnreadMessageIds.has(channelId)) {
+          firstUnreadMessageIds.set(channelId, event.rootEventId ?? event.id);
+        }
+      }
       const category = categoryForMessage({
         event,
         participatedThreadRootIds,
@@ -418,6 +424,7 @@ export function deriveWorkspaceUnread(args: {
       (left, right) =>
         right.createdAt - left.createdAt || left.id.localeCompare(right.id),
     ),
+    firstUnreadMessageIds,
     unreadChannelCounts,
     unreadChannelIds,
   };
@@ -449,8 +456,13 @@ export function useWorkspaceReadState({
     ),
   );
   const publishTimerRef = React.useRef<number | null>(null);
+  const unreadAnchorIdsRef = React.useRef(new Map<string, string>());
+  const activeChannelIdRef = React.useRef(activeChannelId);
+  activeChannelIdRef.current = activeChannelId;
   const markersRef = React.useRef(markers);
   markersRef.current = markers;
+  const eventsByChannelRef = React.useRef(eventsByChannel);
+  eventsByChannelRef.current = eventsByChannel;
 
   React.useEffect(() => {
     if (!identityPubkey) return;
@@ -588,24 +600,23 @@ export function useWorkspaceReadState({
         if (existing.some((candidate) => candidate.id === event.id))
           return current;
         next.set(event.channelId, [...existing, event]);
+        eventsByChannelRef.current = next;
+        cachedReadStateByIdentity.set(cachedReadStateKey(identityPubkey), {
+          eventsByChannel: cloneEventsByChannel(next),
+          markers: new Map(markersRef.current),
+        });
         return next;
       });
-      if (
-        event.channelId !== activeChannelId ||
-        !isExternalMessage(event, identityPubkey)
-      )
-        return;
-      setMarkers((current) => {
-        const timestamp = Math.max(
-          current.get(event.channelId) ?? 0,
-          event.created_at,
-        );
-        const next = new Map(current).set(event.channelId, timestamp);
-        persistAndPublish(next);
-        return next;
-      });
+      if (isExternalMessage(event, identityPubkey)) {
+        setMarkers((current) => {
+          if (current.has(event.channelId)) return current;
+          const next = new Map(current).set(event.channelId, 0);
+          persistAndPublish(next);
+          return next;
+        });
+      }
     },
-    [activeChannelId, identityPubkey, persistAndPublish],
+    [identityPubkey, persistAndPublish],
   );
 
   React.useEffect(() => {
@@ -623,6 +634,8 @@ export function useWorkspaceReadState({
 
   const markChannelRead = React.useCallback(
     (channelId: string, timestamp?: number) => {
+      if (channelId !== activeChannelIdRef.current) return;
+      unreadAnchorIdsRef.current.delete(channelId);
       const observed = eventsByChannel.get(channelId) ?? [];
       const newest = observed.reduce(
         (latest, event) =>
@@ -642,28 +655,40 @@ export function useWorkspaceReadState({
     [eventsByChannel, identityPubkey, persistAndPublish],
   );
 
-  React.useEffect(() => {
-    if (!activeChannelId) return;
-    // Events can arrive through the shared channel subscription before the
-    // channel's message query resolves. Opening the channel must consume those
-    // already-observed messages as well, otherwise an unread badge survives
-    // until a later event happens to refresh the timeline.
-    markChannelRead(activeChannelId);
-  }, [activeChannelId, markChannelRead]);
-
-  React.useEffect(() => {
-    if (!activeChannelId || currentMessages.length === 0) return;
-    const newestExternal = currentMessages
-      .filter((message) => message.channelId === activeChannelId)
-      .reduce(
-        (latest, message) =>
-          isExternalMessage(message, identityPubkey ?? "")
-            ? Math.max(latest, message.created_at)
-            : latest,
-        0,
-      );
-    if (newestExternal > 0) markChannelRead(activeChannelId, newestExternal);
-  }, [activeChannelId, currentMessages, identityPubkey, markChannelRead]);
+  const firstUnreadMessageId = React.useMemo(() => {
+    if (!activeChannelId || !identityPubkey) return null;
+    const firstUnread = [
+      ...(eventsByChannel.get(activeChannelId) ?? []),
+      ...currentMessages,
+    ]
+      .filter(
+        (message, index, all) =>
+          all.findIndex((candidate) => candidate.id === message.id) === index,
+      )
+      .filter(
+        (message) =>
+          message.channelId === activeChannelId &&
+          isExternalMessage(message, identityPubkey) &&
+          isConversationalMessage(message) &&
+          message.created_at >
+            readMarkerForEvent(markers, activeChannelId, message),
+      )
+      .sort(
+        (left, right) =>
+          left.created_at - right.created_at || left.id.localeCompare(right.id),
+      )[0];
+    const candidateId = firstUnread?.rootEventId ?? firstUnread?.id ?? null;
+    if (candidateId && !unreadAnchorIdsRef.current.has(activeChannelId)) {
+      unreadAnchorIdsRef.current.set(activeChannelId, candidateId);
+    }
+    return unreadAnchorIdsRef.current.get(activeChannelId) ?? null;
+  }, [
+    activeChannelId,
+    currentMessages,
+    eventsByChannel,
+    identityPubkey,
+    markers,
+  ]);
 
   React.useEffect(
     () => () => {
@@ -758,9 +783,11 @@ export function useWorkspaceReadState({
     dismissAllInboxItems,
     dismissInboxItem,
     inboxItems: unread.inboxItems,
+    firstUnreadMessageIds: unread.firstUnreadMessageIds,
     markAllRead,
     markInboxItemRead,
     markChannelRead,
+    firstUnreadMessageId,
     recordIncomingMessage,
     unreadChannelCounts: unread.unreadChannelCounts,
     unreadChannelIds: unread.unreadChannelIds,

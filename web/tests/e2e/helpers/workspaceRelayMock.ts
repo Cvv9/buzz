@@ -477,6 +477,9 @@ export async function installWorkspaceRelayMock(
               ...seededSearchEvents.filter((candidate) =>
                 [9, 40002, 40003, 40099].includes(candidate.kind),
               ),
+              ...knownEvents().filter((candidate) =>
+                [9, 40002, 40003, 40099].includes(candidate.kind),
+              ),
             ];
             events = messageEvents.filter(
               (candidate) =>
@@ -656,6 +659,19 @@ export async function installWorkspaceRelayMock(
       window.WebSocket = MockWebSocket as unknown as typeof WebSocket;
       Object.assign(window, {
         __BUZZ_WEB_E2E_EMIT__: (relayEvent: ReturnType<typeof event>) => {
+          for (const socket of sockets) {
+            if (socket.readyState === MockWebSocket.OPEN) {
+              socket.emitRelayEvent(relayEvent);
+            }
+          }
+        },
+        __BUZZ_WEB_E2E_RECEIVE__: (relayEvent: ReturnType<typeof event>) => {
+          if (
+            !receivedEvents.some((candidate) => candidate.id === relayEvent.id)
+          ) {
+            receivedEvents.push(relayEvent);
+            persistReceivedEvents(receivedEvents);
+          }
           for (const socket of sockets) {
             if (socket.readyState === MockWebSocket.OPEN) {
               socket.emitRelayEvent(relayEvent);

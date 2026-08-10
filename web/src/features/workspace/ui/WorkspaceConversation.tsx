@@ -11,6 +11,7 @@ import {
   VolumeX,
   X,
 } from "lucide-react";
+import { useEffect, useRef } from "react";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 import { WorkspaceMessageRow } from "./WorkspaceMessageRow";
 import type { CustomEmoji } from "@/features/custom-emoji/custom-emoji-policy";
@@ -50,6 +51,7 @@ type WorkspaceConversationProps = {
   agents: WorkspaceProfile[];
   customEmoji: readonly CustomEmoji[];
   expandedThreadIds: Set<string>;
+  firstUnreadMessageId: string | null;
   hideDirectMessagePending: boolean;
   messagesPending: boolean;
   mutedChannelIds: Set<string>;
@@ -64,6 +66,7 @@ type WorkspaceConversationProps = {
   statusFor: (pubkey: string) => UserStatus | null;
   threadReplies: TimelineMessage[];
   threadRoot: TimelineMessage | null;
+  timelineQueryPending: boolean;
   topLevel: TimelineMessage[];
   typingNames: string[];
   profileFor: (pubkey: string) => WorkspaceProfile;
@@ -72,6 +75,7 @@ type WorkspaceConversationProps = {
   onDeleteMessage: (message: TimelineMessage) => void;
   onEditMessage: (message: TimelineMessage) => void;
   onHideDirectMessage: () => void;
+  onTimelineReady: (channelId: string) => void;
   onOpenNavigation: () => void;
   onOpenThreadPanel: (messageId: string) => void;
   onReply: (messageId: string) => void;
@@ -96,6 +100,7 @@ export function WorkspaceConversation({
   agents,
   customEmoji,
   expandedThreadIds,
+  firstUnreadMessageId,
   hideDirectMessagePending,
   messagesPending,
   mutedChannelIds,
@@ -110,6 +115,7 @@ export function WorkspaceConversation({
   statusFor,
   threadReplies,
   threadRoot,
+  timelineQueryPending,
   topLevel,
   typingNames,
   profileFor,
@@ -118,6 +124,7 @@ export function WorkspaceConversation({
   onDeleteMessage,
   onEditMessage,
   onHideDirectMessage,
+  onTimelineReady,
   onOpenNavigation,
   onOpenThreadPanel,
   onReply,
@@ -130,6 +137,52 @@ export function WorkspaceConversation({
   onToggleStar,
   onTyping,
 }: WorkspaceConversationProps) {
+  const timelineRef = useRef<HTMLDivElement>(null);
+  const anchoredChannelRef = useRef<string | null>(null);
+  const onTimelineReadyRef = useRef(onTimelineReady);
+  onTimelineReadyRef.current = onTimelineReady;
+
+  useEffect(() => {
+    const channelId = activeChannel?.id ?? null;
+    if (!channelId) {
+      anchoredChannelRef.current = null;
+      return;
+    }
+    if (anchoredChannelRef.current !== channelId) {
+      anchoredChannelRef.current = null;
+    }
+    if (anchoredChannelRef.current === channelId || timelineQueryPending)
+      return;
+    let secondFrame = 0;
+    const firstFrame = window.requestAnimationFrame(() => {
+      secondFrame = window.requestAnimationFrame(() => {
+        const timeline = timelineRef.current;
+        if (!timeline || activeChannel?.id !== channelId) return;
+        const unreadTarget = firstUnreadMessageId
+          ? timeline.querySelector<HTMLElement>(
+              `[data-message-id="${CSS.escape(firstUnreadMessageId)}"]`,
+            )
+          : null;
+        if (firstUnreadMessageId && !unreadTarget) return;
+        if (unreadTarget) {
+          timeline.scrollTop +=
+            unreadTarget.getBoundingClientRect().top -
+            timeline.getBoundingClientRect().top;
+        } else {
+          timeline.scrollTop = timeline.scrollHeight;
+        }
+        timeline.dataset.anchorApplied = unreadTarget ? "unread" : "latest";
+        timeline.dataset.anchorMessageId = firstUnreadMessageId ?? "";
+        anchoredChannelRef.current = channelId;
+        onTimelineReadyRef.current(channelId);
+      });
+    });
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame) window.cancelAnimationFrame(secondFrame);
+    };
+  }, [activeChannel?.id, firstUnreadMessageId, timelineQueryPending]);
+
   return (
     <>
       <section
@@ -248,7 +301,12 @@ export function WorkspaceConversation({
           ) : null}
         </header>
 
-        <div className="min-h-0 flex-1 overflow-y-auto py-4">
+        <div
+          className="min-h-0 flex-1 overflow-y-auto py-4"
+          data-first-unread-message-id={firstUnreadMessageId ?? ""}
+          data-testid="workspace-timeline"
+          ref={timelineRef}
+        >
           {messagesPending ? (
             <div className="space-y-4 px-6 py-4">
               {[0, 1, 2, 3].map((item) => (
@@ -268,7 +326,7 @@ export function WorkspaceConversation({
               const replyTarget = replies[replies.length - 1] ?? message;
               const presentation = messagePresentation(message, profileFor);
               return (
-                <div key={message.id}>
+                <div data-message-id={message.id} key={message.id}>
                   <WorkspaceMessageRow
                     customEmoji={customEmoji}
                     message={message}
