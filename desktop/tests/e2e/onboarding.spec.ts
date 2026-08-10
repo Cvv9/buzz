@@ -3178,6 +3178,10 @@ test("welcome-everywhere banner: X dismiss removes the guidance surface", async 
 
   await page.getByTestId("onboarding-display-name").fill("Morty QA");
   await completeProfileOnboarding(page);
+  await page.getByTestId("channel-welcome-everyone").click();
+  await expect(page.getByTestId("chat-title")).toContainText(
+    "welcome-everyone",
+  );
 
   const banner = page.getByTestId("welcome-composer-guide-banner");
   const guidanceLayer = page.getByTestId("welcome-composer-guidance-layer");
@@ -3204,6 +3208,10 @@ test("welcome-everywhere banner: dismiss persists after channel re-entry", async
 
   await page.getByTestId("onboarding-display-name").fill("Morty QA");
   await completeProfileOnboarding(page);
+  await page.getByTestId("channel-welcome-everyone").click();
+  await expect(page.getByTestId("chat-title")).toContainText(
+    "welcome-everyone",
+  );
 
   const banner = page.getByTestId("welcome-composer-guide-banner");
 
@@ -3218,7 +3226,9 @@ test("welcome-everywhere banner: dismiss persists after channel re-entry", async
 
   // Return — banner must stay hidden.
   await page.getByTestId("channel-welcome-everyone").click();
-  await expect(page.getByTestId("chat-title")).toContainText("Welcome");
+  await expect(page.getByTestId("chat-title")).toContainText(
+    "welcome-everyone",
+  );
   await expect(banner).toHaveCount(0);
 });
 

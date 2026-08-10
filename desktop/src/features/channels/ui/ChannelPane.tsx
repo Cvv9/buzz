@@ -678,7 +678,9 @@ export const ChannelPane = React.memo(function ChannelPane({
                   hasComposerBottomActivity && "composer-dock--with-activity",
                 )}
               >
-                {isActiveWelcomeChannel && !timeoutState.active ? (
+                {isActiveWelcomeChannel &&
+                !timeoutState.active &&
+                welcomeComposerBannerState !== "hidden" ? (
                   <WelcomeComposerGuidanceLayer
                     onDismiss={handleDismissWelcomeBanner}
                     settingUp={welcomeKickoffSettingUp}
