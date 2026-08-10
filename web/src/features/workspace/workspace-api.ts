@@ -6,7 +6,10 @@ import {
 } from "@/shared/lib/nostr-client";
 import { truncatePubkey } from "@/shared/lib/pubkey";
 import { relayWsUrl } from "@/shared/lib/relay-url";
-import { hostedDirectoryEvents } from "./workspace-agent-directory-policy";
+import {
+  GENERAL_PROFILE_KINDS,
+  hostedDirectoryEvents,
+} from "./workspace-agent-directory-policy";
 import { parseWorkspaceAgentModels } from "./workspace-agent-models";
 import { canDiscoverPrivateWorkspaceChannels } from "./workspace-channel-discovery-policy";
 import {
@@ -46,10 +49,9 @@ export const KIND_NIP29_PUT_USER = 9000;
 export const KIND_NIP29_REMOVE_USER = 9001;
 export const KIND_NIP29_EDIT_METADATA = 9002;
 export const KIND_NIP29_DELETE_GROUP = 9008;
-
 export { HOSTED_AGENT_CONFIG_SCHEMA };
-
-const MESSAGE_KINDS = [
+/** Event kinds that participate in a materialized workspace conversation. */
+export const MESSAGE_KINDS = [
   KIND_STREAM_MESSAGE,
   KIND_STREAM_MESSAGE_V2,
   KIND_STREAM_MESSAGE_EDIT,
@@ -252,7 +254,8 @@ function parseThread(event: NostrEvent): {
   return { rootEventId: null, parentEventId: null };
 }
 
-function parseMessage(event: NostrEvent): WorkspaceMessage {
+/** Project a signed relay event into its channel and thread coordinates. */
+export function parseWorkspaceMessage(event: NostrEvent): WorkspaceMessage {
   return {
     ...event,
     channelId: firstTag(event, "h") ?? "",
@@ -353,7 +356,7 @@ export async function listChannelMessages(
     limit: 500,
   });
   return events
-    .map(parseMessage)
+    .map(parseWorkspaceMessage)
     .sort((a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id));
 }
 
@@ -364,11 +367,11 @@ export async function listProfiles(
   if (unique.length === 0) return new Map();
   const events = dedupeReplaceable(
     await queryEvents(relayWsUrl(), {
-      kinds: [KIND_PROFILE, KIND_AGENT_PROFILE, KIND_MANAGED_AGENT],
+      kinds: [...GENERAL_PROFILE_KINDS],
       authors: unique,
-      limit: Math.min(500, unique.length * 3),
+      limit: Math.min(500, unique.length),
     }),
-  ).filter((event) => !isHostedAgentConfigEvent(event));
+  );
   const profiles = new Map<string, WorkspaceProfile>();
   for (const event of events) {
     let content: Record<string, unknown> = {};
@@ -398,10 +401,7 @@ export async function listProfiles(
             : existing?.picture,
       about:
         typeof content.about === "string" ? content.about : existing?.about,
-      isAgent:
-        existing?.isAgent ||
-        event.kind === KIND_AGENT_PROFILE ||
-        event.kind === KIND_MANAGED_AGENT,
+      isAgent: existing?.isAgent || event.kind === KIND_AGENT_PROFILE,
     });
   }
   return profiles;
@@ -895,7 +895,7 @@ export function subscribeToChannel(
   return subscribeEvents(
     relayWsUrl(),
     { kinds: MESSAGE_KINDS, "#h": [channelId] },
-    (event) => onEvent(parseMessage(event)),
+    (event) => onEvent(parseWorkspaceMessage(event)),
     onStatus,
   );
 }
@@ -914,7 +914,7 @@ export function subscribeToChannels(
       "#h": unique,
       since: Math.floor(Date.now() / 1000),
     },
-    (event) => onEvent(parseMessage(event)),
+    (event) => onEvent(parseWorkspaceMessage(event)),
     onStatus,
   );
 }
