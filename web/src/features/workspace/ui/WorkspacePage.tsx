@@ -150,9 +150,10 @@ export function WorkspacePage({
       channels.filter(
         (channel) =>
           channel.type !== "dm" ||
+          channel.id === channelPermalink ||
           !hiddenDmChannelIds.has(channel.id.toLowerCase()),
       ),
-    [channels, hiddenDmChannelIds],
+    [channelPermalink, channels, hiddenDmChannelIds],
   );
   const recipientProfilesQuery = useQuery({
     queryKey: [
