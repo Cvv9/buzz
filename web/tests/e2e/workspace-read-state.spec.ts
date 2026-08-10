@@ -9,6 +9,9 @@ test("channel badges show the unread count and opening a channel advances its cu
   const secretKey = generateSecretKey();
   const viewerPubkey = getPublicKey(secretKey);
   await installWorkspaceRelayMock(page, viewerPubkey);
+  await page.addInitScript(() => {
+    localStorage.removeItem("buzz.web.active-channel");
+  });
   await page.goto("/");
   await page.getByLabel("Display name").fill("Vikram");
   await page.getByLabel("Recovery key").fill(nsecEncode(secretKey));
@@ -18,6 +21,8 @@ test("channel badges show the unread count and opening a channel advances its cu
   await page.getByLabel("Confirm password").fill("read-state-password");
   await page.getByRole("button", { name: "Sign in with recovery key" }).click();
   await expect(page.getByTestId("workspace-shell")).toBeVisible();
+  await page.getByRole("button", { name: "general", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "general" })).toBeVisible();
 
   await expect(
     page.getByTestId("workspace-sidebar").getByText(/^Channels\s+\d+$/, {
@@ -25,9 +30,38 @@ test("channel badges show the unread count and opening a channel advances its cu
     }),
   ).toHaveCount(0);
 
+  await page.getByRole("button", { name: "random", exact: true }).click();
+  await page.evaluate((ownPubkey) => {
+    const helpers = window as typeof window & {
+      __BUZZ_WEB_E2E_RECEIVE__: (event: unknown) => void;
+      __BUZZ_WEB_E2E_EVENT__: (
+        kind: number,
+        pubkey: string,
+        tags: string[][],
+        content: string,
+        suffix: string,
+        createdAt: number,
+      ) => unknown;
+    };
+    for (let index = 0; index < 40; index += 1) {
+      helpers.__BUZZ_WEB_E2E_RECEIVE__(
+        helpers.__BUZZ_WEB_E2E_EVENT__(
+          9,
+          ownPubkey,
+          [["h", "random"]],
+          `Previously read ${index + 1}`,
+          `history-${index}`,
+          100 + index,
+        ),
+      );
+    }
+  }, viewerPubkey);
+  await page.getByRole("button", { name: "general", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "general" })).toBeVisible();
+
   await page.evaluate(() => {
     const helpers = window as typeof window & {
-      __BUZZ_WEB_E2E_EMIT__: (event: unknown) => void;
+      __BUZZ_WEB_E2E_RECEIVE__: (event: unknown) => void;
       __BUZZ_WEB_E2E_EVENT__: (
         kind: number,
         pubkey: string,
@@ -38,10 +72,10 @@ test("channel badges show the unread count and opening a channel advances its cu
       ) => unknown;
     };
     for (const [suffix, createdAt] of [
-      ["unread-one", 10],
-      ["unread-two", 11],
+      ["unread-one", 200],
+      ["unread-two", 201],
     ] as const) {
-      helpers.__BUZZ_WEB_E2E_EMIT__(
+      helpers.__BUZZ_WEB_E2E_RECEIVE__(
         helpers.__BUZZ_WEB_E2E_EVENT__(
           9,
           "b".repeat(64),
@@ -62,6 +96,30 @@ test("channel badges show the unread count and opening a channel advances its cu
 
   await randomChannel.click();
   await expect(
+    page.getByText("Unread unread-one", { exact: true }),
+  ).toBeVisible();
+  await expect
+    .poll(() =>
+      page
+        .getByTestId("workspace-timeline")
+        .getAttribute("data-anchor-applied"),
+    )
+    .toBe("unread");
+  const anchorState = await page
+    .getByTestId("workspace-timeline")
+    .evaluate((timeline) => ({
+      anchorApplied: timeline.dataset.anchorApplied ?? "",
+      anchorMessageId: timeline.dataset.anchorMessageId ?? "",
+      clientHeight: timeline.clientHeight,
+      firstUnreadMessageId: timeline.dataset.firstUnreadMessageId ?? "",
+      scrollHeight: timeline.scrollHeight,
+      scrollTop: timeline.scrollTop,
+    }));
+  expect(anchorState.anchorApplied).toBe("unread");
+  expect(anchorState.anchorMessageId).toBe("unread-one".padStart(64, "0"));
+  expect(anchorState.scrollHeight).toBeGreaterThan(anchorState.clientHeight);
+  expect(anchorState.scrollTop).toBeGreaterThan(0);
+  await expect(
     page.getByRole("button", { name: "random", exact: true }),
   ).toBeVisible();
   await expect(
@@ -75,6 +133,9 @@ test("unread badges survive Agents, Settings, and Reminders until their timeline
   const secretKey = generateSecretKey();
   const viewerPubkey = getPublicKey(secretKey);
   await installWorkspaceRelayMock(page, viewerPubkey);
+  await page.addInitScript(() => {
+    localStorage.removeItem("buzz.web.active-channel");
+  });
   await page.goto("/");
   await page.getByLabel("Display name").fill("Vikram");
   await page.getByLabel("Recovery key").fill(nsecEncode(secretKey));
@@ -86,6 +147,9 @@ test("unread badges survive Agents, Settings, and Reminders until their timeline
     .fill("navigation-read-state-password");
   await page.getByRole("button", { name: "Sign in with recovery key" }).click();
   await expect(page.getByTestId("workspace-shell")).toBeVisible();
+  await page.getByRole("button", { name: "general", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "general" })).toBeVisible();
+  await page.waitForTimeout(100);
 
   await expect
     .poll(() =>
@@ -101,7 +165,7 @@ test("unread badges survive Agents, Settings, and Reminders until their timeline
 
   await page.evaluate(() => {
     const helpers = window as typeof window & {
-      __BUZZ_WEB_E2E_EMIT__: (event: unknown) => void;
+      __BUZZ_WEB_E2E_RECEIVE__: (event: unknown) => void;
       __BUZZ_WEB_E2E_EVENT__: (
         kind: number,
         pubkey: string,
@@ -115,7 +179,7 @@ test("unread badges survive Agents, Settings, and Reminders until their timeline
       ["route-unread-one", 20],
       ["route-unread-two", 21],
     ] as const) {
-      helpers.__BUZZ_WEB_E2E_EMIT__(
+      helpers.__BUZZ_WEB_E2E_RECEIVE__(
         helpers.__BUZZ_WEB_E2E_EVENT__(
           9,
           "b".repeat(64),
@@ -132,6 +196,9 @@ test("unread badges survive Agents, Settings, and Reminders until their timeline
     name: "random, 2 unread messages",
   });
   await expect(unreadRandom).toBeVisible();
+  expect(
+    await page.evaluate(() => localStorage.getItem("buzz.web.active-channel")),
+  ).toBe("general");
 
   await page.getByTestId("workspace-agents-button").click();
   await expect(page.getByTestId("workspace-agents")).toBeVisible();

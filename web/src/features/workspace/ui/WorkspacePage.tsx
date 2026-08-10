@@ -88,6 +88,10 @@ export function WorkspacePage({
   const [activeChannelId, setActiveChannelId] = React.useState<string | null>(
     () => localStorage.getItem("buzz.web.active-channel"),
   );
+  const [pendingTimelineAnchor, setPendingTimelineAnchor] = React.useState<{
+    channelId: string;
+    messageId: string;
+  } | null>(null);
   const [workspaceView, setWorkspaceView] = React.useState<WorkspaceView>(
     () => {
       const requested = new URLSearchParams(window.location.search).get("view");
@@ -310,8 +314,11 @@ export function WorkspacePage({
     alertItems,
     dismissAllInboxItems,
     dismissInboxItem,
+    firstUnreadMessageIds,
+    firstUnreadMessageId,
     inboxItems,
     markAllRead,
+    markChannelRead,
     markInboxItemRead,
     recordIncomingMessage,
     unreadChannelCounts,
@@ -728,6 +735,9 @@ export function WorkspacePage({
         }
         onToggleStar={toggleStarredChannel}
         onSelectChannel={(channelId) => {
+          const messageId = firstUnreadMessageIds.get(channelId);
+          setPendingTimelineAnchor(messageId ? { channelId, messageId } : null);
+          localStorage.setItem("buzz.web.active-channel", channelId);
           setActiveChannelId(channelId);
           setWorkspaceView("channel");
           setThreadRootId(null);
@@ -833,6 +843,11 @@ export function WorkspacePage({
             agents={agentsQuery.data ?? []}
             customEmoji={customEmoji}
             expandedThreadIds={expandedThreadIds}
+            firstUnreadMessageId={
+              pendingTimelineAnchor?.channelId === activeChannelId
+                ? pendingTimelineAnchor.messageId
+                : firstUnreadMessageId
+            }
             hideDirectMessagePending={hideDmMutation.isPending}
             messagesPending={messagesQuery.isPending}
             onlineMemberCount={onlineMemberCount}
@@ -847,6 +862,12 @@ export function WorkspacePage({
             statusFor={statusFor}
             threadReplies={threadReplies}
             threadRoot={threadRoot}
+            timelineQueryPending={
+              messagesQuery.isFetching ||
+              (!messagesQuery.isFetchedAfterMount && !messagesQuery.isError) ||
+              ((unreadChannelCounts.get(activeChannelId ?? "") ?? 0) > 0 &&
+                !firstUnreadMessageId)
+            }
             topLevel={topLevel}
             typingNames={typingNames}
             profileFor={profileFor}
@@ -856,6 +877,14 @@ export function WorkspacePage({
             onEditMessage={setEditingMessage}
             onHideDirectMessage={() => {
               if (activeChannel) hideDmMutation.mutate(activeChannel.id);
+            }}
+            onTimelineReady={(channelId) => {
+              if (visibleTimelineChannelId === channelId) {
+                markChannelRead(channelId);
+                setPendingTimelineAnchor((current) =>
+                  current?.channelId === channelId ? null : current,
+                );
+              }
             }}
             onOpenNavigation={() => setSidebarOpen(true)}
             onOpenThreadPanel={(messageId) => {
