@@ -1,5 +1,10 @@
 # Changelog
 
+## relay-v0.2.10
+
+- fix: address Buzz web production audit ([#42](https://github.com/Cvv9/buzz/pull/42))
+- fix(desktop): remove dismissed welcome guidance ([#44](https://github.com/Cvv9/buzz/pull/44))
+
 ## relay-v0.2.6
 
 - fix(web): serve Settings and Custom Emoji on direct navigation ([#30](https://github.com/Cvv9/buzz/pull/30))
