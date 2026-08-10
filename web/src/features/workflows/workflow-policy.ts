@@ -83,6 +83,18 @@ export type ParsedWorkflowApprovalRequest = {
   createdAt: number;
 };
 
+/**
+ * Browser-visible capabilities for the relay currently serving this web app.
+ *
+ * The YAML schema deliberately remains broader than this list: the browser must
+ * be able to read historical definitions and relay support can expand without
+ * changing their wire format. These flags only decide which definitions the web
+ * editor is allowed to create or replace.
+ */
+export const BROWSER_WORKFLOW_CAPABILITIES = {
+  approvalRequests: false,
+} as const;
+
 function invalid(message: string): never {
   throw new Error(`Invalid workflow definition: ${message}`);
 }
@@ -394,6 +406,26 @@ export function parseWorkflowDefinition(yaml: string): WorkflowDefinition {
     steps,
     enabled,
   };
+}
+
+/**
+ * Reject a browser write that the deployed relay cannot carry through to a
+ * user-visible result. Keep this separate from parseWorkflowDefinition() so
+ * existing valid YAML remains readable and portable across richer clients.
+ */
+export function validateBrowserWorkflowPublication(
+  yaml: string,
+): WorkflowDefinition {
+  const definition = parseWorkflowDefinition(yaml);
+  if (
+    !BROWSER_WORKFLOW_CAPABILITIES.approvalRequests &&
+    definition.steps.some((step) => step.action === "request_approval")
+  ) {
+    throw new Error(
+      "Approval steps cannot be saved from Buzz Web because this relay does not yet deliver approval requests end-to-end. Remove the approval step or use a supported action.",
+    );
+  }
+  return definition;
 }
 
 /** Update only the portable YAML definition flag; relay DB lifecycle remains server-owned. */

@@ -262,13 +262,33 @@ export function pairingEventHasExactRecipient(
   );
 }
 
+export type PairingCameraCapability = {
+  barcodeDetector: unknown;
+  getUserMedia: unknown;
+};
+
+/** Camera scanning is optional; every supported browser retains manual entry. */
+export function pairingCameraSupported(capability: PairingCameraCapability) {
+  return (
+    typeof capability.barcodeDetector === "function" &&
+    typeof capability.getUserMedia === "function"
+  );
+}
+
 export function pairingCapabilities() {
+  const browserWindow =
+    typeof window === "undefined"
+      ? undefined
+      : (window as Window & { BarcodeDetector?: unknown });
   return {
     crypto: typeof crypto !== "undefined" && Boolean(crypto.subtle),
-    camera:
-      typeof window !== "undefined" &&
-      "BarcodeDetector" in window &&
-      Boolean(navigator.mediaDevices?.getUserMedia),
+    camera: pairingCameraSupported({
+      barcodeDetector: browserWindow?.BarcodeDetector,
+      getUserMedia:
+        typeof navigator === "undefined"
+          ? undefined
+          : navigator.mediaDevices?.getUserMedia,
+    }),
     clipboard:
       typeof navigator !== "undefined" &&
       Boolean(navigator.clipboard?.writeText),

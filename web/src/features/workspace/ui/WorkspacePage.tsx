@@ -12,7 +12,6 @@ import { WorkspaceConversation } from "./WorkspaceConversation";
 import { WorkspaceContentDialogs } from "./WorkspaceContentDialogs";
 import { WorkspaceChannelSettings } from "./WorkspaceChannelSettings";
 import { WorkspaceNewMessage } from "./WorkspaceNewMessage";
-import { RemindersPanel } from "@/features/reminders/ui/RemindersPanel";
 import { useCustomEmojiPalette } from "@/features/custom-emoji/custom-emoji-api";
 import {
   addDirectMessageMembers,
@@ -73,7 +72,7 @@ export function WorkspacePage({
   channelPermalink,
   threadPermalink,
 }: {
-  routeMode?: "workspace" | "new-message" | "reminders";
+  routeMode?: "workspace" | "new-message";
   channelPermalink?: string;
   threadPermalink?: string;
 }) {
@@ -300,6 +299,13 @@ export function WorkspacePage({
     () => materializeMessages(channelEvents),
     [channelEvents],
   );
+  // Keeping the last selected channel is useful for returning to the app, but
+  // it is not the same as viewing its timeline. Read cursors may only advance
+  // while the actual channel view is on screen.
+  const visibleTimelineChannelId =
+    routeMode === "workspace" && workspaceView === "channel"
+      ? activeChannelId
+      : null;
   const {
     alertItems,
     dismissAllInboxItems,
@@ -310,7 +316,7 @@ export function WorkspacePage({
     recordIncomingMessage,
     unreadChannelCounts,
   } = useWorkspaceReadState({
-    activeChannelId,
+    activeChannelId: visibleTimelineChannelId,
     channels,
     currentMessages: materialized,
     identityPubkey: identity?.pubkey,
@@ -748,19 +754,6 @@ export function WorkspacePage({
               openDmMutation.mutate({ recipients, content })
             }
           />
-        ) : routeMode === "reminders" ? (
-          <RemindersPanel
-            pubkey={identity.pubkey}
-            onBack={() => void navigate({ to: "/" })}
-            onOpenTarget={(reminder) => {
-              const channelId = reminder.content.target?.channelId;
-              if (!channelId) return;
-              void navigate({
-                to: "/messages/$channelId",
-                params: { channelId },
-              });
-            }}
-          />
         ) : workspaceView === "inbox" ? (
           <WorkspaceInbox
             channels={visibleChannels}
@@ -804,7 +797,6 @@ export function WorkspacePage({
           />
         ) : workspaceView === "agents" ? (
           <WorkspaceAgents
-            activeChannel={activeChannel}
             agents={agentsQuery.data ?? []}
             channels={channels}
             canManage={Boolean(
@@ -824,7 +816,6 @@ export function WorkspacePage({
                   ? channelAccessMutation.error.message
                   : null
             }
-            onAddAgent={(agent) => addAgentMutation.mutate(agent)}
             onSetChannelAccess={async (agent, channel, enabled) => {
               await channelAccessMutation.mutateAsync({
                 agent,

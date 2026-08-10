@@ -19,6 +19,12 @@ test("reminders are URL-addressable and publish an encrypted author-only event",
   await page.getByRole("button", { name: "Sign in with recovery key" }).click();
   await expect(page.getByTestId("reminders-page")).toBeVisible();
 
+  // The route must remain independently usable after a normal hard refresh;
+  // it should not wait for the workspace channel catalog before rendering.
+  await page.reload();
+  await expect(page.getByTestId("reminders-page")).toBeVisible();
+  await expect(page.getByText("Connecting to VarVik Studios…")).toHaveCount(0);
+
   await page.getByLabel("Remind me").fill("Review the private draft");
   await page.getByRole("button", { name: "Create reminder" }).click();
   await expect

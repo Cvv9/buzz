@@ -251,11 +251,23 @@ test("web workspace preserves profiles and applies live-event parity rules", asy
     .toBeGreaterThan(initialReactionQueries);
 });
 
-test("repository browser remains available at its own route", async ({
+test("repository browser shares workspace navigation in its empty state", async ({
   page,
 }) => {
+  const owner = getPublicKey(generateSecretKey());
+  await installWorkspaceRelayMock(page, owner);
+  await page.goto("/");
   await page.goto("/repos");
-  await expect(page.getByText("Repositories")).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Repositories", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("link", { name: "Workspace" })).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Projects", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "No repositories published yet" }),
+  ).toBeVisible();
 });
 
 test("invite requires age and legal consent before opening Buzz", async ({

@@ -20,6 +20,10 @@ import {
   changedWorkspaceChannelUpdate,
   workspaceChannelDraft,
 } from "../workspace-channel-update-policy";
+import {
+  availableWorkspaceInvitees,
+  canRemoveWorkspaceChannelMember,
+} from "../workspace-channel-members-policy";
 
 const MEMBER_ROLES = ["admin", "member", "guest", "bot"] as const;
 
@@ -69,6 +73,10 @@ export function WorkspaceChannelSettings({
   });
   const communityMembers = communityQuery.data ?? [];
   const members = membersQuery.data ?? [];
+  const inviteCandidates = React.useMemo(
+    () => availableWorkspaceInvitees(communityMembers, members),
+    [communityMembers, members],
+  );
   const canManage =
     channel.role === "owner" ||
     channel.role === "admin" ||
@@ -94,6 +102,11 @@ export function WorkspaceChannelSettings({
   });
   const profileName = (pubkey: string) =>
     profilesQuery.data?.get(pubkey)?.name ?? truncatePubkey(pubkey);
+  const memberOptionLabel = (pubkey: string) => {
+    const name = profileName(pubkey);
+    const shortKey = truncatePubkey(pubkey);
+    return name === shortKey ? shortKey : `${name} · ${shortKey}`;
+  };
 
   const resetDraft = React.useCallback((nextChannel: WorkspaceChannel) => {
     const draft = workspaceChannelDraft(nextChannel);
@@ -275,18 +288,11 @@ export function WorkspaceChannelSettings({
                 value={invitee}
               >
                 <option value="">Choose a member</option>
-                {communityMembers
-                  .filter(
-                    (member) =>
-                      !members.some(
-                        (current) => current.pubkey === member.pubkey,
-                      ),
-                  )
-                  .map((member) => (
-                    <option key={member.pubkey} value={member.pubkey}>
-                      {profileName(member.pubkey)}
-                    </option>
-                  ))}
+                {inviteCandidates.map((member) => (
+                  <option key={member.pubkey} value={member.pubkey}>
+                    {memberOptionLabel(member.pubkey)}
+                  </option>
+                ))}
               </select>
               {canManage ? (
                 <select
@@ -385,7 +391,11 @@ function MemberRow({
   onRoleChange: (role: (typeof MEMBER_ROLES)[number]) => void;
   onRemove: () => void;
 }) {
-  const canRemove = canManage || member.pubkey === viewerPubkey.toLowerCase();
+  const canRemove = canRemoveWorkspaceChannelMember({
+    member,
+    canManage,
+    viewerPubkey,
+  });
   return (
     <div className="flex flex-wrap items-center gap-2 px-3 py-2.5 text-sm">
       <span className="min-w-0 flex-1 truncate">{name}</span>

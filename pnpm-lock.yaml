@@ -341,6 +341,9 @@ importers:
       nostr-tools:
         specifier: ^2.23.3
         version: 2.23.12(typescript@6.0.3)
+      qrcode.react:
+        specifier: ^4.2.0
+        version: 4.2.0(react@19.2.8)
       react:
         specifier: ^19.1.0
         version: 19.2.8

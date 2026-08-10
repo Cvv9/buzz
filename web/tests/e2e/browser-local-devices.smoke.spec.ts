@@ -63,6 +63,41 @@ test("browser-local archive, pairing, and preferences stay capability- and lock-
   await expect(page.getByRole("alert")).toHaveText(
     /Pairing code must be a nostrpair:\/\/ URI/,
   );
+  await page.addInitScript(() => {
+    Object.defineProperty(window, "BarcodeDetector", {
+      configurable: true,
+      value: undefined,
+    });
+    const originalFetch = window.fetch.bind(window);
+    window.fetch = (input, init) => {
+      const url = new URL(String(input), window.location.href);
+      if (url.origin === window.location.origin && url.pathname === "/") {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              pairing_relay_url: "ws://127.0.0.1:4173/pairing",
+            }),
+            {
+              headers: { "Content-Type": "application/nostr+json" },
+              status: 200,
+            },
+          ),
+        );
+      }
+      return originalFetch(input, init);
+    };
+  });
+  await page.reload();
+  await expect(
+    page.getByText(
+      "Camera QR scanning is unavailable in this browser. You can still paste a pairing code below.",
+    ),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Create one-time pairing code" })
+    .click();
+  await expect(page.getByTestId("pairing-qr")).toBeVisible();
+  await expect(page.getByText(/Expires in 2:00/)).toBeVisible();
 
   await page.goto("/");
   await page

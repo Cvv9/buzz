@@ -176,10 +176,14 @@ impl ActionSink for RelayActionSink {
         channel_id: &str,
         text: &str,
         author_pubkey: &str,
+        workflow_id: &str,
+        workflow_name: &str,
     ) -> Pin<Box<dyn Future<Output = Result<String, ActionSinkError>> + Send + '_>> {
         let channel_id = channel_id.to_owned();
         let text = text.to_owned();
         let author_pubkey = author_pubkey.to_owned();
+        let workflow_id = workflow_id.to_owned();
+        let workflow_name = workflow_name.to_owned();
 
         Box::pin(async move {
             // 0. Upgrade weak reference — fails only during shutdown.
@@ -263,8 +267,10 @@ impl ActionSink for RelayActionSink {
                     .map_err(|e| ActionSinkError::EventBuild(format!("actor tag: {e}")))?,
                 Tag::parse(["h", &channel_id_canonical])
                     .map_err(|e| ActionSinkError::EventBuild(format!("h tag: {e}")))?,
-                Tag::parse(["buzz:workflow", "true"])
+                Tag::parse(["buzz:workflow", workflow_id.as_str()])
                     .map_err(|e| ActionSinkError::EventBuild(format!("workflow tag: {e}")))?,
+                Tag::parse(["workflow-name", workflow_name.as_str()])
+                    .map_err(|e| ActionSinkError::EventBuild(format!("workflow-name tag: {e}")))?,
             ];
 
             // Resolve `@Name` mentions to channel-member pubkeys and append a
@@ -675,6 +681,8 @@ mod integration_tests {
                 &channel.id.to_string(),
                 "heads up @Robby — please take a look",
                 &author_hex,
+                "2ecf7254-bde5-4e17-a392-86ca2d00e82d",
+                "Agent health check",
             )
             .await
             .expect("send_message");
@@ -697,6 +705,16 @@ mod integration_tests {
             .filter(|t| t.as_slice().first().map(|s| s.as_str()) == Some("p"))
             .filter_map(|t| t.as_slice().get(1).map(|s| s.as_str()))
             .collect();
+
+        assert!(stored.event.tags.iter().any(|tag| {
+            tag.as_slice().first().map(String::as_str) == Some("buzz:workflow")
+                && tag.as_slice().get(1).map(String::as_str)
+                    == Some("2ecf7254-bde5-4e17-a392-86ca2d00e82d")
+        }));
+        assert!(stored.event.tags.iter().any(|tag| {
+            tag.as_slice().first().map(String::as_str) == Some("workflow-name")
+                && tag.as_slice().get(1).map(String::as_str) == Some("Agent health check")
+        }));
 
         assert!(
             !p_tag_targets.contains(&author_hex.as_str()),

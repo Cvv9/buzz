@@ -7,9 +7,10 @@ export function agentAccessLabel(agent: WorkspaceProfile): string {
 }
 
 export function agentRoleLabel(agent: WorkspaceProfile): string {
-  return (
-    agent.aliases?.find((alias) => alias.trim() && alias !== agent.name) ??
-    agent.about?.split(/[.,;\n]/)[0]?.trim() ??
-    agentAccessLabel(agent)
+  const summary = agent.about?.split(/[.,;\n]/)[0]?.trim();
+  const roleAlias = agent.aliases?.find(
+    (alias) =>
+      alias.trim() && alias !== agent.name && alias.toLowerCase() !== "io",
   );
+  return roleAlias ?? summary ?? agentAccessLabel(agent);
 }

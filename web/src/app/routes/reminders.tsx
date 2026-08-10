@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { WorkspacePage } from "@/features/workspace/ui/WorkspacePage";
+import { RemindersPage } from "@/features/reminders/ui/RemindersPage";
 
 export const Route = createFileRoute("/reminders")({
-  component: () => <WorkspacePage routeMode="reminders" />,
+  component: RemindersPage,
 });

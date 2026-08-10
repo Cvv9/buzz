@@ -472,7 +472,7 @@ impl SubscriptionRegistry {
                 // moves the subscription. Re-check its authoritative scope before
                 // matching so an old index entry cannot deliver across scopes.
                 let scope_matches = *sub_channel_id == event.channel_id
-                    || (*sub_channel_id == None
+                    || (sub_channel_id.is_none()
                         && event.channel_id.is_some()
                         && is_channel_discovery_subscription(filters));
                 if *sub_community_id == community_id

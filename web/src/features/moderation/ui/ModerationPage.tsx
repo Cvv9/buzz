@@ -1,7 +1,11 @@
 import * as React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { listWorkspaceCommunityMembers } from "@/features/workspace/workspace-api";
+import {
+  listProfiles,
+  listWorkspaceCommunityMembers,
+} from "@/features/workspace/workspace-api";
 import { useWorkspaceIdentity } from "@/features/workspace/useWorkspaceIdentity";
+import { BrowserSettingsBreadcrumb } from "@/features/settings/ui/BrowserSettingsBreadcrumb";
 import { Button } from "@/shared/ui/button";
 import { truncatePubkey } from "@/shared/lib/pubkey";
 import {
@@ -38,6 +42,17 @@ export function ModerationPage() {
   const ownRole = membersQuery.data?.find(
     (member) => member.pubkey === identity?.pubkey.toLowerCase(),
   )?.role;
+  const memberPubkeys = React.useMemo(
+    () => membersQuery.data?.map((member) => member.pubkey) ?? [],
+    [membersQuery.data],
+  );
+  const profilesQuery = useQuery({
+    queryKey: ["moderation-member-profiles", memberPubkeys.sort().join(",")],
+    queryFn: () => listProfiles(memberPubkeys),
+    enabled: memberPubkeys.length > 0,
+  });
+  const profileName = (pubkey: string) =>
+    profilesQuery.data?.get(pubkey)?.name ?? truncatePubkey(pubkey);
   const moderator = isModeratorRole(ownRole);
   const reportsQuery = useQuery({
     queryKey: ["moderation-reports", "open"],
@@ -78,6 +93,7 @@ export function ModerationPage() {
   };
   return (
     <main className="mx-auto w-full max-w-5xl p-4 sm:p-7">
+      <BrowserSettingsBreadcrumb current="Moderation" />
       <h1 className="text-2xl font-semibold">Moderation</h1>
       <p className="mt-1 text-sm text-muted-foreground">
         Report a message privately to the relay moderators. Admin controls below
@@ -89,10 +105,20 @@ export function ModerationPage() {
           <input
             aria-label="Reported author pubkey"
             className="rounded-md border border-input bg-background px-3 py-2 text-sm"
-            placeholder="Author pubkey"
+            list="moderation-community-members"
+            placeholder="Choose a member or paste an author public key"
             value={authorPubkey}
             onChange={(event) => setAuthorPubkey(event.target.value)}
           />
+          <datalist id="moderation-community-members">
+            {membersQuery.data?.map((member) => (
+              <option
+                key={member.pubkey}
+                label={`${profileName(member.pubkey)} · ${truncatePubkey(member.pubkey)}`}
+                value={member.pubkey}
+              />
+            ))}
+          </datalist>
           <input
             aria-label="Reported event id"
             className="rounded-md border border-input bg-background px-3 py-2 text-sm"

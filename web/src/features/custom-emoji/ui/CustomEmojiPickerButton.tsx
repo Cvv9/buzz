@@ -1,6 +1,7 @@
-import { ImagePlus, SmilePlus, Trash2, X } from "lucide-react";
+import { ImagePlus, SmilePlus, Trash2, Upload, X } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
+import { uploadBrowserMedia } from "@/features/media/browser-media";
 import type { CustomEmoji } from "../custom-emoji-policy";
 import { normalizeEmojiShortcode } from "../custom-emoji-policy";
 import { useOwnCustomEmojiSet } from "../custom-emoji-api";
@@ -12,6 +13,10 @@ export function EmojiSetManager({ pubkey }: { pubkey: string }) {
   const { data: ownEmoji = [], isPending, save } = useOwnCustomEmojiSet(pubkey);
   const [shortcode, setShortcode] = React.useState("");
   const [url, setUrl] = React.useState("");
+  const [uploadProgress, setUploadProgress] = React.useState<number | null>(
+    null,
+  );
+  const [uploadError, setUploadError] = React.useState<string | null>(null);
   const saveEmoji = () => {
     const normalized = normalizeEmojiShortcode(shortcode);
     if (!normalized) {
@@ -29,6 +34,7 @@ export function EmojiSetManager({ pubkey }: { pubkey: string }) {
         onSuccess: () => {
           setShortcode("");
           setUrl("");
+          setUploadError(null);
         },
         onError: (error) => {
           toast.error("Custom emoji could not be saved", {
@@ -60,7 +66,12 @@ export function EmojiSetManager({ pubkey }: { pubkey: string }) {
         />
         <Button
           aria-label="Save custom emoji"
-          disabled={!shortcode.trim() || !url.trim() || save.isPending}
+          disabled={
+            !shortcode.trim() ||
+            !url.trim() ||
+            save.isPending ||
+            uploadProgress !== null
+          }
           size="icon"
           type="button"
           variant="outline"
@@ -69,6 +80,48 @@ export function EmojiSetManager({ pubkey }: { pubkey: string }) {
           <ImagePlus />
         </Button>
       </div>
+      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2">
+        <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-md px-1 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-within:outline-none focus-within:ring-1 focus-within:ring-ring">
+          <Upload className="size-3.5" />
+          {uploadProgress === null
+            ? "Upload an image from this device"
+            : `Uploading ${uploadProgress}%`}
+          <input
+            accept="image/jpeg,image/png,image/gif,image/webp"
+            className="sr-only"
+            disabled={uploadProgress !== null || save.isPending}
+            type="file"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (!file) return;
+              setUploadError(null);
+              setUploadProgress(0);
+              void uploadBrowserMedia(file, { onProgress: setUploadProgress })
+                .then((media) => {
+                  setUrl(media.url);
+                  toast.success("Emoji image uploaded", {
+                    description: "Choose a shortcode, then save the emoji.",
+                  });
+                })
+                .catch((error) =>
+                  setUploadError(
+                    error instanceof Error
+                      ? error.message
+                      : "The emoji image could not be uploaded.",
+                  ),
+                )
+                .finally(() => setUploadProgress(null));
+            }}
+          />
+        </label>
+        <span className="text-xs text-muted-foreground">
+          Or paste a secure image URL above.
+        </span>
+      </div>
+      {uploadError ? (
+        <p className="mt-2 text-xs text-destructive">{uploadError}</p>
+      ) : null}
       {isPending ? (
         <p className="mt-2 text-xs text-muted-foreground">
           Loading your emoji…

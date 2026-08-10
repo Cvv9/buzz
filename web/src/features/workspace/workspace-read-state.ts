@@ -71,12 +71,40 @@ type StoredReadState = {
   version: 1;
 };
 
+type CachedWorkspaceReadState = {
+  eventsByChannel: Map<string, readonly WorkspaceMessage[]>;
+  markers: Map<string, number>;
+};
+
+// Route components own their React state, so navigating from the workspace to
+// Settings or Reminders unmounts this hook. Keep the in-memory projection per
+// identity and relay while the tab is alive; durable cursor state still lives
+// in localStorage and is synchronised to the relay separately.
+const cachedReadStateByIdentity = new Map<string, CachedWorkspaceReadState>();
+
+function cachedReadStateKey(pubkey: string) {
+  return `${relayWsUrl()}:${pubkey.toLowerCase()}`;
+}
+
+function cachedReadState(pubkey: string | undefined) {
+  if (!pubkey) return null;
+  return cachedReadStateByIdentity.get(cachedReadStateKey(pubkey)) ?? null;
+}
+
+function cloneEventsByChannel(
+  eventsByChannel: ReadonlyMap<string, readonly WorkspaceMessage[]>,
+) {
+  return new Map(
+    [...eventsByChannel].map(([channelId, events]) => [channelId, [...events]]),
+  );
+}
+
 function storageKey(pubkey: string) {
-  return `${LOCAL_READ_STATE_PREFIX}:${pubkey.toLowerCase()}`;
+  return `${LOCAL_READ_STATE_PREFIX}:${relayWsUrl().toLowerCase()}:${pubkey.toLowerCase()}`;
 }
 
 function slotKey(pubkey: string) {
-  return `${SLOT_ID_PREFIX}:${pubkey.toLowerCase()}`;
+  return `${SLOT_ID_PREFIX}:${relayWsUrl().toLowerCase()}:${pubkey.toLowerCase()}`;
 }
 
 function randomSlotId() {
@@ -406,15 +434,42 @@ export function useWorkspaceReadState({
   identityPubkey?: string;
   activeChannelId: string | null;
 }) {
-  const [markers, setMarkers] = React.useState<Map<string, number>>(() =>
-    identityPubkey ? readLocalWorkspaceReadState(identityPubkey) : new Map(),
+  const [markers, setMarkers] = React.useState<Map<string, number>>(
+    () =>
+      new Map(
+        cachedReadState(identityPubkey)?.markers ??
+          (identityPubkey ? readLocalWorkspaceReadState(identityPubkey) : []),
+      ),
   );
   const [eventsByChannel, setEventsByChannel] = React.useState<
     Map<string, readonly WorkspaceMessage[]>
-  >(new Map());
+  >(() =>
+    cloneEventsByChannel(
+      cachedReadState(identityPubkey)?.eventsByChannel ?? new Map(),
+    ),
+  );
   const publishTimerRef = React.useRef<number | null>(null);
   const markersRef = React.useRef(markers);
   markersRef.current = markers;
+
+  React.useEffect(() => {
+    if (!identityPubkey) return;
+    const cached = cachedReadState(identityPubkey);
+    setMarkers(
+      new Map(cached?.markers ?? readLocalWorkspaceReadState(identityPubkey)),
+    );
+    setEventsByChannel(
+      cloneEventsByChannel(cached?.eventsByChannel ?? new Map()),
+    );
+  }, [identityPubkey]);
+
+  React.useEffect(() => {
+    if (!identityPubkey) return;
+    cachedReadStateByIdentity.set(cachedReadStateKey(identityPubkey), {
+      eventsByChannel: cloneEventsByChannel(eventsByChannel),
+      markers: new Map(markers),
+    });
+  }, [eventsByChannel, identityPubkey, markers]);
 
   const persistAndPublish = React.useCallback(
     (nextMarkers: Map<string, number>) => {
