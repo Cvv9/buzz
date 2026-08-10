@@ -93,6 +93,22 @@
     color-scheme: dark;
   }
 
+  /*
+   * Chromium on Windows may paint an opened native select with the system
+   * menu surface even when the closed control is transparent. Give every
+   * native option an explicit semantic surface so dark-theme text never lands
+   * on a white popup, while light and custom themes retain their own tokens.
+   */
+  select option,
+  select optgroup {
+    background-color: hsl(var(--popover));
+    color: hsl(var(--popover-foreground));
+  }
+
+  select option:disabled {
+    color: hsl(var(--muted-foreground));
+  }
+
   body {
     @apply bg-background text-foreground antialiased;
     font-family: "Inter Variable", Inter, "Avenir Next", "Segoe UI", sans-serif;
