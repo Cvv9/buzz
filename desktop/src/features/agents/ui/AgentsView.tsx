@@ -224,7 +224,7 @@ export function AgentsView() {
                 </DropdownMenu>
               </>
             }
-            description="Monitor your agents and manage their identities."
+            description="Monitor and manage your agents."
             title="Agents"
           />
           <div className="flex flex-col gap-8">

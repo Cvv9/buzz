@@ -733,7 +733,7 @@ test("moves agent actions into an overflow menu in a narrow view", async ({
 
   await expect(page.getByTestId("agent-defaults-button")).toBeVisible();
   await expect(
-    page.getByText("Set up and manage your agents.", { exact: true }),
+    page.getByText("Monitor and manage your agents.", { exact: true }),
   ).toHaveJSProperty("scrollHeight", 24);
 
   await page.getByTestId("agents-page-content").evaluate((element) => {
