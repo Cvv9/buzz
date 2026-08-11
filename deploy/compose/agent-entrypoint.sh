@@ -33,19 +33,29 @@ case "${BUZZ_ACP_PROFILE_AUDIENCE}" in
     ;;
 esac
 
+codex_auth_source=/run/secrets/varvik-codex-auth.json
+# Subscription credentials rotate independently of persistent agent state. A
+# mounted source is authoritative on every start; stale volume copies must not
+# shadow it.
+if [ -e "${codex_auth_source}" ] &&
+  { [ ! -f "${codex_auth_source}" ] || [ ! -s "${codex_auth_source}" ]; }; then
+  echo "Mounted Codex authentication must be a non-empty file" >&2
+  exit 1
+fi
+
 if [ "$(id -u)" -eq 0 ]; then
   mkdir -p /home/node/.codex
   chown node:node /home/node/.codex
-  if [ -f /run/secrets/varvik-codex-auth.json ] && [ ! -s /home/node/.codex/auth.json ]; then
-    install -o node -g node -m 600 /run/secrets/varvik-codex-auth.json /home/node/.codex/auth.json
+  if [ -s "${codex_auth_source}" ]; then
+    install -o node -g node -m 600 "${codex_auth_source}" /home/node/.codex/auth.json
   fi
   export HOME=/home/node
   exec setpriv --reuid=node --regid=node --init-groups "$0" "$@"
 fi
 
-if [ -f /run/secrets/varvik-codex-auth.json ] && [ ! -s "${HOME}/.codex/auth.json" ]; then
+if [ -s "${codex_auth_source}" ]; then
   mkdir -p "${HOME}/.codex"
-  install -m 600 /run/secrets/varvik-codex-auth.json "${HOME}/.codex/auth.json"
+  install -m 600 "${codex_auth_source}" "${HOME}/.codex/auth.json"
 fi
 
 # Keep one stable Nostr identity per named agent volume. Explicit environment
