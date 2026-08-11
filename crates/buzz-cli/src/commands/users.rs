@@ -12,6 +12,7 @@ use crate::validate::validate_hex64;
 /// - 0 pubkeys, no name → query our own profile
 /// - 1+ pubkeys → query those users' profiles
 /// - --name "foo" → NIP-50 search on kind:0, then client-side filter
+/// - --owner with --pubkey verifies those exact kind:0 profiles against the owner
 pub async fn cmd_get_users(
     client: &BuzzClient,
     pubkeys: &[String],
@@ -28,8 +29,10 @@ pub async fn cmd_get_users(
         return search_by_name(client, query, owner, format).await;
     }
 
-    if owner.is_some() {
-        return Err(CliError::Usage("--owner requires --name".into()));
+    if owner.is_some() && pubkeys.is_empty() {
+        return Err(CliError::Usage(
+            "--owner requires --name or --pubkey".into(),
+        ));
     }
 
     for pk in pubkeys {
@@ -53,28 +56,42 @@ pub async fn cmd_get_users(
     });
     let resp = client.query(&filter).await?;
     let events: Vec<serde_json::Value> = serde_json::from_str(&resp).unwrap_or_default();
-    let profiles: Vec<serde_json::Value> = events
-        .iter()
-        .filter_map(|e| {
-            let content_str = e.get("content")?.as_str()?;
-            let mut profile: serde_json::Value = serde_json::from_str(content_str).ok()?;
-            if let Some(obj) = profile.as_object_mut() {
-                obj.insert(
-                    "pubkey".to_string(),
-                    serde_json::json!(e.get("pubkey").and_then(|v| v.as_str()).unwrap_or("")),
-                );
-            }
-            Some(profile)
-        })
-        .collect();
+    let profiles: Vec<serde_json::Value> = if let Some(owner) = resolve_owner(client, owner)? {
+        owner_scoped_profiles(&events, pubkeys, &owner, &effective_owner(client))
+    } else {
+        events
+            .iter()
+            .filter_map(|e| {
+                let content_str = e.get("content")?.as_str()?;
+                let mut profile: serde_json::Value = serde_json::from_str(content_str).ok()?;
+                if let Some(obj) = profile.as_object_mut() {
+                    obj.insert(
+                        "pubkey".to_string(),
+                        serde_json::json!(e.get("pubkey").and_then(|v| v.as_str()).unwrap_or("")),
+                    );
+                }
+                Some(profile)
+            })
+            .collect()
+    };
     let output = match format {
         crate::OutputFormat::Compact => {
             let compact: Vec<serde_json::Value> = profiles
                 .iter()
-                .map(|p| serde_json::json!({
-                    "pubkey": p.get("pubkey").cloned().unwrap_or_default(),
-                    "display_name": p.get("display_name").or_else(|| p.get("name")).cloned().unwrap_or_default(),
-                }))
+                .map(|p| {
+                    let mut value = serde_json::json!({
+                        "pubkey": p.get("pubkey").cloned().unwrap_or_default(),
+                        "display_name": p.get("display_name").or_else(|| p.get("name")).cloned().unwrap_or_default(),
+                    });
+                    if let Some(obj) = value.as_object_mut() {
+                        for field in ["owner_pubkey", "owned_by_me", "verification"] {
+                            if let Some(field_value) = p.get(field) {
+                                obj.insert(field.to_string(), field_value.clone());
+                            }
+                        }
+                    }
+                    value
+                })
                 .collect();
             serde_json::to_string(&compact).unwrap_or_default()
         }
@@ -106,6 +123,31 @@ fn resolve_owner(client: &BuzzClient, owner: Option<&str>) -> Result<Option<Stri
         .transpose()
 }
 
+/// Return the canonical agent pubkey for a managed-agent projection address.
+///
+/// Current relays use the raw pubkey in the `d` tag. Older relays emitted the
+/// otherwise equivalent `hosted-agent:<pubkey>` compatibility coordinate.
+/// Accept only those two exact shapes: accepting a broader address or an
+/// `npub` here would make malformed projection coordinates look like agents.
+fn managed_agent_projection_pubkey(address: &str) -> Option<String> {
+    const HOSTED_AGENT_COMPAT_PREFIX: &str = "hosted-agent:";
+
+    let raw_pubkey = address
+        .strip_prefix(HOSTED_AGENT_COMPAT_PREFIX)
+        .unwrap_or(address);
+    if raw_pubkey.len() != 64
+        || !raw_pubkey
+            .chars()
+            .all(|character| character.is_ascii_hexdigit())
+    {
+        return None;
+    }
+
+    PublicKey::parse(raw_pubkey)
+        .ok()
+        .map(|pubkey| pubkey.to_hex())
+}
+
 fn owned_agent_pubkeys_from_events(events: &[serde_json::Value], query: &str) -> Vec<String> {
     let mut pubkeys: Vec<String> = events
         .iter()
@@ -116,8 +158,7 @@ fn owned_agent_pubkeys_from_events(events: &[serde_json::Value], query: &str) ->
             if !name.eq_ignore_ascii_case(query) {
                 return None;
             }
-            let pubkey = extract_d_tag(event);
-            (!pubkey.is_empty()).then_some(pubkey)
+            managed_agent_projection_pubkey(&extract_d_tag(event))
         })
         .collect();
     pubkeys.sort();
@@ -541,30 +582,48 @@ pub async fn dispatch(
 #[cfg(test)]
 mod tests {
     use super::{
-        owned_agent_pubkeys_from_events, owner_scoped_profiles, owner_verification,
-        presence_subject,
+        managed_agent_projection_pubkey, owned_agent_pubkeys_from_events, owner_scoped_profiles,
+        owner_verification, presence_subject,
     };
     use nostr::Keys;
     use serde_json::json;
 
     #[test]
     fn owned_agent_lookup_matches_exact_name_case_insensitively() {
+        let raw_pubkey = "a".repeat(64);
+        let compat_pubkey = "B".repeat(64);
         let events = vec![
-            json!({"content": r#"{"name":"Honey"}"#, "tags": [["d", "b"]]}),
-            json!({"content": r#"{"name":"Honeybee"}"#, "tags": [["d", "c"]]}),
-            json!({"content": r#"{"name":"honey"}"#, "tags": [["d", "a"]]}),
+            json!({"content": r#"{"name":"Honey"}"#, "tags": [["d", raw_pubkey]]}),
+            json!({"content": r#"{"name":"Honeybee"}"#, "tags": [["d", "c".repeat(64)]]}),
+            json!({"content": r#"{"name":"honey"}"#, "tags": [["d", format!("hosted-agent:{compat_pubkey}")]]}),
         ];
         assert_eq!(
             owned_agent_pubkeys_from_events(&events, "Honey"),
-            vec!["a", "b"]
+            vec![raw_pubkey, "b".repeat(64)]
         );
     }
 
     #[test]
-    fn owned_agent_lookup_ignores_malformed_events() {
+    fn managed_agent_projection_pubkey_accepts_only_raw_or_compatibility_coordinates() {
+        let raw_pubkey = "a".repeat(64);
+        assert_eq!(
+            managed_agent_projection_pubkey(&raw_pubkey),
+            Some(raw_pubkey.clone())
+        );
+        assert_eq!(
+            managed_agent_projection_pubkey(&format!("hosted-agent:{}", "B".repeat(64))),
+            Some("b".repeat(64))
+        );
+    }
+
+    #[test]
+    fn owned_agent_lookup_ignores_malformed_projection_coordinates() {
         let events = vec![
             json!({"content": "not json", "tags": [["d", "a"]]}),
             json!({"content": r#"{"name":"Honey"}"#, "tags": [["p", "b"]]}),
+            json!({"content": r#"{"name":"Honey"}"#, "tags": [["d", "hosted-agent:short"]]}),
+            json!({"content": r#"{"name":"Honey"}"#, "tags": [["d", format!("agent:{}", "a".repeat(64))]]}),
+            json!({"content": r#"{"name":"Honey"}"#, "tags": [["d", format!("hosted-agent:{}:extra", "a".repeat(64))]]}),
         ];
         assert!(owned_agent_pubkeys_from_events(&events, "Honey").is_empty());
     }
@@ -710,6 +769,35 @@ mod tests {
         assert_eq!(profiles[2]["verification"], "invalid_agent_pubkey");
         assert_eq!(profiles[2]["owned_by_me"], false);
         assert!(profiles[2].get("owner_pubkey").is_none());
+    }
+
+    #[test]
+    fn owner_scoped_profiles_verify_explicit_pubkeys_without_managed_projections() {
+        let owner_keys = Keys::generate();
+        let agent_keys = Keys::generate();
+        let unrelated_keys = Keys::generate();
+        let auth_tag: serde_json::Value = serde_json::from_str(
+            &buzz_sdk::nip_oa::compute_auth_tag(&owner_keys, &agent_keys.public_key(), "kind=0")
+                .unwrap(),
+        )
+        .unwrap();
+        let events = vec![
+            profile_event(&agent_keys, vec![auth_tag]),
+            profile_event(&unrelated_keys, vec![]),
+        ];
+        let explicit_pubkeys = vec![agent_keys.public_key().to_hex()];
+
+        let profiles = owner_scoped_profiles(
+            &events,
+            &explicit_pubkeys,
+            &owner_keys.public_key().to_hex(),
+            &owner_keys.public_key().to_hex(),
+        );
+
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0]["pubkey"], explicit_pubkeys[0]);
+        assert_eq!(profiles[0]["verification"], "verified");
+        assert_eq!(profiles[0]["owned_by_me"], true);
     }
 
     #[test]

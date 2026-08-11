@@ -5,7 +5,7 @@ mod error;
 mod links;
 mod validate;
 
-use clap::{Parser, Subcommand};
+use clap::{ArgGroup, Parser, Subcommand};
 use client::BuzzClient;
 use error::CliError;
 use nostr::Keys;
@@ -880,15 +880,16 @@ pub enum DmsCmd {
 #[derive(Subcommand)]
 pub enum UsersCmd {
     /// Look up user profiles by pubkey or name
+    #[command(group(ArgGroup::new("user_lookup").args(["name", "pubkeys"])))]
     Get {
         /// User pubkey(s) to look up (64-char hex). Omit for your own profile
-        #[arg(long = "pubkey")]
+        #[arg(long = "pubkey", conflicts_with = "name")]
         pubkeys: Vec<String>,
-        /// Search by display name (case-insensitive substring match)
-        #[arg(long = "name")]
+        /// Search by display name (case-insensitive substring match). Mutually exclusive with --pubkey.
+        #[arg(long = "name", conflicts_with = "pubkeys")]
         name: Option<String>,
-        /// Scope an exact-name agent lookup to its owner (`me`, hex, or npub)
-        #[arg(long = "owner", requires = "name")]
+        /// Verify a named or explicitly addressed agent profile against this owner (`me`, hex, or npub)
+        #[arg(long = "owner", requires = "user_lookup")]
         owner: Option<String>,
     },
     /// Update the current identity's profile
@@ -2123,6 +2124,34 @@ mod tests {
     #[test]
     fn cli_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn users_get_owner_accepts_explicit_pubkeys_and_requires_a_lookup() {
+        let agent_pubkey = "a".repeat(64);
+        let owner_pubkey = "b".repeat(64);
+
+        assert!(Cli::try_parse_from([
+            "buzz",
+            "users",
+            "get",
+            "--pubkey",
+            &agent_pubkey,
+            "--owner",
+            &owner_pubkey,
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from(["buzz", "users", "get", "--owner", "me"]).is_err());
+        assert!(Cli::try_parse_from([
+            "buzz",
+            "users",
+            "get",
+            "--name",
+            "Sylar",
+            "--pubkey",
+            &agent_pubkey,
+        ])
+        .is_err());
     }
 
     #[test]
