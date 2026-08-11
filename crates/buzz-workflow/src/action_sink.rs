@@ -37,6 +37,21 @@ impl From<ActionSinkError> for crate::WorkflowError {
     }
 }
 
+/// Trusted workflow metadata attached to a relay-produced side effect.
+#[derive(Debug, Clone)]
+pub struct WorkflowMessageContext {
+    /// Hex-encoded pubkey of the workflow owner.
+    pub author_pubkey: String,
+    /// Stable workflow definition identifier.
+    pub workflow_id: String,
+    /// Human-readable workflow name.
+    pub workflow_name: String,
+    /// Unique execution run identifier.
+    pub run_id: String,
+    /// Step identifier within the workflow definition.
+    pub step_id: String,
+}
+
 /// Interface for workflow actions that produce side effects.
 ///
 /// Implemented by the relay to provide direct DB/event access to the executor.
@@ -55,10 +70,10 @@ pub trait ActionSink: Send + Sync {
     ///   even though the side effect has no inbound connection to bind.
     /// - `channel_id`: UUID string of the target channel
     /// - `text`: message body (must not be empty/whitespace-only)
-    /// - `author_pubkey`: hex-encoded pubkey of the workflow owner (used for
+    /// - `context.author_pubkey`: hex-encoded pubkey of the workflow owner (used for
     ///   the relay-signed `actor` attribution tag; the relay keypair signs the
     ///   event). It is not an implicit mention recipient.
-    /// - `workflow_id` and `workflow_name`: trusted workflow metadata attached
+    /// - `context`: trusted workflow metadata attached
     ///   to the relay-signed event so clients can identify the automation
     ///   without presenting the relay signing key as a person.
     ///
@@ -68,8 +83,6 @@ pub trait ActionSink: Send + Sync {
         community_id: CommunityId,
         channel_id: &str,
         text: &str,
-        author_pubkey: &str,
-        workflow_id: &str,
-        workflow_name: &str,
+        context: WorkflowMessageContext,
     ) -> Pin<Box<dyn Future<Output = Result<String, ActionSinkError>> + Send + '_>>;
 }

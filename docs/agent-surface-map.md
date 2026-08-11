@@ -157,6 +157,33 @@ Primary files:
 6. The web client mirrors this in `useAgentMentionDelivery.ts` using
    `addWorkspaceMember` and `sendWorkspaceMessage`.
 
+### Run an agent-targeted workflow step
+
+1. `RelayActionSink` resolves exact `@Name` mentions against destination-channel
+   members and checks the stored immutable agent-owner binding.
+2. If at least one target is a managed agent, the relay persists and fans out a
+   relay-only kind `46008` task rather than a visible kind `9` instruction.
+3. `buzz-acp` subscribes to kind `46008` in mention mode. Its inbound owner gate
+   uses the relay-asserted `actor` only for this relay-only kind; ordinary event
+   authorization remains signer-based.
+4. The task prompt suppresses acknowledgements, progress chatter, and direct
+   `buzz messages send` calls. The harness captures `agent_message_chunk`
+   output and publishes the final text as an agent-authored top-level kind `9`
+   message in the task's `h` channel.
+5. The result carries `workflow-result=<task-event-id>`, `buzz:workflow`,
+   `workflow-run`, and `workflow-step` tags for traceability. If the model ends
+   without text, the harness publishes a concise failure status instead of
+   silently completing.
+
+Primary files:
+
+- `crates/buzz-relay/src/workflow_sink.rs`
+- `crates/buzz-core/src/kind.rs`
+- `crates/buzz-acp/src/lib.rs`
+- `crates/buzz-acp/src/queue.rs`
+- `crates/buzz-acp/src/acp.rs`
+- `crates/buzz-acp/src/pool.rs`
+
 ### Manage channel catalog and membership
 
 1. Channel creation publishes kind `9007`; optional `catalog_section` is
@@ -320,11 +347,19 @@ and `profileTab`. Profile views are parsed centrally by
 - `/workflows/$workflowId` — browser workflow definition, manual command, and
   event-trace view.
 
-Relay-generated workflow messages remain signed by the relay key but carry the
-workflow owner's pubkey in `actor`, the stable workflow UUID in
+Relay-generated workflow announcements remain signed by the relay key but carry
+the workflow owner's pubkey in `actor`, the stable workflow UUID in
 `buzz:workflow`, and the trusted display name in `workflow-name`. Web clients
 must present these as workflow automation, not as an unnamed relay user; the
 signing pubkey remains authoritative for edit/delete ownership checks.
+
+Agent-targeted workflow steps use relay-only kind `46008` instead of kind `9`.
+These control-plane events carry `p` targets plus `h`, `actor`, workflow, run,
+and step correlation tags and never render in channel timelines. `buzz-acp`
+authorizes the trusted `actor`, prompts the addressed managed agent, captures
+its ACP final message, and publishes exactly one agent-authored top-level kind
+`9` result tagged with `workflow-result`. Ordinary workflow messages without a
+managed-agent target retain the visible announcement behavior.
 - `/channel-state` — browser-local drafts plus encrypted relay/identity-scoped
   channel mute/star state; accepts `channel` and optional `thread` search keys.
 - `/moderation` — NIP-98-authorized moderator reports/restrictions/audit view.

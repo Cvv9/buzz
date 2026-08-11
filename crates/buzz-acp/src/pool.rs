@@ -566,6 +566,109 @@ pub struct PromptContext {
     pub relay_url: String,
 }
 
+fn build_workflow_agent_result_event(
+    keys: &nostr::Keys,
+    channel_id: Uuid,
+    task: &crate::queue::WorkflowAgentTaskMeta,
+    content: &str,
+) -> Result<nostr::Event, String> {
+    use nostr::{EventBuilder, Kind, Tag};
+
+    let tags = [
+        Tag::parse(["h", &channel_id.to_string()]),
+        Tag::parse(["workflow-result", task.event_id.as_str()]),
+        Tag::parse(["buzz:workflow", task.workflow_id.as_str()]),
+        Tag::parse(["workflow-name", task.workflow_name.as_str()]),
+        Tag::parse(["workflow-run", task.run_id.as_str()]),
+        Tag::parse(["workflow-step", task.step_id.as_str()]),
+    ]
+    .into_iter()
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(|error| format!("result tag: {error}"))?;
+
+    EventBuilder::new(
+        Kind::Custom(buzz_core::kind::KIND_STREAM_MESSAGE as u16),
+        content,
+    )
+    .tags(tags)
+    .sign_with_keys(keys)
+    .map_err(|error| format!("result signing: {error}"))
+}
+
+/// Publish the only human-visible artifact of a background workflow task.
+async fn publish_workflow_agent_result(
+    ctx: &PromptContext,
+    channel_id: Uuid,
+    task: &crate::queue::WorkflowAgentTaskMeta,
+    captured: &str,
+) {
+    let content = if captured.trim().is_empty() {
+        "The background workflow completed without producing a report. Check the workflow run trace and agent runtime logs."
+    } else {
+        captured.trim()
+    };
+    let event = match build_workflow_agent_result_event(&ctx.agent_keys, channel_id, task, content)
+    {
+        Ok(event) => event,
+        Err(error) => {
+            tracing::error!(
+                workflow = %task.workflow_id,
+                run = %task.run_id,
+                step = %task.step_id,
+                "failed to build workflow agent result: {error}"
+            );
+            return;
+        }
+    };
+
+    const ATTEMPTS: u8 = 3;
+    for attempt in 1..=ATTEMPTS {
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(10),
+            ctx.rest_client.submit_event(&event),
+        )
+        .await;
+        match outcome {
+            Ok(Ok(_)) => {
+                tracing::info!(
+                    event_id = %event.id,
+                    workflow = %task.workflow_id,
+                    run = %task.run_id,
+                    step = %task.step_id,
+                    attempt,
+                    "published background workflow result"
+                );
+                return;
+            }
+            Ok(Err(error)) => tracing::warn!(
+                workflow = %task.workflow_id,
+                run = %task.run_id,
+                step = %task.step_id,
+                attempt,
+                "failed to publish background workflow result: {error}"
+            ),
+            Err(_) => tracing::warn!(
+                workflow = %task.workflow_id,
+                run = %task.run_id,
+                step = %task.step_id,
+                attempt,
+                "timed out publishing background workflow result"
+            ),
+        }
+        if attempt < ATTEMPTS {
+            tokio::time::sleep(Duration::from_millis(250 * u64::from(attempt))).await;
+        }
+    }
+
+    tracing::error!(
+        event_id = %event.id,
+        workflow = %task.workflow_id,
+        run = %task.run_id,
+        step = %task.step_id,
+        "background workflow result exhausted publication retries"
+    );
+}
+
 impl AgentPool {
     /// Create a pool from pre-indexed slots (may contain None for failed startups).
     ///
@@ -2110,6 +2213,19 @@ pub async fn run_prompt_task(
                             &source,
                             &control_signal,
                         );
+                        let captured_agent_message = agent.acp.take_captured_agent_message();
+                        if let Some((channel_id, task)) = batch.as_ref().and_then(|batch| {
+                            crate::queue::workflow_agent_task_meta(batch)
+                                .map(|task| (batch.channel_id, task))
+                        }) {
+                            publish_workflow_agent_result(
+                                &ctx,
+                                channel_id,
+                                &task,
+                                &captured_agent_message,
+                            )
+                            .await;
+                        }
                         let usage = agent.acp.take_turn_usage();
                         publish_agent_turn_metric(
                             &ctx,
@@ -2138,6 +2254,14 @@ pub async fn run_prompt_task(
     match prompt_result {
         Ok(stop_reason) => {
             log_stop_reason(&source, &stop_reason);
+
+            let captured_agent_message = agent.acp.take_captured_agent_message();
+            if let Some((channel_id, task)) = batch.as_ref().and_then(|batch| {
+                crate::queue::workflow_agent_task_meta(batch).map(|task| (batch.channel_id, task))
+            }) {
+                publish_workflow_agent_result(&ctx, channel_id, &task, &captured_agent_message)
+                    .await;
+            }
 
             let should_rotate = matches!(
                 stop_reason,
@@ -4037,6 +4161,42 @@ mod tests {
             args: vec![],
             env: vec![],
         }
+    }
+
+    #[test]
+    fn workflow_result_is_agent_authored_top_level_and_correlated() {
+        let keys = Keys::generate();
+        let channel_id = Uuid::new_v4();
+        let task = crate::queue::WorkflowAgentTaskMeta {
+            event_id: "11".repeat(32),
+            workflow_id: Uuid::new_v4().to_string(),
+            workflow_name: "Morning brief".into(),
+            run_id: Uuid::new_v4().to_string(),
+            step_id: "research".into(),
+        };
+        let event = build_workflow_agent_result_event(&keys, channel_id, &task, "Final report")
+            .expect("build result");
+
+        assert_eq!(
+            event.kind.as_u16() as u32,
+            buzz_core::kind::KIND_STREAM_MESSAGE
+        );
+        assert_eq!(event.pubkey, keys.public_key());
+        assert_eq!(event.content, "Final report");
+        let tags: Vec<Vec<String>> = event
+            .tags
+            .iter()
+            .map(|tag| tag.as_slice().to_vec())
+            .collect();
+        assert!(tags.contains(&vec!["h".into(), channel_id.to_string()]));
+        assert!(tags.contains(&vec!["workflow-result".into(), task.event_id]));
+        assert!(tags.contains(&vec!["buzz:workflow".into(), task.workflow_id]));
+        assert!(
+            !tags
+                .iter()
+                .any(|tag| tag.first().map(String::as_str) == Some("e")),
+            "workflow result must be a visible top-level report, not a collapsed thread reply"
+        );
     }
 
     #[test]

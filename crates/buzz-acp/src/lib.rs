@@ -22,7 +22,7 @@ use acp::{AcpClient, EnvVar, McpServer};
 use anyhow::Result;
 use buzz_core::kind::{
     KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION, KIND_STREAM_MESSAGE,
-    KIND_STREAM_REMINDER, KIND_WORKFLOW_APPROVAL_REQUESTED,
+    KIND_STREAM_REMINDER, KIND_WORKFLOW_AGENT_TASK, KIND_WORKFLOW_APPROVAL_REQUESTED,
 };
 use buzz_core::observer::{
     decrypt_observer_payload, encrypt_observer_payload, OBSERVER_FRAME_TELEMETRY,
@@ -255,6 +255,42 @@ async fn author_allowed(
                 || is_owner_or_sibling(author, owner_cache, rest_client).await
         }
     }
+}
+
+/// Resolve the principal whose authority applies to an inbound event.
+///
+/// Ordinary events are authorized as their cryptographic signer. Relay-only
+/// workflow task events are different: the relay signs the control envelope
+/// and records the workflow owner in exactly one `actor` tag. The relay rejects
+/// client-authored kind 46008 events at ingest, so accepting that actor here
+/// preserves the owner's `respond_to` policy without granting arbitrary chat
+/// messages delegated authority.
+fn effective_inbound_author(event: &nostr::Event, agent_pubkey_hex: &str) -> Option<String> {
+    if event.kind.as_u16() as u32 != KIND_WORKFLOW_AGENT_TASK {
+        return Some(event.pubkey.to_hex());
+    }
+
+    let targets_agent = event.tags.iter().any(|tag| {
+        let values = tag.as_slice();
+        values.first().map(String::as_str) == Some("p")
+            && values.get(1).map(String::as_str) == Some(agent_pubkey_hex)
+    });
+    if !targets_agent {
+        return None;
+    }
+
+    let mut actors = event.tags.iter().filter_map(|tag| {
+        let values = tag.as_slice();
+        (values.first().map(String::as_str) == Some("actor"))
+            .then(|| values.get(1).cloned())
+            .flatten()
+    });
+    let actor = actors.next()?;
+    if actors.next().is_some() || actor.len() != 64 || !actor.chars().all(|c| c.is_ascii_hexdigit())
+    {
+        return None;
+    }
+    Some(actor.to_ascii_lowercase())
 }
 
 /// Resolve whether `channel_id` is a DM, for the inbound author gate.
@@ -1726,6 +1762,7 @@ async fn tokio_main() -> Result<()> {
                 kinds: config.kinds_override.clone().unwrap_or_else(|| {
                     vec![
                         KIND_STREAM_MESSAGE,
+                        KIND_WORKFLOW_AGENT_TASK,
                         KIND_WORKFLOW_APPROVAL_REQUESTED,
                         KIND_STREAM_REMINDER,
                     ]
@@ -2451,7 +2488,17 @@ async fn tokio_main() -> Result<()> {
                             // explicit pubkey list on top, for external people;
                             // it never revokes same-owner team bots.
                             {
-                                let author = buzz_event.event.pubkey.to_hex();
+                                let Some(author) = effective_inbound_author(
+                                    &buzz_event.event,
+                                    &pubkey_hex,
+                                ) else {
+                                    tracing::warn!(
+                                        event_id = %buzz_event.event.id,
+                                        kind = kind_u32,
+                                        "dropping malformed workflow agent task"
+                                    );
+                                    continue;
+                                };
                                 // DM hardening: resolve channel type (fail-closed
                                 // to DM) so allowlist/anyone modes cannot be
                                 // exercised by non-owner authors inside DMs.
@@ -2488,7 +2535,11 @@ async fn tokio_main() -> Result<()> {
                             };
                             // Capture author pubkey before queue.push() moves
                             // buzz_event.event (needed for mode gate below).
-                            let author_hex = buzz_event.event.pubkey.to_hex();
+                            let author_hex = effective_inbound_author(
+                                &buzz_event.event,
+                                &pubkey_hex,
+                            )
+                            .unwrap_or_else(|| buzz_event.event.pubkey.to_hex());
                             let event_id_hex = buzz_event.event.id.to_hex();
                             // Clone for the non-cancelling steer fork, which
                             // needs the event to render the steer body. The
@@ -4776,6 +4827,7 @@ mod owner_cache_tests {
 #[cfg(test)]
 mod author_gate_tests {
     use super::*;
+    use nostr::{EventBuilder, Kind, Tag};
 
     /// A `RestClient` for tests. The author-gate decisions exercised here all
     /// resolve from the owner pubkey or sibling cache before any HTTP call, so
@@ -4801,6 +4853,47 @@ mod author_gate_tests {
         cache.cache_sibling(STRANGER.into(), false);
         cache.cache_sibling(EXTERNAL.into(), false);
         cache
+    }
+
+    fn workflow_task(actor: &str, target: &str, extra_actor: Option<&str>) -> nostr::Event {
+        let mut tags = vec![
+            Tag::parse(["actor", actor]).unwrap(),
+            Tag::parse(["p", target]).unwrap(),
+            Tag::parse(["h", &Uuid::new_v4().to_string()]).unwrap(),
+            Tag::parse(["buzz:workflow", &Uuid::new_v4().to_string()]).unwrap(),
+            Tag::parse(["workflow-run", &Uuid::new_v4().to_string()]).unwrap(),
+            Tag::parse(["workflow-step", "brief"]).unwrap(),
+        ];
+        if let Some(second) = extra_actor {
+            tags.push(Tag::parse(["actor", second]).unwrap());
+        }
+        EventBuilder::new(Kind::Custom(KIND_WORKFLOW_AGENT_TASK as u16), "do work")
+            .tags(tags)
+            .sign_with_keys(&nostr::Keys::generate())
+            .unwrap()
+    }
+
+    #[test]
+    fn workflow_task_uses_owner_actor_for_author_gate() {
+        let actor = "ab".repeat(32);
+        let target = "cd".repeat(32);
+        let event = workflow_task(&actor, &target, None);
+        assert_eq!(
+            effective_inbound_author(&event, &target).as_deref(),
+            Some(actor.as_str())
+        );
+    }
+
+    #[test]
+    fn workflow_task_rejects_wrong_target_or_ambiguous_actor() {
+        let actor = "ab".repeat(32);
+        let other_actor = "ef".repeat(32);
+        let target = "cd".repeat(32);
+        let event = workflow_task(&actor, &target, None);
+        assert!(effective_inbound_author(&event, &"01".repeat(32)).is_none());
+
+        let ambiguous = workflow_task(&actor, &target, Some(&other_actor));
+        assert!(effective_inbound_author(&ambiguous, &target).is_none());
     }
 
     #[tokio::test]

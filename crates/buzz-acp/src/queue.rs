@@ -89,6 +89,43 @@ pub struct FlushBatch {
     pub cancel_reason: Option<CancelReason>,
 }
 
+/// Correlation metadata carried by a relay-only workflow agent task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WorkflowAgentTaskMeta {
+    pub event_id: String,
+    pub workflow_id: String,
+    pub workflow_name: String,
+    pub run_id: String,
+    pub step_id: String,
+}
+
+fn first_tag(event: &Event, name: &str) -> Option<String> {
+    event.tags.iter().find_map(|tag| {
+        let values = tag.as_slice();
+        (values.first().map(String::as_str) == Some(name))
+            .then(|| values.get(1).cloned())
+            .flatten()
+    })
+}
+
+/// Return metadata when the last event in a batch is a background workflow
+/// agent task. The last event defines turn scope everywhere else in the queue,
+/// so it also defines whether automatic result publication applies.
+pub fn workflow_agent_task_meta(batch: &FlushBatch) -> Option<WorkflowAgentTaskMeta> {
+    let event = &batch.events.last()?.event;
+    if event.kind.as_u16() as u32 != buzz_core::kind::KIND_WORKFLOW_AGENT_TASK {
+        return None;
+    }
+    Some(WorkflowAgentTaskMeta {
+        event_id: event.id.to_hex(),
+        workflow_id: first_tag(event, "buzz:workflow")?,
+        workflow_name: first_tag(event, "workflow-name")
+            .unwrap_or_else(|| "Workflow automation".to_string()),
+        run_id: first_tag(event, "workflow-run")?,
+        step_id: first_tag(event, "workflow-step")?,
+    })
+}
+
 /// Per-channel event queue with per-channel in-flight enforcement.
 ///
 /// # State Machine
@@ -1470,7 +1507,10 @@ pub fn format_prompt(batch: &FlushBatch, args: &FormatPromptArgs<'_>) -> Vec<Str
     // Agent↔agent turns get no forced anchor — deep nesting is intentional
     // there. DMs are always 1:1 with a human, so they always anchor.
     let sender_pubkey = last_event.event.pubkey.to_hex();
-    let reply_anchor = if is_dm {
+    let workflow_task = workflow_agent_task_meta(batch);
+    let reply_anchor = if workflow_task.is_some() {
+        None
+    } else if is_dm {
         thread_tags
             .root_event_id
             .is_some()
@@ -1491,6 +1531,17 @@ pub fn format_prompt(batch: &FlushBatch, args: &FormatPromptArgs<'_>) -> Vec<Str
         args.conversation_context.is_some(),
         reply_anchor.as_deref(),
     ));
+
+    if let Some(task) = workflow_task {
+        sections.push(format!(
+            "[Background Workflow Task]\n\
+             Workflow: {}\n\
+             Run: {}\n\
+             Step: {}\n\
+             IMPORTANT: Complete the requested work, then return exactly one concise, human-readable final report as your ACP final response. Do not call `buzz messages send` for this task and do not publish acknowledgements, progress updates, tool output, logs, or agent-to-agent coordination. Buzz will publish your final response automatically as a top-level message in the output channel.",
+            task.workflow_name, task.run_id, task.step_id
+        ));
+    }
 
     // 3. Conversation context (thread or DM).
     if let Some(ctx) = args.conversation_context {
@@ -1633,7 +1684,7 @@ pub(crate) fn native_steer_framing() -> (&'static str, &'static str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nostr::{EventBuilder, Keys, Kind, Timestamp};
+    use nostr::{EventBuilder, Keys, Kind, Tag, Timestamp};
     use std::time::Duration;
 
     /// Build a test event with the given content and kind.
@@ -1701,6 +1752,61 @@ mod tests {
         assert_eq!(base_section("hello"), "[Base]\nhello");
         // Internal newlines and leading whitespace are preserved verbatim.
         assert_eq!(base_section("  line1\nline2 "), "[Base]\n  line1\nline2");
+    }
+
+    #[test]
+    fn workflow_task_metadata_and_prompt_use_background_delivery_contract() {
+        let channel_id = Uuid::new_v4();
+        let workflow_id = Uuid::new_v4().to_string();
+        let run_id = Uuid::new_v4().to_string();
+        let event = EventBuilder::new(
+            Kind::Custom(buzz_core::kind::KIND_WORKFLOW_AGENT_TASK as u16),
+            "prepare the brief",
+        )
+        .tags([
+            Tag::parse(["h", &channel_id.to_string()]).unwrap(),
+            Tag::parse(["buzz:workflow", &workflow_id]).unwrap(),
+            Tag::parse(["workflow-name", "Morning brief"]).unwrap(),
+            Tag::parse(["workflow-run", &run_id]).unwrap(),
+            Tag::parse(["workflow-step", "research"]).unwrap(),
+        ])
+        .sign_with_keys(&Keys::generate())
+        .unwrap();
+        let batch = FlushBatch {
+            channel_id,
+            events: vec![BatchEvent {
+                event,
+                prompt_tag: "workflow-task".into(),
+                received_at: Instant::now(),
+            }],
+            cancelled_events: vec![],
+            cancel_reason: None,
+        };
+
+        let meta = workflow_agent_task_meta(&batch).expect("task metadata");
+        assert_eq!(meta.workflow_id, workflow_id);
+        assert_eq!(meta.run_id, run_id);
+        assert_eq!(meta.step_id, "research");
+
+        let sections = format_prompt(
+            &batch,
+            &FormatPromptArgs {
+                agent_core: None,
+                channel_info: None,
+                conversation_context: None,
+                profile_lookup: None,
+                has_system_prompt_support: true,
+                base_prompt: None,
+                system_prompt: None,
+                team_instructions: None,
+                agent_canvas: None,
+            },
+        );
+        let rendered = sections.join("\n");
+        assert!(rendered.contains("[Background Workflow Task]"));
+        assert!(rendered.contains("Do not call `buzz messages send`"));
+        assert!(rendered.contains("publish your final response automatically"));
+        assert!(!rendered.contains("--reply-to"));
     }
 
     #[test]

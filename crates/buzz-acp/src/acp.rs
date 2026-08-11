@@ -273,6 +273,30 @@ pub struct AcpClient {
     /// deltas. Both goose and buzz-agent emit this notification; goose gates
     /// on client capability advertisement, buzz-agent emits unconditionally.
     goose_usage: UsageTracker,
+    /// Text emitted through `agent_message_chunk` during the current prompt.
+    /// Background workflow tasks consume this at turn completion and publish it
+    /// as the guaranteed human-facing result.
+    captured_agent_message: String,
+}
+
+fn append_captured_agent_message(captured: &mut String, text: &str) {
+    // Match the channel message builder's 64 KiB content limit and preserve a
+    // valid UTF-8 boundary when a verbose model exceeds it.
+    const MAX_CAPTURE_BYTES: usize = 64 * 1024;
+    let remaining = MAX_CAPTURE_BYTES.saturating_sub(captured.len());
+    if remaining == 0 {
+        return;
+    }
+    let end = if text.len() <= remaining {
+        text.len()
+    } else {
+        text.char_indices()
+            .map(|(index, _)| index)
+            .take_while(|index| *index <= remaining)
+            .last()
+            .unwrap_or(0)
+    };
+    captured.push_str(&text[..end]);
 }
 
 /// Recursively merge `overlay` into `base`, with `overlay` winning on scalar/shape
@@ -613,6 +637,7 @@ impl AcpClient {
             steering_supported: false,
             steer_rx: None,
             goose_usage: UsageTracker::default(),
+            captured_agent_message: String::new(),
         })
     }
 
@@ -831,6 +856,7 @@ impl AcpClient {
         idle_timeout: std::time::Duration,
         max_duration: std::time::Duration,
     ) -> Result<StopReason, AcpError> {
+        self.captured_agent_message.clear();
         let params = build_prompt_params(session_id, prompt_blocks);
         let hard_deadline = tokio::time::Instant::now() + max_duration;
         self.current_hard_deadline = Some(hard_deadline);
@@ -942,6 +968,11 @@ impl AcpClient {
     /// publish a kind 44200 NIP-AM event.
     pub fn take_turn_usage(&mut self) -> Option<TurnUsage> {
         self.goose_usage.take()
+    }
+
+    /// Consume the text streamed by the agent during the most recent prompt.
+    pub fn take_captured_agent_message(&mut self) -> String {
+        std::mem::take(&mut self.captured_agent_message)
     }
 
     /// Install a per-turn steer request channel for goose-native
@@ -1796,6 +1827,7 @@ impl AcpClient {
             "agent_message_chunk" => {
                 if let Some(text) = update["content"]["text"].as_str() {
                     tracing::info!(target: "acp::stream", "{text}");
+                    append_captured_agent_message(&mut self.captured_agent_message, text);
                 }
                 false
             }
@@ -3685,6 +3717,14 @@ mod tests {
         AcpClient::spawn("cat", &[], &[], false)
             .await
             .expect("spawn cat as inert client")
+    }
+
+    #[test]
+    fn captures_agent_message_chunks_for_workflow_result_publication() {
+        let mut captured = String::new();
+        append_captured_agent_message(&mut captured, "Executive summary");
+        append_captured_agent_message(&mut captured, "\n\nFinding");
+        assert_eq!(captured, "Executive summary\n\nFinding");
     }
 
     /// Build a `session/update` JSON-RPC notification carrying a

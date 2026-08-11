@@ -586,6 +586,13 @@ pub const KIND_WORKFLOW_COMPLETED: u32 = 46005;
 pub const KIND_WORKFLOW_FAILED: u32 = 46006;
 /// The workflow was cancelled before completion.
 pub const KIND_WORKFLOW_CANCELLED: u32 = 46007;
+/// Relay-only background task addressed to one or more managed agents.
+///
+/// The prompt is carried in `content`; `p` tags identify target agents, `h`
+/// identifies the channel where the final human-readable result must be
+/// published, and workflow/run/step tags provide durable correlation. This is
+/// a control-plane event and must never render as a chat message.
+pub const KIND_WORKFLOW_AGENT_TASK: u32 = 46008;
 /// A workflow step is waiting for human approval.
 pub const KIND_WORKFLOW_APPROVAL_REQUESTED: u32 = 46010;
 /// A pending workflow approval was granted.
@@ -755,6 +762,7 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_WORKFLOW_COMPLETED,
     KIND_WORKFLOW_FAILED,
     KIND_WORKFLOW_CANCELLED,
+    KIND_WORKFLOW_AGENT_TASK,
     KIND_WORKFLOW_APPROVAL_REQUESTED,
     KIND_WORKFLOW_APPROVAL_GRANTED,
     KIND_WORKFLOW_APPROVAL_DENIED,
@@ -849,6 +857,7 @@ pub const fn is_relay_only_kind(kind: u32) -> bool {
             | KIND_DM_VISIBILITY
             | KIND_THREAD_SUMMARY
             | KIND_WINDOW_BOUNDS
+            | KIND_WORKFLOW_AGENT_TASK
     )
 }
 
@@ -924,6 +933,7 @@ mod tests {
     #[test]
     fn nip43_membership_snapshot_is_relay_only() {
         assert!(is_relay_only_kind(KIND_NIP43_MEMBERSHIP_LIST));
+        assert!(is_relay_only_kind(KIND_WORKFLOW_AGENT_TASK));
         assert!(!is_relay_only_kind(KIND_NIP43_LEAVE_REQUEST));
     }
 
