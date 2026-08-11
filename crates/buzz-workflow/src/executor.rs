@@ -571,9 +571,13 @@ pub async fn dispatch_action(
                     community_id,
                     &channel_id,
                     text,
-                    &owner_pubkey_hex,
-                    &workflow.id.to_string(),
-                    &workflow.name,
+                    crate::action_sink::WorkflowMessageContext {
+                        author_pubkey: owner_pubkey_hex,
+                        workflow_id: workflow.id.to_string(),
+                        workflow_name: workflow.name.clone(),
+                        run_id: run_id.to_string(),
+                        step_id: step_id.to_owned(),
+                    },
                 )
                 .await
                 .map_err(WorkflowError::from)?;

@@ -8,9 +8,9 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Weak};
 
-use buzz_core::kind::KIND_STREAM_MESSAGE;
+use buzz_core::kind::{KIND_STREAM_MESSAGE, KIND_WORKFLOW_AGENT_TASK};
 use buzz_core::tenant::CommunityId;
-use buzz_workflow::action_sink::{ActionSink, ActionSinkError};
+use buzz_workflow::action_sink::{ActionSink, ActionSinkError, WorkflowMessageContext};
 use chrono::Utc;
 use nostr::{EventBuilder, Kind, Tag};
 use tracing::info;
@@ -175,15 +175,10 @@ impl ActionSink for RelayActionSink {
         community_id: CommunityId,
         channel_id: &str,
         text: &str,
-        author_pubkey: &str,
-        workflow_id: &str,
-        workflow_name: &str,
+        context: WorkflowMessageContext,
     ) -> Pin<Box<dyn Future<Output = Result<String, ActionSinkError>> + Send + '_>> {
         let channel_id = channel_id.to_owned();
         let text = text.to_owned();
-        let author_pubkey = author_pubkey.to_owned();
-        let workflow_id = workflow_id.to_owned();
-        let workflow_name = workflow_name.to_owned();
 
         Box::pin(async move {
             // 0. Upgrade weak reference — fails only during shutdown.
@@ -239,9 +234,10 @@ impl ActionSink for RelayActionSink {
                 ));
             }
 
-            let author_pubkey = nostr::PublicKey::from_hex(&author_pubkey).map_err(|e| {
-                ActionSinkError::InvalidInput(format!("invalid author pubkey: {e}"))
-            })?;
+            let author_pubkey =
+                nostr::PublicKey::from_hex(&context.author_pubkey).map_err(|e| {
+                    ActionSinkError::InvalidInput(format!("invalid author pubkey: {e}"))
+                })?;
             let author_pubkey_bytes = author_pubkey.to_bytes().to_vec();
             let author_pubkey_hex = author_pubkey.to_hex();
             let is_member = state
@@ -254,23 +250,27 @@ impl ActionSink for RelayActionSink {
                 ));
             }
 
-            // 3. Build kind:9 Nostr event
-            //    - Signed by relay keypair (event.pubkey = relay pubkey)
-            //    - `actor` attributes the message to the workflow owner without
-            //      turning every workflow post into an Inbox mention
-            //    - `h` tag scopes to the channel (NIP-29, canonical UUID)
-            //    - `buzz:workflow` tag prevents recursive workflow triggering
-            //    - one `p` tag per `@Name` that resolves to a channel member,
-            //      so mentioned agents are woken (wake is `p`-tag gated)
+            // 3. Resolve mentions before choosing the event surface.
+            //
+            // A workflow message that explicitly targets at least one managed
+            // agent is a control-plane task (kind 46008), not chat. The task is
+            // relay-only and remains invisible in channel timelines; the ACP
+            // harness publishes the agent's final output as the visible kind:9
+            // result. Messages without an agent target retain the ordinary
+            // kind:9 announcement behavior.
             let mut tags = vec![
                 Tag::parse(["actor", &author_pubkey_hex])
                     .map_err(|e| ActionSinkError::EventBuild(format!("actor tag: {e}")))?,
                 Tag::parse(["h", &channel_id_canonical])
                     .map_err(|e| ActionSinkError::EventBuild(format!("h tag: {e}")))?,
-                Tag::parse(["buzz:workflow", workflow_id.as_str()])
+                Tag::parse(["buzz:workflow", context.workflow_id.as_str()])
                     .map_err(|e| ActionSinkError::EventBuild(format!("workflow tag: {e}")))?,
-                Tag::parse(["workflow-name", workflow_name.as_str()])
+                Tag::parse(["workflow-name", context.workflow_name.as_str()])
                     .map_err(|e| ActionSinkError::EventBuild(format!("workflow-name tag: {e}")))?,
+                Tag::parse(["workflow-run", context.run_id.as_str()])
+                    .map_err(|e| ActionSinkError::EventBuild(format!("workflow-run tag: {e}")))?,
+                Tag::parse(["workflow-step", context.step_id.as_str()])
+                    .map_err(|e| ActionSinkError::EventBuild(format!("workflow-step tag: {e}")))?,
             ];
 
             // Resolve `@Name` mentions to channel-member pubkeys and append a
@@ -296,14 +296,33 @@ impl ActionSink for RelayActionSink {
                     Some((name, nostr::PublicKey::from_slice(&u.pubkey).ok()?.to_hex()))
                 })
                 .collect();
-            for mentioned in resolve_mention_pubkeys(&text, &named_members) {
+            let mentioned_pubkeys = resolve_mention_pubkeys(&text, &named_members);
+            let mut targets_agent = false;
+            for mentioned in &mentioned_pubkeys {
+                let mentioned_bytes = nostr::PublicKey::from_hex(mentioned)
+                    .map_err(|e| {
+                        ActionSinkError::InvalidInput(format!("invalid mentioned pubkey: {e}"))
+                    })?
+                    .to_bytes()
+                    .to_vec();
+                targets_agent |= state
+                    .db
+                    .get_agent_channel_policy(tenant.community(), &mentioned_bytes)
+                    .await
+                    .map_err(|e| ActionSinkError::Database(e.to_string()))?
+                    .is_some_and(|(_, owner)| owner.is_some());
                 tags.push(
-                    Tag::parse(["p", &mentioned])
+                    Tag::parse(["p", mentioned])
                         .map_err(|e| ActionSinkError::EventBuild(format!("mention p tag: {e}")))?,
                 );
             }
 
-            let kind = Kind::from(KIND_STREAM_MESSAGE as u16);
+            let kind_u32 = if targets_agent {
+                KIND_WORKFLOW_AGENT_TASK
+            } else {
+                KIND_STREAM_MESSAGE
+            };
+            let kind = Kind::from(kind_u32 as u16);
             let event = EventBuilder::new(kind, &text)
                 .tags(tags)
                 .sign_with_keys(&state.relay_keypair)
@@ -311,8 +330,6 @@ impl ActionSink for RelayActionSink {
 
             let event_id_hex = event.id.to_hex();
             let event_id_bytes = event.id.as_bytes().to_vec();
-            let kind_u32 = KIND_STREAM_MESSAGE;
-
             let event_created_at = {
                 let ts = event.created_at.as_secs() as i64;
                 chrono::DateTime::from_timestamp(ts, 0).unwrap_or_else(Utc::now)
@@ -325,19 +342,21 @@ impl ActionSink for RelayActionSink {
                 "Workflow SendMessage: posting kind {kind_u32} event"
             );
 
-            // 4. Persist event with thread metadata (matches REST handler path).
-            //    Workflow messages are always top-level: depth=0, no parent/root.
-            let thread_meta = Some(buzz_db::event::ThreadMetadataParams {
-                event_id: &event_id_bytes,
-                event_created_at,
-                channel_id: channel_uuid,
-                parent_event_id: None,
-                parent_event_created_at: None,
-                root_event_id: None,
-                root_event_created_at: None,
-                depth: 0,
-                broadcast: false,
-            });
+            // Only visible stream messages participate in thread materialization.
+            // Background task events are channel-scoped for routing but are not
+            // timeline roots and therefore must not grow thread counters.
+            let thread_meta =
+                (kind_u32 == KIND_STREAM_MESSAGE).then_some(buzz_db::event::ThreadMetadataParams {
+                    event_id: &event_id_bytes,
+                    event_created_at,
+                    channel_id: channel_uuid,
+                    parent_event_id: None,
+                    parent_event_created_at: None,
+                    root_event_id: None,
+                    root_event_created_at: None,
+                    depth: 0,
+                    broadcast: false,
+                });
 
             let (stored_event, was_inserted) = state
                 .db
@@ -616,7 +635,7 @@ mod integration_tests {
 
     #[tokio::test]
     #[ignore = "requires Postgres"]
-    async fn workflow_send_message_only_p_tags_explicitly_mentioned_member() {
+    async fn workflow_send_message_targets_managed_agent_in_background() {
         let state = test_state().await;
 
         let author = nostr::Keys::generate();
@@ -659,9 +678,19 @@ mod integration_tests {
             .expect("ensure agent user row");
         state
             .db
+            .ensure_user(community, &author.public_key().to_bytes())
+            .await
+            .expect("ensure agent owner user row");
+        state
+            .db
             .update_user_profile(community, &agent_bytes, Some("Robby"), None, None, None)
             .await
             .expect("set agent display name");
+        assert!(state
+            .db
+            .set_agent_owner(community, &agent_bytes, &author.public_key().to_bytes(),)
+            .await
+            .expect("bind agent owner"));
         state
             .db
             .add_member(
@@ -680,9 +709,13 @@ mod integration_tests {
                 community,
                 &channel.id.to_string(),
                 "heads up @Robby — please take a look",
-                &author_hex,
-                "2ecf7254-bde5-4e17-a392-86ca2d00e82d",
-                "Agent health check",
+                WorkflowMessageContext {
+                    author_pubkey: author_hex.clone(),
+                    workflow_id: "2ecf7254-bde5-4e17-a392-86ca2d00e82d".into(),
+                    workflow_name: "Agent health check".into(),
+                    run_id: "4f9c7a5a-2af2-4eb8-8c6f-4e4f3df7584b".into(),
+                    step_id: "ask-agent".into(),
+                },
             )
             .await
             .expect("send_message");
@@ -697,6 +730,12 @@ mod integration_tests {
             .await
             .expect("query event")
             .expect("event persisted");
+
+        assert_eq!(
+            stored.event.kind.as_u16() as u32,
+            KIND_WORKFLOW_AGENT_TASK,
+            "agent-targeted workflow dispatch must stay off the chat timeline"
+        );
 
         let p_tag_targets: Vec<&str> = stored
             .event
@@ -714,6 +753,15 @@ mod integration_tests {
         assert!(stored.event.tags.iter().any(|tag| {
             tag.as_slice().first().map(String::as_str) == Some("workflow-name")
                 && tag.as_slice().get(1).map(String::as_str) == Some("Agent health check")
+        }));
+        assert!(stored.event.tags.iter().any(|tag| {
+            tag.as_slice().first().map(String::as_str) == Some("workflow-run")
+                && tag.as_slice().get(1).map(String::as_str)
+                    == Some("4f9c7a5a-2af2-4eb8-8c6f-4e4f3df7584b")
+        }));
+        assert!(stored.event.tags.iter().any(|tag| {
+            tag.as_slice().first().map(String::as_str) == Some("workflow-step")
+                && tag.as_slice().get(1).map(String::as_str) == Some("ask-agent")
         }));
 
         assert!(
@@ -736,6 +784,37 @@ mod integration_tests {
             actor_tag_targets,
             vec![author_hex.as_str()],
             "workflow owner should be attributed exactly once via actor tag"
+        );
+
+        let announcement_id = sink
+            .send_message(
+                community,
+                &channel.id.to_string(),
+                "The maintenance window begins at 18:00.",
+                WorkflowMessageContext {
+                    author_pubkey: author_hex,
+                    workflow_id: "2ecf7254-bde5-4e17-a392-86ca2d00e82d".into(),
+                    workflow_name: "Agent health check".into(),
+                    run_id: "4f9c7a5a-2af2-4eb8-8c6f-4e4f3df7584b".into(),
+                    step_id: "announce".into(),
+                },
+            )
+            .await
+            .expect("send visible announcement");
+        let announcement_bytes = nostr::EventId::from_hex(&announcement_id)
+            .expect("announcement event id")
+            .as_bytes()
+            .to_vec();
+        let announcement = state
+            .db
+            .get_event_by_id(community, &announcement_bytes)
+            .await
+            .expect("query announcement")
+            .expect("announcement persisted");
+        assert_eq!(
+            announcement.event.kind.as_u16() as u32,
+            KIND_STREAM_MESSAGE,
+            "workflow announcements without a managed-agent target remain visible"
         );
     }
 }

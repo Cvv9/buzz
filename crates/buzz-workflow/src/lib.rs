@@ -498,11 +498,34 @@ impl WorkflowEngine {
                 }
             };
 
+            // A user can accidentally create the same canonical scheduled
+            // workflow under multiple NIP-33 `d` coordinates. Per-ID fire
+            // claims cannot coalesce those rows, so suppress exact duplicates
+            // within this deterministic created_at-ordered scan. Distinct
+            // definitions, owners, channels, and communities still fire
+            // independently.
+            let mut scheduled_definitions = std::collections::HashSet::new();
+
             for workflow in &workflows {
                 // The same workflow UUID may exist in another community; carry
                 // the row's owning community through fire-tracking, run creation,
                 // and execution so a fire/run never crosses tenants.
                 let community_id = workflow.community_id;
+                let schedule_key = (
+                    community_id,
+                    workflow.owner_pubkey.clone(),
+                    workflow.channel_id,
+                    workflow.definition_hash.clone(),
+                );
+                if !scheduled_definitions.insert(schedule_key) {
+                    tracing::warn!(
+                        community_id = %community_id,
+                        workflow_id = %workflow.id,
+                        workflow_name = %workflow.name,
+                        "Cron tick: suppressing duplicate active scheduled workflow definition"
+                    );
+                    continue;
+                }
                 let def: schema::WorkflowDef =
                     match serde_json::from_value(workflow.definition.clone()) {
                         Ok(d) => d,
