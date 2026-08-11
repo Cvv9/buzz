@@ -97,16 +97,23 @@ async function installVideoReviewHarness(
   page: Page,
   {
     accentColor = VIDEO_REVIEW_ACCENT,
+    serveMedia = false,
     themeName,
-  }: { accentColor?: string; themeName?: string } = {},
+  }: {
+    accentColor?: string;
+    serveMedia?: boolean;
+    themeName?: string;
+  } = {},
 ) {
-  await page.route("**/media/*.mp4", (route) =>
-    route.fulfill({
-      body: Buffer.from(TEST_VIDEO_WEBM_BASE64, "base64"),
-      contentType: "video/webm",
-      status: 200,
-    }),
-  );
+  if (serveMedia) {
+    await page.route("**/media/*.mp4", (route) =>
+      route.fulfill({
+        body: Buffer.from(TEST_VIDEO_WEBM_BASE64, "base64"),
+        contentType: "video/webm",
+        status: 200,
+      }),
+    );
+  }
   await page.addInitScript(
     ({ accentColor, themeName }) => {
       if (themeName) {
@@ -255,6 +262,7 @@ test("video upload previews use poster frames and inline videos open review mode
   page,
 }) => {
   await installVideoReviewHarness(page, {
+    serveMedia: true,
     themeName: VIDEO_REVIEW_ACCENT_THEME,
   });
 
