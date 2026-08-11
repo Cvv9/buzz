@@ -163,6 +163,9 @@ grep -Fq 'release artifact basename collision' "$release_workflow"
   echo "only the final writer may upload versioned and rolling release assets" >&2; exit 1;
 }
 grep -Fq 'if: env.already_published' "$release_workflow"
+grep -Fq 'Validate stable updater promotion source' "$release_workflow"
+grep -Fq 'RELEASE_REPOSITORY: ${{ github.repository }}' "$release_workflow"
+grep -Fq 'gh release upload buzz-desktop-latest latest.json --repo "$RELEASE_REPOSITORY" --clobber' "$release_workflow"
 grep -Fq 'if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --silent 2>/dev/null; then' "$auto_tag"
 if grep -F 'git/ref/tags/$TAG' "$auto_tag" | grep -Fq '|| true'; then
   echo "auto-tag ignores a failed tag lookup, so a 404 body can look like an existing tag" >&2

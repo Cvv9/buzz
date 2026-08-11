@@ -67,13 +67,13 @@ test("DMs never accept adds, even from an owner", () => {
   );
 });
 
-test("unknown visibility fails closed for non-elevated callers", () => {
+test("unknown visibility fails closed", () => {
   assert.equal(
     canAddChannelMembers({ channelType: "stream", selfRole: "member" }),
     false,
   );
   assert.equal(
     canAddChannelMembers({ channelType: "stream", selfRole: "owner" }),
-    true,
+    false,
   );
 });
