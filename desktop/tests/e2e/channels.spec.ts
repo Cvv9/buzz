@@ -3788,7 +3788,7 @@ test("members sidebar retains distinct same-persona managed agents", async ({
   await expect(page.getByText("Pinky", { exact: true })).toHaveCount(2);
 });
 
-test("private-channel members cannot add people without owner/admin", async ({
+test("private-channel ordinary members cannot invite people or managed agents", async ({
   page,
 }) => {
   await installMockBridge(page, {
@@ -3802,18 +3802,17 @@ test("private-channel members cannot add people without owner/admin", async ({
   });
   await page.goto("/");
   // secret-projects is a private (non-DM) channel where the current user is a
-  // plain member. The relay rejects their kind:9000, so the affordance is
-  // withheld and the reason shown instead of failing after the fact.
+  // plain member. Only owners/admins may extend access to private history.
   await openMembersSidebar(page, "secret-projects");
 
-  await expect(page.getByTestId("members-sidebar-add-denied")).toBeVisible();
-  // The field stays, but only as a filter over existing members.
+  await expect(page.getByTestId("members-sidebar-add-denied")).toContainText(
+    "Only channel owners and admins can add people to a private channel.",
+  );
   await expect(
     page.getByTestId("channel-management-search-users"),
   ).toHaveAttribute("placeholder", "Search people and agents");
 
   await page.getByTestId("channel-management-search-users").fill("char");
-  await expect(page.getByText("Not in this channel")).toHaveCount(0);
   await expect(
     page.getByTestId(
       `channel-user-search-result-${TEST_IDENTITIES.charlie.pubkey}`,
@@ -3822,6 +3821,10 @@ test("private-channel members cannot add people without owner/admin", async ({
   await expect(
     page.getByTestId(`sidebar-member-${TEST_IDENTITIES.charlie.pubkey}`),
   ).toHaveCount(0);
+  await expect(page.getByTestId("channel-management-add-role")).toHaveCount(0);
+  await expect(page.getByTestId("channel-management-add-members")).toHaveCount(
+    0,
+  );
 });
 
 test("open-channel members can add people and managed agents without admin", async ({

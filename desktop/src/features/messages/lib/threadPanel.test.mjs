@@ -640,6 +640,34 @@ test("buildMainTimelineEntries renders a relay-only thread summary", () => {
   });
 });
 
+test("buildMainTimelineEntries derives a summary from a live direct reply", () => {
+  const root = message({ id: "root", createdAt: 1 });
+  const liveReply = message({
+    id: "live-reply",
+    createdAt: 12,
+    parentId: "root",
+    rootId: "root",
+    depth: 1,
+    pubkey: "lina",
+    author: "Lina",
+    tags: [["e", "root", "", "reply"]],
+  });
+
+  const entries = buildMainTimelineEntries(
+    [root, liveReply],
+    new Set(),
+    new Map(),
+  );
+
+  assert.equal(entries.length, 1, "the reply stays out of the main timeline");
+  assert.equal(entries[0].message.id, "root");
+  assert.equal(entries[0].summary?.replyCount, 1);
+  assert.equal(entries[0].summary?.lastReplyAt, 12);
+  assert.deepEqual(entries[0].summary?.participants, [
+    { id: "lina", author: "Lina", avatarUrl: null },
+  ]);
+});
+
 test("buildMainTimelineEntries keeps the 3 most-recent relay participants oldest-first", () => {
   const root = message({ id: "root", createdAt: 1 });
   const summaries = new Map([

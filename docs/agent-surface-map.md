@@ -42,6 +42,8 @@ historical event.
 | Agent channel-add admission | Community-scoped `users.agent_owner_pubkey` plus `users.channel_add_policy` | Relay-authenticated agent or root operator | Owner mapping is immutable. `buzz-admin set-agent-owner` atomically ensures both principals, binds the owner, and sets `owner_only`; it never opens an `anyone` window. |
 | Message author | message event `pubkey` | Sender | Stable identity reference for timeline and Inbox. Presentation is resolved at render time. |
 | Local managed record | desktop encrypted/local managed-agent store | Agent owner | Runtime command, secrets, environment, lifecycle and local instance fields that must never enter public projections. |
+| Live agent activity | Ephemeral encrypted kind `24200` (`KIND_AGENT_OBSERVER_FRAME`) | Managed agent / ACP harness | Owner-only observer frames used for current work, liveness, and safe activity descriptors. They are never a relay archive or a community directory signal. |
+| Turn metric archive | Persistent encrypted kind `44200` (`KIND_AGENT_TURN_METRIC`) plus local archive index | Managed agent / ACP harness | Owner-only, device-local reported usage. The archive can return partial/unknown counters and estimates; it is not a billing ledger or public model assertion. |
 | Global agent defaults | desktop local configuration | Current desktop user | Defaults only. Per-agent settings override them. |
 
 ### Field rules
@@ -144,6 +146,41 @@ Primary files:
 - `desktop/src-tauri/src/commands/agents.rs`
 - `desktop/src-tauri/src/commands/personas/`
 - `desktop/src-tauri/src/commands/agents_profile.rs`
+
+### Operate my agents
+
+1. Desktop `/agents` renders the **My agents** fleet before the hosted catalog.
+   It contains only locally managed agents and kind `10100` agents whose
+   declared `ownerPubkey` equals the current identity. Shared/community agents
+   stay in the hosted catalog and never receive another user's activity or
+   usage projection.
+2. `useAgentObserverIngestion` subscribes only to the current owner's encrypted
+   kind `24200` frames. `activeAgentTurnsStore` derives a live turn id, timing,
+   and liveness summary; `agentFleet.ts` may display only a safe tool/lifecycle
+   descriptor label. It must never display observer payloads, prompts, plans,
+   tool arguments/results, or channel names in the fleet.
+3. `get_agent_usage_series` reads the current identity + relay's local
+   kind-`44200` archive across the last seven local calendar days. The desktop
+   fleet labels token/model values as **reported**, cost as a **reported
+   estimate**, and preserves unavailable or partial values rather than showing
+   a zero. It does not total cost across the fleet and does not claim any value
+   is an actual bill.
+4. Activity navigation continues through `useOpenAgentActivity`, which checks
+   that the viewer can open a channel before routing. The fleet intentionally
+   opens the generic activity surface and never carries a channel id.
+5. The Local archive setting remains the sole control for metric collection.
+   When it is off, the fleet explains that only local archiving enables usage
+   history and links to Settings → Local archive.
+
+Primary files:
+
+- `desktop/src/features/agents/ui/AgentsView.tsx`
+- `desktop/src/features/agents/ui/AgentFleetSection.tsx`
+- `desktop/src/features/agents/useAgentFleet.ts`
+- `desktop/src/features/agents/lib/agentFleet.ts`
+- `desktop/src/features/agents/observerRelayStore.ts`
+- `desktop/src/features/agents/activeAgentTurnsStore.ts`
+- `desktop/src/shared/api/tauriArchive.ts`
 
 ### Mention an agent
 

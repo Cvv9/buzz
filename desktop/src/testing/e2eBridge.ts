@@ -61,6 +61,7 @@ import type {
   RawInstallRuntimeResult,
   RuntimeFileConfigSubset,
 } from "@/shared/api/tauri";
+import type { AgentUsageSeries } from "@/shared/api/tauriArchive";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 import {
   isValidLinkPreviewSnapshotCanonicalUrl,
@@ -339,6 +340,10 @@ type E2eConfig = {
     /** Delay (ms) applied to continuation channel-window requests so e2e
      *  tests can observe the in-flight prepend window. 0/undefined = instant. */
     channelWindowDelayMs?: number;
+    /** Delay (ms) after snapshotting a newest channel-window response so E2E
+     *  tests can deliver live replies and summaries while that stale head page
+     *  is in flight. 0/undefined = instant. */
+    channelWindowHeadSnapshotDelayMs?: number;
     profileReadDelayMs?: number;
     profileReadError?: string;
     /** Override whether get_profile reports a real kind:0 event. */
@@ -371,6 +376,13 @@ type E2eConfig = {
     linkPreviewMetadataDelayMs?: number;
     /** Simulates native cold-cache startup work before the async response. */
     linkPreviewMetadataStartBlockMs?: number;
+    /** Delays link-preview snapshot media uploads so specs can exercise the
+     *  composer's settle-gated disabled state before the snapshot tag is ready. */
+    linkPreviewUploadDelayMs?: number;
+    /** Substrings of `link-preview-*` upload filenames whose `upload_media_bytes`
+     *  call should reject, so specs can drive a per-media snapshot upload failure
+     *  (e.g. `["link-preview-image"]` fails only the thumbnail, favicon survives). */
+    linkPreviewUploadErrorFilenames?: string[];
     searchProfiles?: MockSearchProfileSeed[];
     updateAvailable?: boolean;
     updateChannelDelayMs?: number;
@@ -448,6 +460,10 @@ type E2eConfig = {
       scope_value: string;
       kinds: string; // JSON-encoded integer array, e.g. "[9,40002]"
     }>;
+    /** Local-only kind-44200 aggregate returned to operations fleet tests. */
+    agentUsageSeries?: AgentUsageSeries;
+    /** Makes the local usage-series command fail so retry/error states are testable. */
+    agentUsageSeriesError?: string;
     // Event IDs that `get_event` should report as definitively not found.
     // Causes `useDraftRootStatus` to classify as `deleted`.
     deletedEventIds?: string[];
@@ -469,6 +485,8 @@ type E2eConfig = {
     // When true, `get_identity` returns `locked: true` until `import_identity` is
     // called. Drives the keyring-locked screen in tests.
     identityLocked?: boolean;
+    /** Delay (ms) applied to identity import so specs can observe pending navigation. */
+    identityImportDelayMs?: number;
     /**
      * Global agent config returned by `get_global_agent_config`. Defaults to
      * an empty config (no provider, model, or env vars) if not specified.
@@ -5089,31 +5107,53 @@ async function handleGetChannelWindow(
     return relayQuery(config, [filter]);
   };
 
-  if (!args.cursor) {
-    return execute();
-  }
-
   const probe = window as unknown as {
     __CHANNEL_WINDOW_FETCH_COUNT__?: number;
     __CHANNEL_WINDOW_INFLIGHT__?: number;
     __CHANNEL_WINDOW_INFLIGHT_PEAK__?: number;
   };
+  if (!args.cursor) {
+    const headSnapshotDelayMs =
+      getConfig()?.mock?.channelWindowHeadSnapshotDelayMs ?? 0;
+    if (headSnapshotDelayMs <= 0) {
+      return execute();
+    }
+    probe.__CHANNEL_WINDOW_INFLIGHT__ =
+      (probe.__CHANNEL_WINDOW_INFLIGHT__ ?? 0) + 1;
+    probe.__CHANNEL_WINDOW_INFLIGHT_PEAK__ = Math.max(
+      probe.__CHANNEL_WINDOW_INFLIGHT_PEAK__ ?? 0,
+      probe.__CHANNEL_WINDOW_INFLIGHT__,
+    );
+    try {
+      // A head fetch must snapshot before it waits.  That is the real race:
+      // the relay's older response returns after live reply/39005 delivery.
+      const snapshot = await execute();
+      await new Promise((resolve) =>
+        window.setTimeout(resolve, headSnapshotDelayMs),
+      );
+      return snapshot;
+    } finally {
+      probe.__CHANNEL_WINDOW_INFLIGHT__ =
+        (probe.__CHANNEL_WINDOW_INFLIGHT__ ?? 1) - 1;
+    }
+  }
+
   probe.__CHANNEL_WINDOW_FETCH_COUNT__ =
     (probe.__CHANNEL_WINDOW_FETCH_COUNT__ ?? 0) + 1;
-
   const delayMs = getConfig()?.mock?.channelWindowDelayMs ?? 0;
   if (delayMs <= 0) {
     return execute();
   }
-
   probe.__CHANNEL_WINDOW_INFLIGHT__ =
     (probe.__CHANNEL_WINDOW_INFLIGHT__ ?? 0) + 1;
   probe.__CHANNEL_WINDOW_INFLIGHT_PEAK__ = Math.max(
     probe.__CHANNEL_WINDOW_INFLIGHT_PEAK__ ?? 0,
     probe.__CHANNEL_WINDOW_INFLIGHT__,
   );
-  await new Promise((resolve) => window.setTimeout(resolve, delayMs));
   try {
+    // Preserve the older-history seam's established behavior: the request is
+    // delayed before it reads so paging tests can prepare the next page.
+    await new Promise((resolve) => window.setTimeout(resolve, delayMs));
     return await execute();
   } finally {
     probe.__CHANNEL_WINDOW_INFLIGHT__ =
@@ -8952,6 +8992,16 @@ async function resolveMockUploadDescriptorForBytes(
   args: { data: number[] | Uint8Array; filename?: string | null },
   config: E2eConfig | undefined,
 ): Promise<RawBlobDescriptor> {
+  const uploadDelayMs = config?.mock?.linkPreviewUploadDelayMs ?? 0;
+  if (args.filename?.startsWith("link-preview-")) {
+    if (uploadDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, uploadDelayMs));
+    }
+    const errorFilenames = config?.mock?.linkPreviewUploadErrorFilenames;
+    if (errorFilenames?.some((needle) => args.filename?.includes(needle))) {
+      throw new Error(`mock upload failed for ${args.filename}`);
+    }
+  }
   const configured = config?.mock?.uploadDescriptors;
   if (configured !== undefined) {
     const descriptors = await resolveMockUploadDescriptors(config);
@@ -11207,6 +11257,12 @@ export function maybeInstallE2eTauriMocks() {
         };
       }
       case "import_identity": {
+        const importDelayMs = activeConfig?.mock?.identityImportDelayMs ?? 0;
+        if (importDelayMs > 0) {
+          await new Promise((resolve) =>
+            window.setTimeout(resolve, importDelayMs),
+          );
+        }
         const request = payload as { nsec?: string; password?: string } | null;
         const input = request?.nsec ?? "";
         if (input.trim().startsWith("ncryptsec1")) {
@@ -13025,6 +13081,27 @@ export function maybeInstallE2eTauriMocks() {
       case "archive_events":
         // Returns the ArchiveBatchResult shape the UI expects.
         return { persisted: 0, dropped: 0 };
+      case "get_agent_usage_series":
+        if (activeConfig?.mock?.agentUsageSeriesError) {
+          throw new Error(activeConfig.mock.agentUsageSeriesError);
+        }
+        return (
+          activeConfig?.mock?.agentUsageSeries ?? {
+            collectionEnabled: true,
+            buckets: [],
+            agents: [],
+            coverage: {
+              firstArchivedAt: null,
+              lastArchivedAt: null,
+              firstReportedAt: null,
+              lastReportedAt: null,
+              reportCount: 0,
+              invalidReportCount: 0,
+              hasUnknownUsage: false,
+            },
+            hasArchivedEvidence: null,
+          }
+        );
       case "agent_metric_archive_default_enabled":
         return activeConfig?.mock?.agentMetricArchiveDefaultEnabled ?? true;
       case "set_prevent_sleep_active":

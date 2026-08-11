@@ -1049,6 +1049,7 @@ jobs:
           [ "${#TRIPLES[@]}" -ge 3 ] || { echo "::error::too few platforms (${#TRIPLES[@]})"; exit 1; }
           bash desktop/scripts/generate-oss-latest-json.sh "$VERSION" "${TRIPLES[@]}" > latest.json
           cat latest.json
+          cp latest.json staged/updater-manifest.json
 
       - name: Create or verify versioned draft
         run: |
@@ -1089,13 +1090,52 @@ jobs:
         if: env.already_published != 'true'
         run: gh release edit "desktop-v${VERSION}" --draft=false
 
-      - name: Create rolling updater release
+      # A fork still owns its updater channel, but it must not advance that
+      # channel until the stable versioned release is public and tag-bound.
+      # This retains the upstream promotion safety checks without assuming the
+      # release repository is block/buzz.
+      - name: Validate stable updater promotion source
         if: ${{ !contains(needs.setup.outputs.version, '-') }}
+        env:
+          VERSION: ${{ needs.setup.outputs.version }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ needs.setup.outputs.source_sha }}
         run: |
           set -euo pipefail
-          if ! gh release view buzz-desktop-latest >/dev/null 2>&1; then
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::rolling updater promotion requires stable semver X.Y.Z"
+            exit 1
+          }
+
+          release_json="$(gh release view "desktop-v${VERSION}" --repo "$RELEASE_REPOSITORY" --json isDraft,isPrerelease,targetCommitish)"
+          [[ "$(jq -r .isDraft <<<"$release_json")" == "false" ]] || {
+            echo "::error::versioned release must be public before updating the rolling manifest"
+            exit 1
+          }
+          [[ "$(jq -r .isPrerelease <<<"$release_json")" == "false" ]] || {
+            echo "::error::prereleases cannot update the rolling manifest"
+            exit 1
+          }
+
+          tag_sha="$(gh api "repos/$RELEASE_REPOSITORY/commits/desktop-v${VERSION}" --jq .sha)"
+          target="$(jq -r .targetCommitish <<<"$release_json")"
+          target_sha="$(gh api "repos/$RELEASE_REPOSITORY/commits/$target" --jq .sha)"
+          [[ "$tag_sha" == "$SOURCE_SHA" && "$target_sha" == "$SOURCE_SHA" ]] || {
+            echo "::error::versioned release target is not the immutable tag source"
+            exit 1
+          }
+
+      - name: Create rolling updater release
+        if: ${{ !contains(needs.setup.outputs.version, '-') }}
+        env:
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ needs.setup.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          if ! gh release view buzz-desktop-latest --repo "$RELEASE_REPOSITORY" >/dev/null 2>&1; then
             gh release create buzz-desktop-latest \
-              --target "${{ needs.setup.outputs.source_sha }}" \
+              --repo "$RELEASE_REPOSITORY" \
+              --target "$SOURCE_SHA" \
               --title "Buzz Desktop updater manifest" \
               --notes "Rolling updater manifest for Buzz Desktop releases." \
               --latest=false
@@ -1103,4 +1143,6 @@ jobs:
 
       - name: Upload latest.json to rolling release last
         if: ${{ !contains(needs.setup.outputs.version, '-') }}
-        run: gh release upload buzz-desktop-latest latest.json --clobber
+        env:
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: gh release upload buzz-desktop-latest latest.json --repo "$RELEASE_REPOSITORY" --clobber

@@ -41,6 +41,7 @@ import { normalizePubkey } from "@/shared/lib/pubkey";
 import { trimMapToSize } from "@/shared/lib/trimMapToSize";
 import { flushMentionDebounce } from "./flushMentionDebounce";
 import { hasMention } from "./hasMention";
+import { extractMentionPubkeys } from "./extractMentionPubkeys";
 import { useDraftMentionRouting } from "./useDraftMentionRouting";
 import { rankMentionCandidates } from "./mentionRanking";
 import { mapMentionCandidateToSuggestion } from "./mentionSuggestionMapping";
@@ -78,6 +79,7 @@ function appendUniqueName(current: string[], name: string): string[] {
     ? current
     : [...current, name];
 }
+
 export function useMentions(
   channelId: string | null,
   externalMembers?: ChannelMember[],
@@ -840,69 +842,46 @@ export function useMentions(
     [],
   );
 
-  const extractMentionPubkeys = React.useCallback(
+  const extractMentionPubkeysForCurrentMentions = React.useCallback(
     (text: string): string[] => {
-      const pubkeys: string[] = [];
-      const directNameCounts = new Map<string, number>();
+      const eligibleNameCounts = new Map<string, number>();
       for (const candidate of mentionCandidates) {
-        if (
-          !candidate.displayName ||
-          !candidate.pubkey ||
-          (candidate.isMember !== true &&
-            (candidate.isAgent !== true ||
-              !knownAgentPubkeys.has(normalizePubkey(candidate.pubkey))))
-        ) {
-          continue;
-        }
-        const name = candidate.displayName.trim().toLowerCase();
-        directNameCounts.set(name, (directNameCounts.get(name) ?? 0) + 1);
-      }
-      const selectedDisplayNames = new Set(
-        [
-          ...mentionMapRef.current.keys(),
-          ...personaMentionMapRef.current.keys(),
-        ].map((name) => name.trim().toLowerCase()),
-      );
-
-      for (const [displayName, pubkey] of mentionMapRef.current) {
-        if (hasMention(text, displayName)) {
-          pubkeys.push(pubkey);
-        }
-      }
-
-      for (const candidate of mentionCandidates) {
-        if (!candidate.pubkey) {
-          continue;
-        }
-        const normalizedName = candidate.displayName?.trim().toLowerCase();
-        const isUniqueAuthorizedAgent =
+        if (!candidate.displayName || !candidate.pubkey) continue;
+        const isTrustedAgent =
           candidate.isAgent === true &&
-          knownAgentPubkeys.has(normalizePubkey(candidate.pubkey)) &&
-          Boolean(normalizedName) &&
-          directNameCounts.get(normalizedName ?? "") === 1;
-        if (!candidate.isMember && !isUniqueAuthorizedAgent) {
-          continue;
-        }
-        if (pubkeys.includes(candidate.pubkey)) {
-          continue;
-        }
-        const name = candidate.displayName;
-        if (name && selectedDisplayNames.has(name.trim().toLowerCase())) {
-          continue;
-        }
-        if (name && hasMention(text, name)) {
-          pubkeys.push(candidate.pubkey);
-        }
+          knownAgentPubkeys.has(normalizePubkey(candidate.pubkey));
+        if (!candidate.isMember && !isTrustedAgent) continue;
+        const normalizedName = candidate.displayName.trim().toLowerCase();
+        eligibleNameCounts.set(
+          normalizedName,
+          (eligibleNameCounts.get(normalizedName) ?? 0) + 1,
+        );
       }
-
-      return [...new Set(pubkeys)];
+      const eligibleCandidates = mentionCandidates.map((candidate) => ({
+        displayName: candidate.displayName,
+        pubkey: candidate.pubkey,
+        isMember:
+          candidate.isMember === true ||
+          (candidate.isAgent === true &&
+            Boolean(candidate.pubkey) &&
+            knownAgentPubkeys.has(normalizePubkey(candidate.pubkey ?? "")) &&
+            eligibleNameCounts.get(
+              candidate.displayName?.trim().toLowerCase() ?? "",
+            ) === 1),
+      }));
+      return extractMentionPubkeys({
+        text,
+        selectedMentions: mentionMapRef.current,
+        selectedDisplayNames: personaMentionMapRef.current.keys(),
+        memberCandidates: eligibleCandidates,
+      });
     },
     [knownAgentPubkeys, mentionCandidates],
   );
   const extractMentionAgentPubkeys = React.useCallback(
     (text: string): string[] => {
       const resolvedPubkeys = new Set(
-        extractMentionPubkeys(text).map(normalizePubkey),
+        extractMentionPubkeysForCurrentMentions(text).map(normalizePubkey),
       );
       return mentionCandidates
         .filter(
@@ -913,7 +892,7 @@ export function useMentions(
         )
         .map((candidate) => candidate.pubkey as string);
     },
-    [extractMentionPubkeys, mentionCandidates],
+    [extractMentionPubkeysForCurrentMentions, mentionCandidates],
   );
 
   const extractMentionPersonas = React.useCallback(
@@ -1058,7 +1037,7 @@ export function useMentions(
     clearMentions,
     extractMentionPersonas,
     extractMentionAgentPubkeys,
-    extractMentionPubkeys,
+    extractMentionPubkeys: extractMentionPubkeysForCurrentMentions,
     getDraftMentionRefs,
     getMentionDisplayName,
     handleMentionKeyDown,

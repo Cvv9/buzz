@@ -121,6 +121,31 @@ export function replaceNewestChannelWindow(
   };
 }
 
+/**
+ * Complete a head fetch without dropping relay summaries that arrived after
+ * the request began. Summaries present at request start remain superseded by
+ * the fetched page, while a changed entry proves a newer live notification
+ * raced the response.
+ */
+export function replaceNewestChannelWindowAfterFetch(
+  current: ChannelWindowStore,
+  page: ChannelWindowPage,
+  liveSummariesAtFetchStart: Readonly<Record<string, LiveThreadSummary>>,
+): ChannelWindowStore {
+  const next = replaceNewestChannelWindow(current, page);
+  const summariesReceivedDuringFetch: Record<string, LiveThreadSummary> = {};
+
+  for (const [rootId, live] of Object.entries(current.liveSummaries)) {
+    if (liveSummariesAtFetchStart[rootId] !== live) {
+      summariesReceivedDuringFetch[rootId] = live;
+    }
+  }
+
+  return Object.keys(summariesReceivedDuringFetch).length === 0
+    ? next
+    : { ...next, liveSummaries: summariesReceivedDuringFetch };
+}
+
 /** Append only a response that continues the retained echoed cursor chain. */
 export function appendOlderChannelWindow(
   current: ChannelWindowStore,
@@ -160,8 +185,9 @@ export function appendOlderChannelWindow(
  * root: the relay pushes a full recount on every thread mutation, so the
  * latest push is authoritative for that root — including counting *down*
  * after a delete. Retained across scrollback pages (a racing push can be
- * fresher than a just-fetched page summary) and cleared only by the head
- * refetch in `replaceNewestChannelWindow`.
+ * fresher than a just-fetched page summary). A head fetch clears summaries
+ * present when it began, but retains entries that changed while it was in
+ * flight through `replaceNewestChannelWindowAfterFetch`.
  */
 export function mergeLiveThreadSummary(
   current: ChannelWindowStore,
@@ -177,7 +203,9 @@ export function mergeLiveThreadSummary(
 }
 
 /**
- * Merge a live top-level event without mutating authoritative page boundaries.
+ * Merge a live timeline event without mutating authoritative page boundaries.
+ * Replies stay in the source projection for thread summaries and typing,
+ * while the timeline renderer decides whether to display them inline.
  * Events below an open oldest boundary wait for ordinary relay pagination.
  */
 export function mergeLiveChannelWindowEvent(

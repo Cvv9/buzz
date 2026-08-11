@@ -864,12 +864,33 @@ fn validate_catalog_section(section: &str) -> Result<&str, CliError> {
     Ok(section)
 }
 
+fn validate_update_channel_fields(
+    name: Option<&str>,
+    description: Option<&str>,
+    visibility: Option<&str>,
+    ttl_change: Option<Option<i32>>,
+    catalog_section_change: Option<Option<&str>>,
+) -> Result<(), CliError> {
+    if name.is_none()
+        && description.is_none()
+        && visibility.is_none()
+        && ttl_change.is_none()
+        && catalog_section_change.is_none()
+    {
+        return Err(CliError::Usage(
+            "at least one field required (--name, --description, --visibility, --ttl, --no-ttl, --catalog-section, --clear-catalog-section)".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn cmd_update_channel(
     client: &BuzzClient,
     channel_id: &str,
     name: Option<&str>,
     description: Option<&str>,
+    visibility: Option<&str>,
     ttl: Option<i64>,
     no_ttl: bool,
     catalog_section: Option<&str>,
@@ -895,22 +916,20 @@ pub async fn cmd_update_channel(
             }
         };
 
-    if name.is_none()
-        && description.is_none()
-        && ttl_change.is_none()
-        && catalog_section_change.is_none()
-    {
-        return Err(CliError::Usage(
-            "at least one field required (--name, --description, --ttl, --no-ttl, --catalog-section, --clear-catalog-section)".into(),
-        ));
-    }
+    validate_update_channel_fields(
+        name,
+        description,
+        visibility,
+        ttl_change,
+        catalog_section_change,
+    )?;
     let channel_uuid = parse_uuid(channel_id)?;
 
     let builder = buzz_sdk::build_update_channel_with_catalog_section(
         channel_uuid,
         name,
         description,
-        None,
+        visibility,
         ttl_change,
         catalog_section_change,
     )
@@ -1192,16 +1211,19 @@ pub async fn dispatch(
             channel,
             name,
             description,
+            visibility,
             ttl,
             no_ttl,
             catalog_section,
             clear_catalog_section,
         } => {
+            let visibility = visibility.as_ref().map(|v| v.to_string());
             cmd_update_channel(
                 client,
                 &channel,
                 name.as_deref(),
                 description.as_deref(),
+                visibility.as_deref(),
                 ttl,
                 no_ttl,
                 catalog_section.as_deref(),
@@ -1246,8 +1268,8 @@ mod tests {
     use super::{
         apply_cardinality_rule, build_template_report, cmd_set_add_policy,
         extract_channel_metadata, finalize_roster_resolution, name_matches,
-        resolve_roster_with_archive_filter, validate_ttl_seconds, ArchivedExclusion,
-        ChannelSummary, ResolvedAgent, RosterResolution, SkippedSlug,
+        resolve_roster_with_archive_filter, validate_ttl_seconds, validate_update_channel_fields,
+        ArchivedExclusion, ChannelSummary, ResolvedAgent, RosterResolution, SkippedSlug,
     };
     use crate::client::BuzzClient;
     use crate::CliError;
@@ -1375,6 +1397,31 @@ mod tests {
     #[test]
     fn validate_ttl_rejects_overflow() {
         assert!(validate_ttl_seconds(i32::MAX as i64 + 1).is_err());
+    }
+
+    #[test]
+    fn update_channel_fields_rejects_empty_update() {
+        let result = validate_update_channel_fields(None, None, None, None, None);
+        assert!(matches!(result, Err(CliError::Usage(_))));
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("at least one field required"));
+        assert!(msg.contains("--visibility"));
+    }
+
+    #[test]
+    fn update_channel_fields_accepts_visibility_only_update() {
+        let result = validate_update_channel_fields(None, None, Some("open"), None, None);
+        assert!(result.is_ok(), "visibility-only update should be accepted");
+    }
+
+    #[test]
+    fn update_channel_fields_accepts_catalog_section_only_update() {
+        let result =
+            validate_update_channel_fields(None, None, None, None, Some(Some("Operations")));
+        assert!(
+            result.is_ok(),
+            "catalog-section-only update should be accepted"
+        );
     }
 
     // --- BUZZ_ACP_ALLOWED_CHANNEL_ADD_POLICIES gate ---

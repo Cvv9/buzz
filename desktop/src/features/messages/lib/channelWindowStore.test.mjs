@@ -10,6 +10,7 @@ import {
   flattenChannelWindowEvents,
   mergeLiveChannelWindowEvent,
   mergeLiveThreadSummary,
+  replaceNewestChannelWindowAfterFetch,
   replaceNewestChannelWindow,
 } from "./channelWindowStore.ts";
 
@@ -356,6 +357,51 @@ test("head refetch clears live summaries in favor of the fresh snapshot", () => 
   refreshed.rows[0].thread = summary(4);
   store = replaceNewestChannelWindow(store, refreshed);
   assert.equal(channelWindowThreadSummaries(store).get(root.id).replyCount, 4);
+});
+
+test("head fetch preserves a live summary received after the request started", () => {
+  const root = event("a", 100);
+  const atFetchStart = mergeLiveThreadSummary(
+    emptyChannelWindowStore(),
+    root.id,
+    live(1, 200),
+  );
+  const current = mergeLiveThreadSummary(atFetchStart, root.id, live(2, 300));
+  const stalePage = page(null, [root], { hasMore: false });
+  stalePage.rows[0].thread = summary(1);
+
+  const refreshed = replaceNewestChannelWindowAfterFetch(
+    current,
+    stalePage,
+    atFetchStart.liveSummaries,
+  );
+
+  assert.equal(
+    channelWindowThreadSummaries(refreshed).get(root.id).replyCount,
+    2,
+  );
+});
+
+test("head fetch supersedes summaries already present when it started", () => {
+  const root = event("a", 100);
+  const atFetchStart = mergeLiveThreadSummary(
+    emptyChannelWindowStore(),
+    root.id,
+    live(7, 200),
+  );
+  const freshPage = page(null, [root], { hasMore: false });
+  freshPage.rows[0].thread = summary(4);
+
+  const refreshed = replaceNewestChannelWindowAfterFetch(
+    atFetchStart,
+    freshPage,
+    atFetchStart.liveSummaries,
+  );
+
+  assert.equal(
+    channelWindowThreadSummaries(refreshed).get(root.id).replyCount,
+    4,
+  );
 });
 
 test("live summaries survive scrollback pages and still win for their root", () => {

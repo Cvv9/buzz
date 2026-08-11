@@ -460,10 +460,13 @@ function CollapsibleAgentGroup({
   onStartAgent: (pubkey: string) => void;
 }) {
   const isCollapsed = collapsed.has(groupKey);
+  const groupContentId = `agent-group-${groupKey.replaceAll("_", "")}`;
   return (
     <div className={`${AGENT_CARD_COLUMN_CLASS} space-y-2`}>
       <button
-        className="group flex items-center gap-2 rounded-md px-1 py-1 text-left transition-colors hover:bg-muted/50"
+        aria-controls={groupContentId}
+        aria-expanded={!isCollapsed}
+        className="group flex min-h-11 items-center gap-2 rounded-md px-2 py-1 text-left transition-colors hover:bg-muted/50"
         onClick={() => onToggle(groupKey)}
         type="button"
       >
@@ -476,7 +479,7 @@ function CollapsibleAgentGroup({
         <span className="text-xs text-muted-foreground">({agents.length})</span>
       </button>
       {!isCollapsed ? (
-        <div className={IDENTITY_CARD_GRID_CLASS}>
+        <div className={IDENTITY_CARD_GRID_CLASS} id={groupContentId}>
           {agents.map((agent) => (
             <StandaloneAgentCard
               agent={agent}

@@ -30,6 +30,18 @@ const VIDEO_REVIEW_INDIGO_FOREGROUND_RGB = "rgb(141, 143, 245)";
 const VIDEO_REVIEW_NEUTRAL_DARK_RGB = "rgb(250, 250, 250)";
 const POSTER_DATA_URL =
   "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxNjAgODAiPjxyZWN0IHdpZHRoPSIxNjAiIGhlaWdodD0iODAiIGZpbGw9IiMyNjQ2NTMiLz48Y2lyY2xlIGN4PSI1NCIgY3k9IjQwIiByPSIyMiIgZmlsbD0iI2YyYzE0ZSIvPjxwYXRoIGQ9Ik05MiAyNGg0NHYzMkg5MnoiIGZpbGw9IiNmNzgxNTQiLz48L3N2Zz4=";
+// One-second 16x16 VP9 WebM. The harness serves this for every fixture media
+// URL so Chromium never leaks a request to the intentionally absent relay.
+const TEST_VIDEO_WEBM_BASE64 = [
+  "GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQJChYECGFOAZwEAAAAAAAIIEU2bdLpNu4tTq4QVSalmU6yBoU27i1Or",
+  "hBZUrmtTrIHYTbuMU6uEElTDZ1OsggElTbuMU6uEHFO7a1OsggHy7AEAAAAAAABZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmsirX",
+  "sYMPQkBNgI1MYXZmNjIuMTIuMTAwV0GNTGF2ZjYyLjEyLjEwMESJiECPQAAAAAAAFlSua8iuAQAAAAAAAD/XgQFzxYgAovVX",
+  "nX3LgJyBACK1nIN1bmSIgQCGhVZfVlA5g4EBI+ODhDuaygDgkLCBELqBEJqBAlWwhFW5gQESVMNnQIBzc6BjwIBnyJpFo4dF",
+  "TkNPREVSRIeNTGF2ZjYyLjEyLjEwMHNz2mPAi2PFiACi9VedfcuAZ8ilRaOHRU5DT0RFUkSHmExhdmM2Mi4yOC4xMDAgbGli",
+  "dnB4LXZwOWfIoUWjiERVUkFUSU9ORIeTMDA6MDA6MDEuMDAwMDAwMDAwAB9DtnXC54EAo72BAACAgkmDQgAA8AD2BjgkHBhK",
+  "AAAgQAAim///lXb23/SskhXr7zdPyoCRyEjNuPymkNJQgETBR424BAAAHFO7a5G7j7OBALeK94EB8YIBq/CBAw==",
+].join("");
 
 async function waitForMockLiveSubscription(page: Page, channelName: string) {
   await expect
@@ -85,9 +97,23 @@ async function installVideoReviewHarness(
   page: Page,
   {
     accentColor = VIDEO_REVIEW_ACCENT,
+    serveMedia = false,
     themeName,
-  }: { accentColor?: string; themeName?: string } = {},
+  }: {
+    accentColor?: string;
+    serveMedia?: boolean;
+    themeName?: string;
+  } = {},
 ) {
+  if (serveMedia) {
+    await page.route("**/media/*.mp4", (route) =>
+      route.fulfill({
+        body: Buffer.from(TEST_VIDEO_WEBM_BASE64, "base64"),
+        contentType: "video/webm",
+        status: 200,
+      }),
+    );
+  }
   await page.addInitScript(
     ({ accentColor, themeName }) => {
       if (themeName) {
@@ -134,6 +160,12 @@ async function installVideoReviewHarness(
         configurable: true,
         get() {
           return getMediaState(this as HTMLMediaElement).paused;
+        },
+      });
+      Object.defineProperty(HTMLMediaElement.prototype, "ended", {
+        configurable: true,
+        get() {
+          return false;
         },
       });
       Object.defineProperty(HTMLMediaElement.prototype, "currentTime", {
@@ -230,6 +262,7 @@ test("video upload previews use poster frames and inline videos open review mode
   page,
 }) => {
   await installVideoReviewHarness(page, {
+    serveMedia: true,
     themeName: VIDEO_REVIEW_ACCENT_THEME,
   });
 

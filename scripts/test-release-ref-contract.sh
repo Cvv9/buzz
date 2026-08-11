@@ -75,9 +75,24 @@ grep -Fq 'GH_TOKEN: ${{ github.token }}' "$candidate_workflow" || {
   echo "desktop candidate validation has no GitHub token for prior-release lookup" >&2
   exit 1
 }
-grep -Fq 'reviewed candidate' "$repo_root/scripts/prepare-desktop-release.sh"
-if grep -Fq 'current `main`' "$repo_root/scripts/prepare-desktop-release.sh"; then
+prepare_desktop="$repo_root/scripts/prepare-desktop-release.sh"
+grep -Fq 'reviewed candidate' "$prepare_desktop"
+grep -Fq 'gh pr list --repo "$release_repo"' "$prepare_desktop"
+grep -Fq 'gh pr edit --repo "$release_repo"' "$prepare_desktop"
+grep -Fq 'gh pr create --repo "$release_repo"' "$prepare_desktop"
+if grep -Fq -- '--repo block/buzz' "$prepare_desktop"; then
+  echo "desktop release helper still targets upstream block/buzz" >&2
+  exit 1
+fi
+if grep -Fq 'current `main`' "$prepare_desktop"; then
   echo "desktop release PR body contains executable command substitution" >&2
+  exit 1
+fi
+
+sprig_workflow="$repo_root/.github/workflows/sprig-image.yml"
+grep -Fq "'ghcr.io/cvv9/buzz-sprig'" "$sprig_workflow"
+if grep -Fq "'ghcr.io/block/buzz-sprig'" "$sprig_workflow"; then
+  echo "fork Sprig workflow still defaults to the upstream GHCR namespace" >&2
   exit 1
 fi
 required_check_filter="$repo_root/scripts/required-check-succeeded.jq"
@@ -163,6 +178,9 @@ grep -Fq 'release artifact basename collision' "$release_workflow"
   echo "only the final writer may upload versioned and rolling release assets" >&2; exit 1;
 }
 grep -Fq 'if: env.already_published' "$release_workflow"
+grep -Fq 'Validate stable updater promotion source' "$release_workflow"
+grep -Fq 'RELEASE_REPOSITORY: ${{ github.repository }}' "$release_workflow"
+grep -Fq 'gh release upload buzz-desktop-latest latest.json --repo "$RELEASE_REPOSITORY" --clobber' "$release_workflow"
 grep -Fq 'if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --silent 2>/dev/null; then' "$auto_tag"
 if grep -F 'git/ref/tags/$TAG' "$auto_tag" | grep -Fq '|| true'; then
   echo "auto-tag ignores a failed tag lookup, so a 404 body can look like an existing tag" >&2
