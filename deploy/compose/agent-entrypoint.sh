@@ -50,13 +50,18 @@ if [ "$(id -u)" -eq 0 ]; then
     install -o node -g node -m 600 "${codex_auth_source}" /home/node/.codex/auth.json
   fi
   export HOME=/home/node
+  # The mounted source is deliberately root-only. Tell the re-executed,
+  # unprivileged phase that this start already refreshed the writable copy so
+  # it does not try to read the source again after privileges are dropped.
+  export BUZZ_CODEX_AUTH_PREPARED=true
   exec setpriv --reuid=node --regid=node --init-groups "$0" "$@"
 fi
 
-if [ -s "${codex_auth_source}" ]; then
+if [ "${BUZZ_CODEX_AUTH_PREPARED:-false}" != "true" ] && [ -s "${codex_auth_source}" ]; then
   mkdir -p "${HOME}/.codex"
   install -m 600 "${codex_auth_source}" "${HOME}/.codex/auth.json"
 fi
+unset BUZZ_CODEX_AUTH_PREPARED
 
 # Keep one stable Nostr identity per named agent volume. Explicit environment
 # values remain supported for migrations and externally managed identities.
