@@ -10,7 +10,6 @@ import {
 import {
   buildReplyTags,
   getThreadReference,
-  isBroadcastReply,
   normalizeMentionPubkeys,
   resolveReplyRootId,
 } from "@/features/messages/lib/threading";
@@ -53,7 +52,7 @@ import {
   mapChannelWindowEvents,
   mergeLiveChannelWindowEvent,
   mergeLiveThreadSummary,
-  replaceNewestChannelWindow,
+  replaceNewestChannelWindowAfterFetch,
   type ChannelWindowStore,
 } from "@/features/messages/lib/channelWindowStore";
 import {
@@ -238,12 +237,19 @@ export function useChannelMessagesQuery(channel: Channel | null) {
       if (!channel) throw new Error("No channel selected.");
       const previousMessages =
         queryClient.getQueryData<RelayEvent[]>(queryKey) ?? [];
+      const windowAtFetchStart =
+        queryClient.getQueryData<ChannelWindowStore>(windowKey) ??
+        emptyChannelWindowStore();
       const events = await getChannelWindowEvents(channel.id);
       const page = parseChannelWindowResponse(events, channel.id, null);
       const current =
         queryClient.getQueryData<ChannelWindowStore>(windowKey) ??
         emptyChannelWindowStore();
-      const next = replaceNewestChannelWindow(current, page);
+      const next = replaceNewestChannelWindowAfterFetch(
+        current,
+        page,
+        windowAtFetchStart.liveSummaries,
+      );
       queryClient.setQueryData(windowKey, next);
       return reconcileChannelWindowMessages(next, previousMessages);
     },
@@ -288,7 +294,6 @@ export function useChannelSubscription(channel: Channel | null) {
           (current = []) => mergeMessages(current, event),
         );
       }
-      if (!isBroadcastReply(event.tags)) return;
     }
     if (!isTimelineRow && !CHANNEL_AUX_KINDS.has(event.kind)) return;
     if (!isTimelineRow) {

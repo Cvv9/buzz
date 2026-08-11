@@ -8,6 +8,8 @@ import {
   emptyChannelWindowStore,
   flattenChannelWindowEvents,
   mergeLiveChannelWindowEvent,
+  mergeLiveThreadSummary,
+  replaceNewestChannelWindowAfterFetch,
   replaceNewestChannelWindow,
 } from "./channelWindowStore.ts";
 import {
@@ -65,6 +67,20 @@ function appendLiveEvent(harness, live) {
   projectChannelWindowMessages(harness.client, harness.channelId);
 }
 
+function appendLiveThreadSummary(harness, rootId, replyCount, createdAt) {
+  const current = harness.client.getQueryData(harness.windowKey);
+  const next = mergeLiveThreadSummary(current, rootId, {
+    summary: {
+      replyCount,
+      descendantCount: replyCount,
+      lastReplyAt: createdAt,
+      participantPubkeys: [],
+    },
+    createdAt,
+  });
+  harness.client.setQueryData(harness.windowKey, next);
+}
+
 function beginRefetch(harness, fetchPage, afterWindowWrite) {
   let resolveStarted;
   const started = new Promise((resolve) => {
@@ -73,10 +89,15 @@ function beginRefetch(harness, fetchPage, afterWindowWrite) {
   const observer = new QueryObserver(harness.client, {
     queryKey: harness.messagesKey,
     queryFn: async () => {
+      const windowAtFetchStart = harness.client.getQueryData(harness.windowKey);
       resolveStarted();
       const page = await fetchPage;
       const current = harness.client.getQueryData(harness.windowKey);
-      const next = replaceNewestChannelWindow(current, page);
+      const next = replaceNewestChannelWindowAfterFetch(
+        current,
+        page,
+        windowAtFetchStart.liveSummaries,
+      );
       const previousMessages = harness.client.getQueryData(harness.messagesKey);
       harness.client.setQueryData(harness.windowKey, next);
       afterWindowWrite?.();
@@ -114,6 +135,36 @@ test("test_live_event_during_fetch_survives_refetch_projection", async () => {
   await done;
 
   assert.deepEqual(contents(harness), ["initial", "during-fetch"]);
+});
+
+test("test_direct_reply_and_live_summary_during_fetch_survive_stale_projection", async () => {
+  const harness = createHarness();
+  const initial = harness.client.getQueryData(harness.messagesKey)[0];
+  const directReply = {
+    ...event("direct-reply", 110),
+    tags: [
+      ["h", "channel"],
+      ["e", initial.id, "", "reply"],
+    ],
+  };
+  let resolveFetch;
+  const pendingPage = new Promise((resolve) => {
+    resolveFetch = resolve;
+  });
+  const { started, done } = beginRefetch(harness, pendingPage);
+
+  await started;
+  appendLiveEvent(harness, directReply);
+  appendLiveThreadSummary(harness, initial.id, 1, 110);
+  resolveFetch(newestPage([event("initial", 100)]));
+  await done;
+
+  assert.deepEqual(contents(harness), ["initial", "direct-reply"]);
+  assert.equal(
+    harness.client.getQueryData(harness.windowKey).liveSummaries[initial.id]
+      .summary.replyCount,
+    1,
+  );
 });
 
 test("test_live_event_after_query_resolution_survives_refetch_projection", async () => {
