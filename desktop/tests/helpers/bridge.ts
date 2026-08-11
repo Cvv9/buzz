@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import type { ChannelTemplate, RelayEvent } from "../../src/shared/api/types";
+import type { AgentUsageSeries } from "../../src/shared/api/tauriArchive";
 import type { MockManagedAgentSeed } from "../../src/testing/e2eBridge";
 import { FEATURE_OVERRIDES_STORAGE_KEY, PREVIEW_FEATURE_IDS } from "./features";
 
@@ -295,6 +296,8 @@ type MockBridgeOptions = {
   usersBatchDelayMs?: number;
   /** Delay (ms) for older-history fetches; see e2eBridge mock config. */
   channelWindowDelayMs?: number;
+  /** Delay (ms) after snapshotting a newest channel window response. */
+  channelWindowHeadSnapshotDelayMs?: number;
   profileReadDelayMs?: number;
   profileReadError?: string;
   /** Override whether get_profile reports a real kind:0 event. */
@@ -430,6 +433,10 @@ type MockBridgeOptions = {
     scope_value: string;
     kinds: string; // JSON-encoded integer array, e.g. "[9,40002]"
   }>;
+  /** Local-only kind-44200 usage aggregate returned to operations fleet tests. */
+  agentUsageSeries?: AgentUsageSeries;
+  /** Fail the local usage read to exercise recovery UI. */
+  agentUsageSeriesError?: string;
   /**
    * Event IDs that `get_event` should report as definitively not found.
    * Causes `useDraftRootStatus` to map the draft to `deleted` state so specs

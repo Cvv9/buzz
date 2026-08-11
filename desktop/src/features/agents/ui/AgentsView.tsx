@@ -21,6 +21,7 @@ import { TeamDialog } from "./TeamDialog";
 import { TeamsSection } from "./TeamsSection";
 import { UnifiedAgentsSection } from "./UnifiedAgentsSection";
 import { HostedAgentsSection } from "./HostedAgentsSection";
+import { AgentFleetSection } from "./AgentFleetSection";
 import { useManagedAgentActions } from "./useManagedAgentActions";
 import { usePersonaActions } from "./usePersonaActions";
 import { useTeamActions } from "./useTeamActions";
@@ -38,6 +39,7 @@ import {
 } from "@/shared/ui/dropdown-menu";
 import { PageHeader } from "@/shared/ui/PageHeader";
 import { getInheritedAgentDefaults } from "./bakedEnvHelpers";
+import { useAgentFleet } from "@/features/agents/useAgentFleet";
 
 export function AgentsView() {
   const { openPersonaProfilePanel, openProfilePanel } = useProfilePanel();
@@ -93,6 +95,11 @@ export function AgentsView() {
     isManagedAgentActive(agent),
   ).length;
   const hostedAgents = agents.relayAgentsQuery.data ?? [];
+  const fleet = useAgentFleet({
+    managedAgents: agents.managedAgents,
+    relayAgents: hostedAgents,
+    startingAgentPubkey: agents.startingAgentPubkey,
+  });
   const hasManagedHostedRoster = hostedAgents.some(
     (agent) => agent.accessTier !== undefined,
   );
@@ -149,6 +156,7 @@ export function AgentsView() {
               <>
                 <div className="flex flex-wrap justify-end gap-2 [@container(max-width:40rem)]:hidden">
                   <Button
+                    className="min-h-11"
                     data-testid="agent-defaults-button"
                     ref={fullAiDefaultsTriggerRef}
                     onClick={(event) => openAiDefaults(event.currentTarget)}
@@ -162,6 +170,7 @@ export function AgentsView() {
                   </Button>
                   {runningAgentCount > 0 ? (
                     <Button
+                      className="min-h-11"
                       disabled={isActionPending}
                       onClick={() => {
                         void agents.handleBulkStopRunning();
@@ -179,7 +188,7 @@ export function AgentsView() {
                   <DropdownMenuTrigger asChild>
                     <Button
                       aria-label="Agent actions"
-                      className="hidden [@container(max-width:40rem)]:inline-flex"
+                      className="hidden h-11 w-11 [@container(max-width:40rem)]:inline-flex"
                       data-testid="agent-actions-menu-trigger"
                       ref={compactActionsTriggerRef}
                       size="icon"
@@ -215,10 +224,23 @@ export function AgentsView() {
                 </DropdownMenu>
               </>
             }
-            description="Set up and manage your agents."
+            description="Monitor your agents and manage their identities."
             title="Agents"
           />
           <div className="flex flex-col gap-8">
+            <AgentFleetSection
+              agents={fleet.agents}
+              collectionEnabled={fleet.collectionEnabled}
+              isLoading={fleet.isLoading}
+              isUsageLoading={fleet.isUsageLoading}
+              onCreate={openUnifiedCatalog}
+              onOpenProfile={(pubkey) => {
+                openProfilePanel?.(pubkey);
+              }}
+              onRetryUsage={fleet.refetchUsage}
+              usageError={fleet.usageError}
+            />
+
             <HostedAgentsSection
               error={
                 agents.relayAgentsQuery.error instanceof Error

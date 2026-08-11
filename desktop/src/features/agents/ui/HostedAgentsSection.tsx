@@ -77,7 +77,7 @@ export function HostedAgentsSection({
   return (
     <section className="space-y-4" data-testid="hosted-agents-section">
       <SectionHeader
-        description="Agents running on the Sylars work manager and connected to this community."
+        description="Agents running on Sylar’s work manager and connected to this community."
         title={`Hosted agents${visibleAgents.length > 0 ? ` (${visibleAgents.length})` : ""}`}
       />
 

@@ -169,6 +169,7 @@ export function AppSidebarPrimaryMenu({
         </FeatureGate>
         <SidebarMenuItem>
           <SidebarMenuButton
+            aria-current={selectedView === "agents" ? "page" : undefined}
             className="data-[active=true]:font-normal"
             data-testid="open-agents-view"
             isActive={selectedView === "agents"}
@@ -191,6 +192,7 @@ export function AppSidebarPrimaryMenu({
         <FeatureGate feature="workflows">
           <SidebarMenuItem>
             <SidebarMenuButton
+              aria-current={selectedView === "workflows" ? "page" : undefined}
               data-testid="open-workflows-view"
               isActive={selectedView === "workflows"}
               onClick={onSelectWorkflows}

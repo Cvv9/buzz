@@ -34,9 +34,26 @@ test.beforeEach(async ({ page }) => {
 test("locks viewport rubber-band outside conversation scrollers", async ({
   page,
 }) => {
+  await page.setViewportSize({ width: 1280, height: 1600 });
   await page.goto("/");
   await page.getByTestId("channel-general").click();
-  await expect(page.getByTestId("message-timeline")).toBeVisible();
+  const messageTimeline = page.getByTestId("message-timeline");
+  await expect(messageTimeline).toBeVisible();
+  await expect(messageTimeline).toHaveAttribute(
+    "data-buzz-conversation-scroll",
+    "true",
+  );
+  await expect(messageTimeline).toHaveAttribute(
+    "data-virtua-estimate-call-count",
+    /\d+/,
+  );
+  await expect
+    .poll(() =>
+      messageTimeline.evaluate(
+        (element) => element.scrollHeight <= element.clientHeight,
+      ),
+    )
+    .toBe(true);
 
   await expect(
     dispatchWheelPrevented(page, '[data-testid="app-top-chrome"]', {

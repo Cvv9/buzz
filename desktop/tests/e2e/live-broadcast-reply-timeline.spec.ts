@@ -97,7 +97,7 @@ async function liveOverlayContents(page: import("@playwright/test").Page) {
   });
 }
 
-test("a live broadcast depth-1 reply enters the authoritative channel window store", async ({
+test("live replies enter the authoritative store while only broadcasts render in the timeline", async ({
   page,
 }) => {
   await installMockBridge(page);
@@ -130,8 +130,9 @@ test("a live broadcast depth-1 reply enters the authoritative channel window sto
     extraTags: [["broadcast", "1"]],
   });
 
-  // CONTROL — an ordinary (non-broadcast) depth-1 reply: NOT a window row, MUST
-  // stay out of the overlay.
+  // CONTROL — an ordinary (non-broadcast) depth-1 reply. It remains in the
+  // source overlay so local thread summaries and typing can reconcile, while
+  // the channel timeline projection must still hide it as a top-level row.
   await emit(page, {
     content: "ordinary thread reply",
     parentEventId: root.id,
@@ -144,8 +145,13 @@ test("a live broadcast depth-1 reply enters the authoritative channel window sto
     .poll(() => liveOverlayContents(page))
     .toContain("broadcast to the channel");
 
-  // The ordinary reply is a thread reply, never a window row.
-  expect(await liveOverlayContents(page)).not.toContain(
-    "ordinary thread reply",
-  );
+  await expect
+    .poll(() => liveOverlayContents(page))
+    .toContain("ordinary thread reply");
+  await expect(
+    page.getByTestId("message-timeline").getByText("broadcast to the channel"),
+  ).toBeVisible();
+  await expect(
+    page.getByTestId("message-timeline").getByText("ordinary thread reply"),
+  ).toHaveCount(0);
 });

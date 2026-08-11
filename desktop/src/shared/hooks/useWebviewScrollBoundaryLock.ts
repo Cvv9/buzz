@@ -57,10 +57,6 @@ function canScrollX(element: HTMLElement, deltaX: number) {
   return element.scrollLeft < maxScrollLeft - BOUNDARY_EPSILON_PX;
 }
 
-function isConversationScroller(element: HTMLElement) {
-  return Boolean(element.closest(CONVERSATION_SCROLL_SELECTOR));
-}
-
 /**
  * Stops macOS/WKWebView rubber-band gestures from escaping into the viewport.
  *
@@ -96,7 +92,7 @@ export function useWebviewScrollBoundaryLock(enabled = true) {
       }
 
       const path = event.composedPath();
-      let firstScrollable: HTMLElement | null = null;
+      let targetsConversation = false;
       let targetsTerminal = false;
 
       for (const target of path) {
@@ -104,6 +100,7 @@ export function useWebviewScrollBoundaryLock(enabled = true) {
           continue;
         }
 
+        targetsConversation ||= target.matches(CONVERSATION_SCROLL_SELECTOR);
         targetsTerminal ||= target.matches(TERMINAL_SUBSTRATE_SELECTOR);
         const scrollableY = deltaY !== 0 && isScrollableY(target);
         const scrollableX = deltaX !== 0 && isScrollableX(target);
@@ -111,7 +108,6 @@ export function useWebviewScrollBoundaryLock(enabled = true) {
           continue;
         }
 
-        firstScrollable ??= target;
         if (
           (scrollableY && canScrollY(target, deltaY)) ||
           (scrollableX && canScrollX(target, deltaX))
@@ -130,11 +126,7 @@ export function useWebviewScrollBoundaryLock(enabled = true) {
       // Only the vertical elastic affordance of conversation scrollers is
       // preserved; a predominantly horizontal gesture must never pan the
       // webview, even over a conversation pane.
-      if (
-        firstScrollable &&
-        isConversationScroller(firstScrollable) &&
-        Math.abs(deltaY) >= Math.abs(deltaX)
-      ) {
+      if (targetsConversation && Math.abs(deltaY) >= Math.abs(deltaX)) {
         return;
       }
 

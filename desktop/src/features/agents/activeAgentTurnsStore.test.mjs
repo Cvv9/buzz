@@ -5,6 +5,7 @@ import {
   syncAgentTurnsFromEvents,
   syncActiveAgentTurnsFromObserver,
   getActiveTurnsForAgent,
+  getActiveTurnDetailsForAgent,
   getActiveTurnsByChannel,
   resetActiveAgentTurnsStore,
   subscribeActiveAgentTurns,
@@ -50,6 +51,38 @@ describe("activeAgentTurnsStore", () => {
   });
 
   describe("seq filtering", () => {
+    it("exposes per-turn correlation and activity timing for operations surfaces", () => {
+      mock.timers.enable({
+        apis: ["Date"],
+        now: Date.parse("2024-01-01T00:00:10Z"),
+      });
+      syncAgentTurnsFromEvents(AGENT, [
+        makeEvent({
+          seq: 1,
+          turnId: "fleet-turn",
+          channelId: "private-channel",
+          timestamp: "2024-01-01T00:00:00Z",
+        }),
+        makeEvent({
+          seq: 2,
+          kind: "turn_liveness",
+          turnId: "fleet-turn",
+          channelId: "private-channel",
+          timestamp: "2024-01-01T00:00:05Z",
+        }),
+      ]);
+
+      const [turn] = getActiveTurnDetailsForAgent(AGENT);
+      assert.equal(turn?.turnId, "fleet-turn");
+      assert.equal(turn?.channelId, "private-channel");
+      assert.equal(
+        turn?.lastActivityAt,
+        Date.parse("2024-01-01T00:00:10Z"),
+        "activity timing is already in the desktop clock domain",
+      );
+      mock.timers.reset();
+    });
+
     it("processes events with increasing seq", () => {
       syncAgentTurnsFromEvents(AGENT, [
         makeEvent({ seq: 1, turnId: "t1", channelId: "c1" }),

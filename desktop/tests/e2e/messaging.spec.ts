@@ -918,11 +918,11 @@ test("draft auto-send with a link preview waits for settling and sends exactly o
   // Drive the real Drafts-panel "Send message" confirm flow. This does an
   // in-app client navigation to the channel with ?autoSend=<draftKey>, arming
   // the main composer's auto-submit effect — the exact production path.
-  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.goto("/#/drafts", { waitUntil: "domcontentloaded" });
   await expect(page.getByTestId("home-inbox")).toBeVisible({ timeout: 10_000 });
-  await page.getByTestId("inbox-filter-trigger").click();
-  await page.getByRole("menuitemradio", { name: "Drafts" }).click();
-  await page.keyboard.press("Escape");
+  await expect(page.getByTestId("home-inbox-drafts")).toBeVisible({
+    timeout: 8_000,
+  });
 
   const draftRow = page.locator(`[data-testid='home-draft-item-${channelId}']`);
   await expect(draftRow).toBeVisible({ timeout: 8_000 });
@@ -1430,7 +1430,11 @@ test("copy a rendered code block and paste it back as code", async ({
   await expect(copyButton).toHaveCSS("opacity", "1");
   await copyButton.click();
   await expect
-    .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+    .poll(() =>
+      page.evaluate(async () =>
+        (await navigator.clipboard.readText()).replace(/\r\n/g, "\n"),
+      ),
+    )
     .toBe(code);
 
   await input.click();

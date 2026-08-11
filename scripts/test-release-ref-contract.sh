@@ -75,9 +75,24 @@ grep -Fq 'GH_TOKEN: ${{ github.token }}' "$candidate_workflow" || {
   echo "desktop candidate validation has no GitHub token for prior-release lookup" >&2
   exit 1
 }
-grep -Fq 'reviewed candidate' "$repo_root/scripts/prepare-desktop-release.sh"
-if grep -Fq 'current `main`' "$repo_root/scripts/prepare-desktop-release.sh"; then
+prepare_desktop="$repo_root/scripts/prepare-desktop-release.sh"
+grep -Fq 'reviewed candidate' "$prepare_desktop"
+grep -Fq 'gh pr list --repo "$release_repo"' "$prepare_desktop"
+grep -Fq 'gh pr edit --repo "$release_repo"' "$prepare_desktop"
+grep -Fq 'gh pr create --repo "$release_repo"' "$prepare_desktop"
+if grep -Fq -- '--repo block/buzz' "$prepare_desktop"; then
+  echo "desktop release helper still targets upstream block/buzz" >&2
+  exit 1
+fi
+if grep -Fq 'current `main`' "$prepare_desktop"; then
   echo "desktop release PR body contains executable command substitution" >&2
+  exit 1
+fi
+
+sprig_workflow="$repo_root/.github/workflows/sprig-image.yml"
+grep -Fq "'ghcr.io/cvv9/buzz-sprig'" "$sprig_workflow"
+if grep -Fq "'ghcr.io/block/buzz-sprig'" "$sprig_workflow"; then
+  echo "fork Sprig workflow still defaults to the upstream GHCR namespace" >&2
   exit 1
 fi
 required_check_filter="$repo_root/scripts/required-check-succeeded.jq"

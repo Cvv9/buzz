@@ -63,6 +63,17 @@ export type ActiveTurnSummary = {
   anchorAt: number;
 };
 
+/**
+ * A live turn with only the timing and correlation data needed by owner-only
+ * operations surfaces. It intentionally contains neither observer payloads
+ * nor channel presentation data; callers that render activity must still use
+ * the access-aware activity route.
+ */
+export type ActiveTurnDetail = ActiveTurnSummary & {
+  turnId: string;
+  lastActivityAt: number;
+};
+
 /** One channel with active agent work, aggregated across agents. */
 export type ActiveChannelTurnSummary = {
   channelId: string;
@@ -96,6 +107,7 @@ const clockOffsetByAgent = new Map<string, number>();
 // Cached snapshots for useSyncExternalStore reference stability.
 // Only regenerated when the underlying turn map for an agent actually changes.
 const cachedTurnSummaries = new Map<string, ActiveTurnSummary[]>();
+const cachedTurnDetails = new Map<string, ActiveTurnDetail[]>();
 let cachedChannelTurnSummaries: ActiveChannelTurnSummary[] | null = null;
 
 // Composite watermark per (agent, channel): the newest observer event
@@ -142,6 +154,7 @@ let unsubscribePruneVisibility: (() => void) | null = null;
 
 function invalidateCache(agentKey: string) {
   cachedTurnSummaries.delete(agentKey);
+  cachedTurnDetails.delete(agentKey);
   cachedChannelTurnSummaries = null;
 }
 
@@ -525,7 +538,44 @@ export function getActiveTurnsForAgent(
   return result;
 }
 
+/**
+ * Returns active turn correlation data for an agent. Unlike
+ * {@link getActiveTurnsForAgent}, this does not collapse concurrent turns in
+ * a channel. The snapshot is stable until that agent's turn map changes.
+ */
+export function getActiveTurnDetailsForAgent(
+  agentPubkey: string | null | undefined,
+): ActiveTurnDetail[] {
+  if (!agentPubkey) return EMPTY_TURN_DETAILS;
+  const key = normalizePubkey(agentPubkey);
+  const agentTurns = activeTurnsByAgent.get(key);
+  if (!agentTurns || agentTurns.size === 0) return EMPTY_TURN_DETAILS;
+
+  const cached = cachedTurnDetails.get(key);
+  if (cached) return cached;
+
+  const offset = clockOffsetByAgent.get(key) ?? 0;
+  const result = [...agentTurns.values()]
+    .map((turn) => ({
+      turnId: turn.turnId,
+      channelId: turn.channelId,
+      anchorAt: turn.startedAt + offset,
+      // `lastActivityAt` is recorded from the desktop receipt clock for
+      // pruning and liveness. Only the agent-host `startedAt` needs the
+      // host-to-desktop offset; applying it here would skew fresh activity.
+      lastActivityAt: turn.lastActivityAt,
+    }))
+    .sort(
+      (left, right) =>
+        left.anchorAt - right.anchorAt ||
+        left.turnId.localeCompare(right.turnId),
+    );
+  cachedTurnDetails.set(key, result);
+  return result;
+}
+
 const EMPTY_TURNS: ActiveTurnSummary[] = [];
+const EMPTY_TURN_DETAILS: ActiveTurnDetail[] = [];
 const EMPTY_CHANNEL_TURNS: ActiveChannelTurnSummary[] = [];
 
 /**
@@ -687,6 +737,7 @@ export function resetActiveAgentTurnsStore() {
   lastProcessed.clear();
   clockOffsetByAgent.clear();
   cachedTurnSummaries.clear();
+  cachedTurnDetails.clear();
   cachedChannelTurnSummaries = null;
   terminalAtByAgent.clear();
   notifyListeners();
@@ -803,6 +854,7 @@ export function restoreActiveAgentTurnsForCommunity(communityId: string): void {
   }
 
   cachedTurnSummaries.clear();
+  cachedTurnDetails.clear();
   cachedChannelTurnSummaries = null;
   notifyListeners();
 }

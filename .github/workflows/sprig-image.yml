@@ -47,8 +47,9 @@ permissions: {}
 
 env:
   # Single source of truth for the image name; override with the
-  # GHCR_SPRIG_IMAGE repo variable (same pattern as docker.yml).
-  IMAGE_NAME: ${{ vars.GHCR_SPRIG_IMAGE != '' && vars.GHCR_SPRIG_IMAGE || 'ghcr.io/block/buzz-sprig' }}
+  # GHCR_SPRIG_IMAGE repo variable (same pattern as docker.yml). OCI names are
+  # lowercase, so this fork's default uses the canonical Cvv9 registry spelling.
+  IMAGE_NAME: ${{ vars.GHCR_SPRIG_IMAGE != '' && vars.GHCR_SPRIG_IMAGE || 'ghcr.io/cvv9/buzz-sprig' }}
 
 jobs:
   build:
