@@ -108,9 +108,21 @@ jobs:
           file: ./Dockerfile
           target: agent-runtime
           platforms: linux/amd64
+          load: true
+          tags: buzz-agent-ci:pr
           push: false
           cache-from: type=gha,scope=hosted-agent-amd64
           cache-to: type=gha,scope=hosted-agent-amd64,mode=max
+      - name: Smoke test hosted agent image
+        run: |
+          docker run --rm --entrypoint sh buzz-agent-ci:pr -ec '
+            node --version
+            git --version
+            buzz --help >/dev/null
+            buzz-acp --help >/dev/null
+            test "$(id -u node)" = 1000
+            test "$(id -g node)" = 1000
+          '
 
   build:
     name: Build (${{ matrix.platform }})

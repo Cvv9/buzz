@@ -13,8 +13,9 @@
 
 ARG RUST_VERSION=1.95
 ARG NODE_VERSION=24
-# Build stages use Debian's current stable series.
-ARG DEBIAN_VERSION=trixie
+# Bookworm's older glibc keeps compiled binaries compatible with Ubuntu 24.04.
+# These stages do not ship in the final images.
+ARG DEBIAN_VERSION=bookworm
 ARG RUNTIME_IMAGE=ubuntu:noble
 
 # Optional extra CA bundle for builds behind a TLS-intercepting corporate proxy
