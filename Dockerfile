@@ -207,7 +207,9 @@ RUN apt-get update \
     && userdel --remove ubuntu \
     && groupadd --gid 1000 node \
     && useradd --uid 1000 --gid 1000 --home-dir /home/node --create-home --shell /bin/bash node \
-    && npm install --global @agentclientprotocol/codex-acp@1.1.14
+    && npm install --global @agentclientprotocol/codex-acp@1.1.14 \
+    && rm -rf /usr/local/lib/node_modules/npm \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx
 COPY --from=stripped-binaries /build/target/release/buzz-acp /usr/local/bin/buzz-acp
 COPY --from=stripped-binaries /build/target/release/buzz /usr/local/bin/buzz
 COPY --from=stripped-binaries /build/target/release/buzz-admin /usr/local/bin/buzz-admin

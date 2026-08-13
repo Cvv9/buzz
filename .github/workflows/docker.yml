@@ -120,6 +120,9 @@ jobs:
             git --version
             buzz --help >/dev/null
             buzz-acp --help >/dev/null
+            codex-acp --help >/dev/null
+            ! command -v npm
+            ! command -v npx
             test "$(id -u node)" = 1000
             test "$(id -g node)" = 1000
           '
