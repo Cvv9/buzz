@@ -3,7 +3,7 @@
 # Public Buzz relay image — published as ghcr.io/block/buzz:<tag>.
 #
 # Builds the `buzz-relay` binary (Rust 1.95) and the `buzz-web` static bundle
-# (pnpm + vite), then assembles them into a small debian-slim runtime with
+# (pnpm + vite), then assembles them into a small Ubuntu LTS runtime with
 # `git` available (the relay shells out to git for repo hydrate / receive-pack
 # / upload-pack — see crates/buzz-relay/src/api/git).
 #
@@ -13,7 +13,10 @@
 
 ARG RUST_VERSION=1.95
 ARG NODE_VERSION=24
+# Bookworm's older glibc keeps compiled binaries compatible with Ubuntu 24.04.
+# These stages do not ship in the final images.
 ARG DEBIAN_VERSION=bookworm
+ARG RUNTIME_IMAGE=ubuntu:noble
 
 # Optional extra CA bundle for builds behind a TLS-intercepting corporate proxy
 # (e.g. a Cloudflare/Zscaler gateway that re-signs TLS). Empty by default, so
@@ -138,7 +141,9 @@ COPY admin-web/ admin-web/
 RUN pnpm -C web build && pnpm -C admin-web build
 
 # ─── Stage 5: shared runtime ────────────────────────────────────────────────
-FROM debian:${DEBIAN_VERSION}-slim AS runtime-base
+# Debian's available Perl packages carry unresolved critical advisories. Ubuntu
+# LTS provides the required Git tooling from a maintained, clean runtime base.
+FROM ${RUNTIME_IMAGE} AS runtime-base
 
 # OCI annotations: required for GHCR to auto-link the image to this repo and
 # inherit its visibility. org.opencontainers.image.source is the load-bearing
@@ -157,6 +162,7 @@ RUN apt-get update \
         git \
         openssl \
     && rm -rf /var/lib/apt/lists/* \
+    && userdel --remove ubuntu \
     && groupadd --system --gid 1000 buzz \
     && useradd  --system --uid 1000 --gid 1000 --home-dir /var/lib/buzz \
                 --create-home --shell /usr/sbin/nologin buzz
@@ -192,10 +198,15 @@ COPY --from=builder /build/target/release/buzz-pair-relay /usr/local/bin/buzz-pa
 # Hosted agent runtime. This is an opt-in Compose profile and is not included in
 # the normal relay image. It connects to Buzz over the same public protocol as
 # any other agent and runs Codex through the Agent Client Protocol adapter.
-FROM node:${NODE_VERSION}-${DEBIAN_VERSION}-slim AS agent-runtime
+FROM node:${NODE_VERSION}-${DEBIAN_VERSION}-slim AS node-runtime-files
+FROM ${RUNTIME_IMAGE} AS agent-runtime
+COPY --from=node-runtime-files /usr/local/ /usr/local/
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates git \
+    && apt-get install -y --no-install-recommends ca-certificates curl git \
     && rm -rf /var/lib/apt/lists/* \
+    && userdel --remove ubuntu \
+    && groupadd --gid 1000 node \
+    && useradd --uid 1000 --gid 1000 --home-dir /home/node --create-home --shell /bin/bash node \
     && npm install --global @agentclientprotocol/codex-acp@1.1.14
 COPY --from=stripped-binaries /build/target/release/buzz-acp /usr/local/bin/buzz-acp
 COPY --from=stripped-binaries /build/target/release/buzz /usr/local/bin/buzz

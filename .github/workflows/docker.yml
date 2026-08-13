@@ -83,6 +83,47 @@ env:
   DESKTOP_RELEASES_REPOSITORY: ${{ vars.BUZZ_DESKTOP_RELEASES_REPOSITORY != '' && vars.BUZZ_DESKTOP_RELEASES_REPOSITORY || github.repository }}
 
 jobs:
+  agent-build:
+    name: Build hosted agent runtime (linux/amd64)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+        with:
+          persist-credentials: false
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
+        with:
+          buildkitd-config-inline: |
+            [worker.oci]
+              max-parallelism = 2
+      - name: Build hosted agent image
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf  # v7.2.0
+        with:
+          context: .
+          file: ./Dockerfile
+          target: agent-runtime
+          platforms: linux/amd64
+          load: true
+          tags: buzz-agent-ci:pr
+          push: false
+          cache-from: type=gha,scope=hosted-agent-amd64
+          cache-to: type=gha,scope=hosted-agent-amd64,mode=max
+      - name: Smoke test hosted agent image
+        run: |
+          docker run --rm --entrypoint sh buzz-agent-ci:pr -ec '
+            node --version
+            git --version
+            buzz --help >/dev/null
+            buzz-acp --help >/dev/null
+            test "$(id -u node)" = 1000
+            test "$(id -g node)" = 1000
+          '
+
   build:
     name: Build (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
