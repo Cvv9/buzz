@@ -165,6 +165,14 @@ test("web workspace preserves profiles and applies live-event parity rules", asy
   await expect(page.getByTestId("workspace-alerts")).toBeVisible();
   await expect(page.getByText("Please review this")).toBeVisible();
 
+  // The per-card ✕ dismisses an alert optimistically and clears its badge.
+  await page
+    .getByTestId("workspace-alerts")
+    .getByRole("button", { name: "Dismiss alert" })
+    .click();
+  await expect(page.getByText("Please review this")).toHaveCount(0);
+  await expect(alertsButton).toHaveAttribute("aria-label", "Alerts");
+
   await page.evaluate((pubkey) => {
     const helpers = window as typeof window & {
       __BUZZ_WEB_E2E_EMIT__: (event: unknown) => void;
@@ -195,7 +203,9 @@ test("web workspace preserves profiles and applies live-event parity rules", asy
   await expect(page.getByTestId("workspace-inbox")).toBeVisible();
   await expect(inboxButton).toHaveAttribute("aria-label", "Inbox");
 
-  await page.getByTestId("workspace-agents-button").click();
+  await page.locator('a[href="/settings"]').last().click();
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
   await expect(page.getByTestId("workspace-agents")).toBeVisible();
   await expect(page.getByTestId("agent-row-workspace-agent-1")).toBeVisible();
 

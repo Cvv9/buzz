@@ -324,7 +324,6 @@ export function WorkspacePage({
     firstUnreadMessageIds,
     firstUnreadMessageId,
     inboxItems,
-    markAllRead,
     markChannelRead,
     markInboxItemRead,
     recordIncomingMessage,
@@ -740,9 +739,7 @@ export function WorkspacePage({
         onOpenGuide={() => setGuideOpen(true)}
         onOpenInbox={() => setWorkspaceView("inbox")}
         onOpenAlerts={() => setWorkspaceView("alerts")}
-        onOpenAgents={() => setWorkspaceView("agents")}
         onNewMessage={() => void navigate({ to: "/messages/new" })}
-        onOpenReminders={() => void navigate({ to: "/reminders" })}
         onReopenDirectMessage={(channel) =>
           openDmMutation.mutate({
             recipients: channel.memberPubkeys.filter(
@@ -808,8 +805,10 @@ export function WorkspacePage({
             channels={visibleChannels}
             items={alertItems}
             mode="alerts"
-            onDismissAll={markAllRead}
-            onDismissItem={markInboxItemRead}
+            onDismissAll={() => {
+              for (const item of alertItems) dismissInboxItem(item);
+            }}
+            onDismissItem={dismissInboxItem}
             onMarkItemRead={markInboxItemRead}
             onSelectItem={(item) => {
               if (!item.channelId) {

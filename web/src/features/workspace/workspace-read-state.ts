@@ -433,7 +433,11 @@ export function deriveWorkspaceUnread(args: {
           pubkey: event.pubkey,
         } satisfies WorkspaceInboxItem;
         if (category === "mention" || category === "reply") {
-          alertItems.push(item);
+          // Alerts are dismissible per-event, the same way Inbox items are:
+          // clicking ✕ writes the dismiss marker, which drops the card here.
+          if ((markers.get(dismissContextId) ?? 0) < event.created_at) {
+            alertItems.push(item);
+          }
         } else if (
           category === "needs_action" &&
           isTargetedApprovalRequest(event, pubkey) &&

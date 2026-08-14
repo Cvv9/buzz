@@ -200,13 +200,15 @@ test("unread badges survive Agents, Settings, and Reminders until their timeline
     await page.evaluate(() => localStorage.getItem("buzz.web.active-channel")),
   ).toBe("general");
 
-  await page.getByTestId("workspace-agents-button").click();
+  await page.locator('a[href="/settings"]').last().click();
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
   await expect(page.getByTestId("workspace-agents")).toBeVisible();
   await expect(unreadRandom).toBeVisible();
 
   await page.locator('a[href="/settings"]').last().click();
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
-  await page.locator('a[href="/reminders"]').first().click();
+  await page.getByRole("link", { name: "Reminders", exact: true }).click();
   await expect(page.getByTestId("reminders-page")).toBeVisible();
 
   await page.getByLabel("Back to workspace").click();
