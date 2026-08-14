@@ -641,6 +641,18 @@ export function WorkspacePage({
           ? identity.displayName
           : truncatePubkey(pubkey),
     };
+  const agentPubkeys = new Set(
+    (agentsQuery.data ?? []).map((agent) => agent.pubkey.toLowerCase()),
+  );
+  const channelMemberProfiles = activeChannel
+    ? activeChannel.memberPubkeys
+        .filter(
+          (pubkey) =>
+            pubkey.toLowerCase() !== identity.pubkey.toLowerCase() &&
+            !agentPubkeys.has(pubkey.toLowerCase()),
+        )
+        .map(profileFor)
+    : [];
   const topLevel = materialized.filter((message) => !message.rootEventId);
   const threadRoot =
     materialized.find((message) => message.id === threadRootId) ?? null;
@@ -849,6 +861,7 @@ export function WorkspacePage({
                 : firstUnreadMessageId
             }
             hideDirectMessagePending={hideDmMutation.isPending}
+            members={channelMemberProfiles}
             messagesPending={messagesQuery.isPending}
             onlineMemberCount={onlineMemberCount}
             ownPubkey={identity.pubkey}

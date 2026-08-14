@@ -53,6 +53,7 @@ type WorkspaceConversationProps = {
   expandedThreadIds: Set<string>;
   firstUnreadMessageId: string | null;
   hideDirectMessagePending: boolean;
+  members: WorkspaceProfile[];
   messagesPending: boolean;
   mutedChannelIds: Set<string>;
   onlineMemberCount: number;
@@ -102,6 +103,7 @@ export function WorkspaceConversation({
   expandedThreadIds,
   firstUnreadMessageId,
   hideDirectMessagePending,
+  members,
   messagesPending,
   mutedChannelIds,
   onlineMemberCount,
@@ -403,6 +405,7 @@ export function WorkspaceConversation({
                           agents={agents}
                           channel={activeChannel}
                           customEmoji={customEmoji}
+                          members={members}
                           compact
                           draftPubkey={ownPubkey}
                           replyTo={replyTarget}
@@ -451,6 +454,7 @@ export function WorkspaceConversation({
               agents={agents}
               channel={activeChannel}
               customEmoji={customEmoji}
+              members={members}
               draftPubkey={ownPubkey}
               sending={sendPending}
               onTyping={onTyping}
@@ -515,6 +519,7 @@ export function WorkspaceConversation({
               agents={agents}
               channel={activeChannel}
               customEmoji={customEmoji}
+              members={members}
               draftPubkey={ownPubkey}
               replyTo={threadRoot}
               sending={sendPending}
