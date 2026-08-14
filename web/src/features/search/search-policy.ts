@@ -157,6 +157,20 @@ export function searchDestination(event: SearchableEvent): SearchDestination {
   };
 }
 
+/**
+ * Resolve the primary author label for a result. Returns a trimmed profile
+ * display name only when it is present and distinct from the truncated pubkey;
+ * a profile whose name defaulted to the truncated pubkey adds no information, so
+ * the caller should render the truncated pubkey alone in that case.
+ */
+export function searchAuthorDisplayName(
+  profileName: string | undefined,
+  truncatedPubkey: string,
+): string | null {
+  const trimmed = profileName?.trim();
+  return trimmed && trimmed !== truncatedPubkey ? trimmed : null;
+}
+
 export function searchKindLabel(kind: number): string {
   switch (kind) {
     case 9:

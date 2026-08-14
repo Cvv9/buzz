@@ -1,7 +1,12 @@
 import * as React from "react";
 import { CalendarClock, Search } from "lucide-react";
 import { Link } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 import { WorkspaceIdentityGate } from "@/features/access/WorkspaceIdentityGate";
+import {
+  listProfiles,
+  type WorkspaceProfile,
+} from "@/features/workspace/workspace-api";
 import { truncatePubkey } from "@/shared/lib/pubkey";
 import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
@@ -10,6 +15,7 @@ import {
   type SearchFilters,
   type SearchFormFilters,
   normalizeSearchFilters,
+  searchAuthorDisplayName,
   searchDestination,
   searchKindLabel,
 } from "../search-policy";
@@ -38,6 +44,16 @@ function SearchPageContent() {
     null,
   );
   const searchQuery = useWorkspaceSearch(filters);
+  const authorPubkeys = React.useMemo(
+    () =>
+      [...new Set((searchQuery.data ?? []).map((event) => event.pubkey))].sort(),
+    [searchQuery.data],
+  );
+  const profilesQuery = useQuery({
+    queryKey: ["search-author-profiles", authorPubkeys.join(",")],
+    queryFn: () => listProfiles(authorPubkeys),
+    enabled: authorPubkeys.length > 0,
+  });
 
   const submit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -162,7 +178,11 @@ function SearchPageContent() {
             {searchQuery.data?.length ? (
               <div className="space-y-3">
                 {searchQuery.data.map((event) => (
-                  <SearchResult event={event} key={event.id} />
+                  <SearchResult
+                    event={event}
+                    key={event.id}
+                    profile={profilesQuery.data?.get(event.pubkey)}
+                  />
                 ))}
               </div>
             ) : (
@@ -179,6 +199,7 @@ function SearchPageContent() {
 
 function SearchResult({
   event,
+  profile,
 }: {
   event: {
     id: string;
@@ -188,9 +209,12 @@ function SearchResult({
     tags: string[][];
     content: string;
   };
+  profile?: WorkspaceProfile;
 }) {
   const destination = searchDestination(event);
   const date = new Date(event.created_at * 1_000).toLocaleString();
+  const truncated = truncatePubkey(event.pubkey);
+  const displayName = searchAuthorDisplayName(profile?.name, truncated);
   return (
     <article className="rounded-2xl border border-border bg-card p-5 shadow-sm">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
@@ -198,11 +222,21 @@ function SearchResult({
           {searchKindLabel(event.kind)}
         </span>
         <Link
-          className="font-mono hover:text-foreground"
+          className="inline-flex items-center gap-1.5 hover:text-foreground"
           params={{ pubkey: event.pubkey }}
           to="/profiles/$pubkey"
         >
-          {truncatePubkey(event.pubkey)}
+          {displayName ? (
+            <>
+              <span className="font-medium text-foreground">{displayName}</span>
+              <span aria-hidden>·</span>
+              <span className="font-mono text-muted-foreground">
+                {truncated}
+              </span>
+            </>
+          ) : (
+            <span className="font-mono">{truncated}</span>
+          )}
         </Link>
         <time dateTime={new Date(event.created_at * 1_000).toISOString()}>
           {date}
