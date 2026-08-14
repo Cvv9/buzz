@@ -20,6 +20,10 @@ import {
   inboxDismissContextId,
   isTargetedApprovalRequest,
 } from "./workspace-inbox-policy.mjs";
+import {
+  resolveSeedHorizon,
+  seedMarkerForAbsentChannel,
+} from "./workspace-read-state-seed-policy.mjs";
 
 const READ_STATE_D_TAG_PREFIX = "read-state:";
 const READ_STATE_HORIZON_SECONDS = 7 * 24 * 60 * 60;
@@ -68,6 +72,11 @@ export type WorkspaceInboxItem = {
 
 type StoredReadState = {
   contexts: Record<string, number>;
+  // Epoch-seconds horizon stamped when the store is first created for an
+  // identity. Absent-marker channels are only seeded forward to history at or
+  // before this point; anything newer stays unread. Legacy stores lack the
+  // field and are stamped on first read.
+  seededAt: number;
   version: 1;
 };
 
@@ -120,15 +129,24 @@ function readSlotId(pubkey: string) {
   return slotId;
 }
 
-export function readLocalWorkspaceReadState(
-  pubkey: string,
-): Map<string, number> {
+type StoredReadStateSnapshot = {
+  markers: Map<string, number>;
+  seededAt: number;
+  // Whether a valid store already existed in localStorage. A first web visit
+  // (no store yet) still seeds absent channels forward; later mounts must not.
+  storeExisted: boolean;
+};
+
+function readStoredReadState(pubkey: string): StoredReadStateSnapshot {
+  const now = Math.floor(Date.now() / 1000);
   try {
     const raw = localStorage.getItem(storageKey(pubkey));
-    if (!raw) return new Map();
+    if (!raw) return { markers: new Map(), seededAt: now, storeExisted: false };
     const parsed = JSON.parse(raw) as Partial<StoredReadState>;
-    if (parsed.version !== 1 || !parsed.contexts) return new Map();
-    return new Map(
+    if (parsed.version !== 1 || !parsed.contexts) {
+      return { markers: new Map(), seededAt: now, storeExisted: false };
+    }
+    const markers = new Map(
       Object.entries(parsed.contexts).filter(
         ([context, timestamp]) =>
           context.length > 0 &&
@@ -137,9 +155,17 @@ export function readLocalWorkspaceReadState(
           timestamp >= 0,
       ),
     );
+    const { seededAt } = resolveSeedHorizon(parsed.seededAt, now);
+    return { markers, seededAt, storeExisted: true };
   } catch {
-    return new Map();
+    return { markers: new Map(), seededAt: now, storeExisted: false };
   }
+}
+
+export function readLocalWorkspaceReadState(
+  pubkey: string,
+): Map<string, number> {
+  return readStoredReadState(pubkey).markers;
 }
 
 function writeLocalWorkspaceReadState(
@@ -148,9 +174,16 @@ function writeLocalWorkspaceReadState(
 ) {
   const record: Record<string, number> = {};
   for (const [context, timestamp] of contexts) record[context] = timestamp;
+  // Preserve the existing seed horizon across writes; stamp it on first write
+  // so a freshly created store records when the identity first arrived.
+  const { seededAt } = readStoredReadState(pubkey);
   localStorage.setItem(
     storageKey(pubkey),
-    JSON.stringify({ version: 1, contexts: record } satisfies StoredReadState),
+    JSON.stringify({
+      version: 1,
+      seededAt,
+      contexts: record,
+    } satisfies StoredReadState),
   );
 }
 
@@ -503,7 +536,11 @@ export function useWorkspaceReadState({
   React.useEffect(() => {
     if (!identityPubkey || channels.length === 0) return;
     let cancelled = false;
-    const localMarkers = readLocalWorkspaceReadState(identityPubkey);
+    const {
+      markers: localMarkers,
+      seededAt,
+      storeExisted,
+    } = readStoredReadState(identityPubkey);
     const channelIds = channels.map((channel) => channel.id);
     void Promise.all([
       readRemoteMarkers(identityPubkey).catch(() => new Map<string, number>()),
@@ -528,15 +565,19 @@ export function useWorkspaceReadState({
         .map(toWorkspaceMessage);
       const nextEvents = mapEventsByChannel(parsedEvents);
       // A first web visit must not replay the entire company history as new.
-      // Existing desktop/mobile markers always win; absent markers seed to the
-      // newest observed external message and subsequent activity is unread.
+      // Existing desktop/mobile markers always win; on the genuine first visit
+      // absent markers seed to the newest external message at or before the
+      // seed horizon. On later mounts absent channels are left unseeded so
+      // messages that arrived after the store was created stay unread.
       for (const [channelId, channelEvents] of nextEvents) {
         if (mergedMarkers.has(channelId)) continue;
-        const newestExternal = [...channelEvents]
-          .reverse()
-          .find((event) => isExternalMessage(event, identityPubkey));
-        if (newestExternal)
-          mergedMarkers.set(channelId, newestExternal.created_at);
+        const seed = seedMarkerForAbsentChannel({
+          channelEvents,
+          pubkey: identityPubkey,
+          seededAt,
+          storeExisted,
+        });
+        if (seed !== null) mergedMarkers.set(channelId, seed);
       }
       setMarkers((current) => {
         const next = mergeMarkers(current, mergedMarkers);
