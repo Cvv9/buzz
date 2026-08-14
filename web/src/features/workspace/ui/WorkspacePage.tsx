@@ -59,6 +59,7 @@ import {
 import { useWorkspaceReactions } from "@/features/workspace/useWorkspaceReactions";
 import { useWorkspaceReadState } from "@/features/workspace/workspace-read-state";
 import { workspaceInvalidationTargets } from "../workspace-realtime-sync-policy";
+import { resolveActiveChannelId } from "../workspace-active-channel-policy";
 import {
   listUserStatuses,
   subscribeToProfiles,
@@ -170,13 +171,16 @@ export function WorkspacePage({
     enabled: Boolean(identity && communityMembersQuery.data?.length),
   });
   React.useEffect(() => {
-    if (
-      visibleChannels.length &&
-      !visibleChannels.some((channel) => channel.id === activeChannelId)
-    ) {
-      setActiveChannelId(visibleChannels[0]?.id ?? null);
-    }
-  }, [activeChannelId, visibleChannels]);
+    // Only reconcile the active channel once the catalog has actually loaded.
+    // Reconciling mid-boot would fall back to an arbitrary first channel and
+    // overwrite a validly stored selection whose channel had not arrived yet.
+    if (!channelsQuery.isSuccess) return;
+    const resolved = resolveActiveChannelId({
+      activeChannelId,
+      visibleChannelIds: visibleChannels.map((channel) => channel.id),
+    });
+    if (resolved !== activeChannelId) setActiveChannelId(resolved);
+  }, [activeChannelId, channelsQuery.isSuccess, visibleChannels]);
   React.useEffect(() => {
     if (
       channelPermalink &&
@@ -192,10 +196,13 @@ export function WorkspacePage({
     setWorkspaceView("channel");
   }, [threadPermalink]);
   React.useEffect(() => {
-    if (activeChannelId) {
+    // Persist only after the catalog has loaded so a transient fallback chosen
+    // during progressive boot can never overwrite a stored selection before it
+    // has been validated against the loaded channels.
+    if (activeChannelId && channelsQuery.isSuccess) {
       localStorage.setItem("buzz.web.active-channel", activeChannelId);
     }
-  }, [activeChannelId]);
+  }, [activeChannelId, channelsQuery.isSuccess]);
 
   const activeChannel =
     visibleChannels.find((channel) => channel.id === activeChannelId) ?? null;
@@ -956,6 +963,7 @@ export function WorkspacePage({
       />
       {channelSettingsOpen && activeChannel ? (
         <WorkspaceChannelSettings
+          agents={agentsQuery.data ?? []}
           channel={activeChannel}
           viewerPubkey={identity.pubkey}
           onClose={() => setChannelSettingsOpen(false)}

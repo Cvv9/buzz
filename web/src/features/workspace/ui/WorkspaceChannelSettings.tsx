@@ -14,6 +14,7 @@ import {
   removeWorkspaceMember,
   type WorkspaceChannel,
   type WorkspaceChannelMember,
+  type WorkspaceProfile,
   updateWorkspaceChannel,
 } from "../workspace-api";
 import {
@@ -24,6 +25,10 @@ import {
   availableWorkspaceInvitees,
   canRemoveWorkspaceChannelMember,
 } from "../workspace-channel-members-policy";
+import {
+  defaultInviteRoleForCandidate,
+  partitionWorkspaceInviteCandidates,
+} from "../workspace-invite-candidates-policy";
 
 const MEMBER_ROLES = ["admin", "member", "guest", "bot"] as const;
 
@@ -43,11 +48,13 @@ function isCommunityManager(
  * Nostr events; the relay remains the authorization and shared-state source.
  */
 export function WorkspaceChannelSettings({
+  agents,
   channel,
   viewerPubkey,
   onClose,
   onUpdated,
 }: {
+  agents: WorkspaceProfile[];
   channel: WorkspaceChannel;
   viewerPubkey: string;
   onClose: () => void;
@@ -100,12 +107,27 @@ export function WorkspaceChannelSettings({
     queryFn: () => listProfiles(profilePubkeys),
     enabled: profilePubkeys.length > 0,
   });
+  const agentByPubkey = React.useMemo(
+    () => new Map(agents.map((agent) => [agent.pubkey.toLowerCase(), agent])),
+    [agents],
+  );
   const profileName = (pubkey: string) =>
-    profilesQuery.data?.get(pubkey)?.name ?? truncatePubkey(pubkey);
+    agentByPubkey.get(pubkey.toLowerCase())?.name ??
+    profilesQuery.data?.get(pubkey)?.name ??
+    truncatePubkey(pubkey);
   const memberOptionLabel = (pubkey: string) => {
     const name = profileName(pubkey);
     const shortKey = truncatePubkey(pubkey);
     return name === shortKey ? shortKey : `${name} · ${shortKey}`;
+  };
+  const { members: memberInviteCandidates, agents: agentInviteCandidates } =
+    React.useMemo(
+      () => partitionWorkspaceInviteCandidates(inviteCandidates, agents),
+      [inviteCandidates, agents],
+    );
+  const selectInvitee = (pubkey: string) => {
+    setInvitee(pubkey);
+    if (pubkey) setInviteRole(defaultInviteRoleForCandidate(pubkey, agents));
   };
 
   const resetDraft = React.useCallback((nextChannel: WorkspaceChannel) => {
@@ -284,15 +306,28 @@ export function WorkspaceChannelSettings({
             <div className="mt-3 flex flex-wrap gap-2">
               <select
                 className="h-10 min-w-52 flex-1 rounded-md border border-input bg-transparent px-3 text-sm"
-                onChange={(event) => setInvitee(event.target.value)}
+                onChange={(event) => selectInvitee(event.target.value)}
                 value={invitee}
               >
                 <option value="">Choose a member</option>
-                {inviteCandidates.map((member) => (
-                  <option key={member.pubkey} value={member.pubkey}>
-                    {memberOptionLabel(member.pubkey)}
-                  </option>
-                ))}
+                {memberInviteCandidates.length ? (
+                  <optgroup label="Members">
+                    {memberInviteCandidates.map((member) => (
+                      <option key={member.pubkey} value={member.pubkey}>
+                        {memberOptionLabel(member.pubkey)}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : null}
+                {agentInviteCandidates.length ? (
+                  <optgroup label="Agents">
+                    {agentInviteCandidates.map((agent) => (
+                      <option key={agent.pubkey} value={agent.pubkey}>
+                        {memberOptionLabel(agent.pubkey)}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : null}
               </select>
               {canManage ? (
                 <select

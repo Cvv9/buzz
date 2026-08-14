@@ -279,13 +279,16 @@ export function WorkspaceConversation({
                 ) : null}
               </div>
               <div className="flex items-center gap-1 text-black/40 dark:text-white/35">
-                <span
-                  className="hidden items-center gap-1 rounded-lg px-2 py-1 text-xs sm:flex"
+                <button
+                  aria-label="View members"
+                  className="hidden items-center gap-1 rounded-lg px-2 py-1 text-xs hover:bg-black/5 hover:text-black/65 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a5a500] sm:flex dark:hover:bg-white/5 dark:hover:text-white/65"
+                  type="button"
                   title={
                     onlineMemberCount
                       ? `${onlineMemberCount} online`
                       : "No members currently online"
                   }
+                  onClick={onSetChannelSettingsOpen}
                 >
                   <Users className="size-3.5" />
                   <span
@@ -297,7 +300,7 @@ export function WorkspaceConversation({
                     }
                   />
                   {activeChannel.memberPubkeys.length}
-                </span>
+                </button>
               </div>
             </>
           ) : null}
