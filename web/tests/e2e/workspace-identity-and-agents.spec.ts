@@ -206,8 +206,12 @@ test("the web agent page explains resources and lets an admin edit profile and c
     .fill("agent-admin-password");
   await page.getByLabel("Confirm password").fill("agent-admin-password");
   await page.getByRole("button", { name: "Sign in with recovery key" }).click();
+  await expect(page.getByTestId("workspace-shell")).toBeVisible();
 
-  await page.getByTestId("workspace-agents-button").click();
+  await page.locator('a[href="/settings"]').last().click();
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  await page.getByRole("link", { name: "Agents", exact: true }).click();
+  await expect(page.getByTestId("workspace-agents")).toBeVisible();
   await page.getByTestId("agent-row-workspace-agent-7").click();
   await expect(
     page.getByRole("paragraph").filter({

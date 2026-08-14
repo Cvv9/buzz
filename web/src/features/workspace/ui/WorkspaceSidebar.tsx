@@ -13,7 +13,6 @@ import {
   Settings,
   Sparkles,
   Star,
-  Workflow,
   X,
 } from "lucide-react";
 import { Link } from "@tanstack/react-router";
@@ -181,9 +180,7 @@ export function WorkspaceSidebar({
   onOpenGuide,
   onOpenInbox,
   onOpenAlerts,
-  onOpenAgents,
   onNewMessage,
-  onOpenReminders,
   onReopenDirectMessage,
   hiddenDirectMessages,
   onAddAgent,
@@ -206,9 +203,7 @@ export function WorkspaceSidebar({
   onOpenGuide: () => void;
   onOpenInbox: () => void;
   onOpenAlerts: () => void;
-  onOpenAgents: () => void;
   onNewMessage: () => void;
-  onOpenReminders: () => void;
   onReopenDirectMessage: (channel: WorkspaceChannel) => void;
   hiddenDirectMessages: WorkspaceChannel[];
   onAddAgent: (agent: WorkspaceProfile) => void;
@@ -331,15 +326,6 @@ export function WorkspaceSidebar({
               <Search className="size-3.5 shrink-0" />
               <span className="min-w-0 flex-1 truncate">Search</span>
             </Link>
-            <Link
-              aria-label="Open workflows"
-              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent"
-              to="/workflows"
-              onClick={onClose}
-            >
-              <Workflow className="size-3.5 shrink-0" />
-              <span className="min-w-0 flex-1 truncate">Workflows</span>
-            </Link>
             <button
               aria-label={
                 inboxUnreadCount
@@ -393,35 +379,6 @@ export function WorkspaceSidebar({
                   {alertsUnreadCount > 99 ? "99+" : alertsUnreadCount}
                 </span>
               ) : null}
-            </button>
-            <button
-              className={cn(
-                "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
-                selectedView === "agents"
-                  ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
-                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent",
-              )}
-              data-testid="workspace-agents-button"
-              type="button"
-              onClick={() => {
-                onOpenAgents();
-                onClose();
-              }}
-            >
-              <Bot className="size-3.5 shrink-0" />
-              <span className="min-w-0 flex-1 truncate">Agents</span>
-            </button>
-            <button
-              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent"
-              data-testid="workspace-reminders-button"
-              type="button"
-              onClick={() => {
-                onOpenReminders();
-                onClose();
-              }}
-            >
-              <Bell className="size-3.5 shrink-0" />
-              <span className="min-w-0 flex-1 truncate">Reminders</span>
             </button>
           </div>
           <div className="mb-6">

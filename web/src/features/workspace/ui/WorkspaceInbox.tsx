@@ -136,7 +136,7 @@ export function WorkspaceInbox({
                   </button>
                   <button
                     aria-label={
-                      isAlerts ? "Mark alert read" : "Dismiss from inbox"
+                      isAlerts ? "Dismiss alert" : "Dismiss from inbox"
                     }
                     className="absolute right-3 top-3 inline-flex size-8 items-center justify-center rounded-lg text-black/35 opacity-0 transition hover:bg-black/5 hover:text-black/65 focus-visible:opacity-100 group-hover:opacity-100 dark:text-white/35 dark:hover:bg-white/5 dark:hover:text-white/70"
                     data-testid={`workspace-inbox-dismiss-${item.id}`}

@@ -17,7 +17,9 @@ async function signIn(
   await page.getByLabel("Confirm password").fill("workflow-test-password");
   await page.getByRole("button", { name: "Sign in with recovery key" }).click();
   await expect(page.getByTestId("workspace-shell")).toBeVisible();
-  await page.getByLabel("Open workflows").click();
+  await page.locator('a[href="/settings"]').last().click();
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  await page.getByRole("link", { name: "Workflows", exact: true }).click();
   await expect(page).toHaveURL("/workflows");
   await expect(page.getByRole("heading", { name: "Workflows" })).toBeVisible();
 }

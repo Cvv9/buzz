@@ -18,7 +18,6 @@ import type {
 import type { UserStatus } from "@/features/profiles/profile-api";
 import { ReactionPill } from "./ReactionPill";
 import { ProfileAvatar } from "./WorkspaceSidebar";
-import { ThreadReplyCount } from "./ThreadReplyCount";
 
 export type TimelineMessage = WorkspaceMessage & {
   edited?: boolean;
@@ -104,13 +103,9 @@ type WorkspaceMessageRowProps = {
   ownPubkey: string;
   reactions: ReactionSummary[];
   customEmoji: readonly CustomEmoji[];
-  replyCount: number;
   reactionActorName: (pubkey: string) => string;
-  threadExpanded?: boolean;
   workflowName?: string;
-  onOpenThreadPanel: () => void;
   onReply: () => void;
-  onToggleInlineThread: () => void;
   onReact: (emoji: string) => void;
   onEdit: () => void;
   onDelete: () => void;
@@ -123,13 +118,9 @@ export function WorkspaceMessageRow({
   ownPubkey,
   reactions,
   customEmoji,
-  replyCount,
   reactionActorName,
-  threadExpanded,
   workflowName,
-  onOpenThreadPanel,
   onReply,
-  onToggleInlineThread,
   onReact,
   onEdit,
   onDelete,
@@ -186,7 +177,7 @@ export function WorkspaceMessageRow({
           />
         </div>
         <WorkspaceMediaGallery tags={message.tags} />
-        {reactions.length || replyCount ? (
+        {reactions.length ? (
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
             {reactions.map((reaction) => (
               <ReactionPill
@@ -197,15 +188,6 @@ export function WorkspaceMessageRow({
                 onToggle={onReact}
               />
             ))}
-            {replyCount ? (
-              <ThreadReplyCount
-                expanded={Boolean(threadExpanded)}
-                messageId={message.id}
-                replyCount={replyCount}
-                onOpenPanel={onOpenThreadPanel}
-                onToggleInline={onToggleInlineThread}
-              />
-            ) : null}
           </div>
         ) : null}
       </div>

@@ -3,7 +3,7 @@ import { generateSecretKey, getPublicKey } from "nostr-tools/pure";
 import { nsecEncode } from "nostr-tools/nip19";
 import { installWorkspaceRelayMock } from "./helpers/workspaceRelayMock";
 
-test("thread reply counts expand inline and open the panel only on double-click", async ({
+test("thread summary bar stays collapsed and opens the focused thread panel", async ({
   page,
 }) => {
   const secretKey = generateSecretKey();
@@ -19,30 +19,27 @@ test("thread reply counts expand inline and open the panel only on double-click"
   await page.getByLabel("Confirm password").fill("thread-test-password");
   await page.getByRole("button", { name: "Sign in with recovery key" }).click();
 
-  const replyCount = page.getByTestId(`thread-reply-count-${rootId}`);
-  const inlineThread = page.getByTestId(`inline-thread-${rootId}`);
-  await expect(replyCount).toHaveAttribute("aria-expanded", "false");
+  const summaryBar = page.getByTestId(`thread-summary-${rootId}`);
+  await expect(summaryBar).toBeVisible();
+  await expect(summaryBar).toContainText("1 reply");
 
-  await replyCount.click();
-  await expect(inlineThread).toBeVisible();
-  await expect(replyCount).toHaveAttribute("aria-expanded", "true");
-  await expect(inlineThread.getByText("A threaded reply")).toBeVisible();
-  await expect(inlineThread.getByLabel("Message general")).toBeVisible();
+  // Replies stay collapsed — there is no inline thread section in the timeline.
+  await expect(page.getByTestId(`inline-thread-${rootId}`)).toHaveCount(0);
+  await expect(page.getByText("A threaded reply")).toHaveCount(0);
 
-  await replyCount.click();
-  await expect(inlineThread).toBeHidden();
-  await expect(replyCount).toHaveAttribute("aria-expanded", "false");
+  // Clicking the summary bar opens the focused thread panel (not inline).
+  await summaryBar.click();
+  await expect(page.getByRole("heading", { name: "Thread" })).toBeVisible();
+  await expect(page.getByText("A threaded reply")).toBeVisible();
+
+  // The hover "Reply" action opens the same panel rather than an inline composer.
+  await page.getByLabel("Close thread").click();
+  await expect(page.getByRole("heading", { name: "Thread" })).toBeHidden();
 
   const rootArticle = page
     .getByText("Welcome to Buzz")
     .locator("xpath=ancestor::article");
   await rootArticle.hover();
   await rootArticle.getByRole("button", { name: "Reply", exact: true }).click();
-  await expect(inlineThread).toBeVisible();
-  await inlineThread.getByRole("button", { name: "Cancel reply" }).click();
-  await expect(inlineThread).toBeHidden();
-
-  await replyCount.dblclick();
   await expect(page.getByRole("heading", { name: "Thread" })).toBeVisible();
-  await expect(inlineThread).toBeHidden();
 });

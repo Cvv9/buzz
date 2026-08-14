@@ -185,13 +185,13 @@ mod tests {
     fn runtime_image_installs_pre_receive_hook_tools() {
         let dockerfile = include_str!("../../../../../Dockerfile");
         let runtime_stage = dockerfile
-            .split("FROM debian:${DEBIAN_VERSION}-slim AS runtime")
+            .split("FROM ${RUNTIME_IMAGE} AS runtime-base")
             .nth(1)
-            .expect("Dockerfile should have a runtime stage");
+            .expect("Dockerfile should have a runtime-base stage");
         let runtime_setup = runtime_stage
-            .split("COPY --from=builder")
+            .split("COPY --from=")
             .next()
-            .expect("runtime stage should copy built artifacts after package setup");
+            .expect("runtime-base stage should copy built artifacts after package setup");
 
         for tool in ["curl", "openssl"] {
             assert!(
