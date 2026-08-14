@@ -1,4 +1,5 @@
 import * as React from "react";
+import { BrowserSettingsBreadcrumb } from "@/features/settings/ui/BrowserSettingsBreadcrumb";
 import { useWorkspaceIdentity } from "@/features/workspace/useWorkspaceIdentity";
 import { Button } from "@/shared/ui/button";
 import {
@@ -60,6 +61,7 @@ export function PreferencesPage() {
 
   return (
     <main className="mx-auto w-full max-w-2xl space-y-6 p-5 sm:p-8">
+      <BrowserSettingsBreadcrumb current="Notifications & accessibility" />
       <header>
         <p className="text-sm text-muted-foreground">This browser only</p>
         <h1 className="mt-1 text-2xl font-semibold">
