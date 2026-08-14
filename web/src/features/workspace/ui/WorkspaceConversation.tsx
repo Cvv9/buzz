@@ -14,6 +14,11 @@ import {
 import { useEffect, useRef } from "react";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 import { WorkspaceMessageRow } from "./WorkspaceMessageRow";
+import { WorkspaceThreadSummaryBar } from "./WorkspaceThreadSummaryBar";
+import {
+  lastReplyTimestamp,
+  selectReplierPubkeys,
+} from "../thread-summary-policy";
 import type { CustomEmoji } from "@/features/custom-emoji/custom-emoji-policy";
 import type { UserStatus } from "@/features/profiles/profile-api";
 import type { WorkspaceReactionMap } from "@/features/workspace/reaction-cache";
@@ -50,6 +55,10 @@ type WorkspaceConversationProps = {
   activeChannel: WorkspaceChannel | null;
   agents: WorkspaceProfile[];
   customEmoji: readonly CustomEmoji[];
+  // Inline thread expansion was replaced by the Slack-style summary bar + thread
+  // panel; `expandedThreadIds`, `onCloseInlineThread`, `onToggleInlineThread`,
+  // and `onReply` are still accepted (WorkspacePage owns the call site) but no
+  // longer drive any rendering here.
   expandedThreadIds: Set<string>;
   firstUnreadMessageId: string | null;
   hideDirectMessagePending: boolean;
@@ -100,7 +109,6 @@ export function WorkspaceConversation({
   activeChannel,
   agents,
   customEmoji,
-  expandedThreadIds,
   firstUnreadMessageId,
   hideDirectMessagePending,
   members,
@@ -122,18 +130,15 @@ export function WorkspaceConversation({
   typingNames,
   profileFor,
   onAddDmMembers,
-  onCloseInlineThread,
   onDeleteMessage,
   onEditMessage,
   onHideDirectMessage,
   onTimelineReady,
   onOpenNavigation,
   onOpenThreadPanel,
-  onReply,
   onSend,
   onSetChannelSettingsOpen,
   onSetThreadRoot,
-  onToggleInlineThread,
   onToggleMute,
   onToggleReaction,
   onToggleStar,
@@ -327,9 +332,10 @@ export function WorkspaceConversation({
           ) : topLevel.length ? (
             topLevel.map((message) => {
               const replies = repliesByThread.get(message.id) ?? [];
-              const inlineExpanded = expandedThreadIds.has(message.id);
-              const replyTarget = replies[replies.length - 1] ?? message;
+              const replyCount = replyCounts.get(message.id) ?? 0;
               const presentation = messagePresentation(message, profileFor);
+              const replierProfiles =
+                selectReplierPubkeys(replies).map(profileFor);
               return (
                 <div data-message-id={message.id} key={message.id}>
                   <WorkspaceMessageRow
@@ -344,83 +350,24 @@ export function WorkspaceConversation({
                     }
                     workflowName={presentation.workflowName}
                     reactions={reactions?.get(message.id) ?? []}
-                    replyCount={replyCounts.get(message.id) ?? 0}
                     reactionActorName={reactionActorName}
-                    threadExpanded={inlineExpanded}
                     onDelete={() => {
                       if (window.confirm("Delete this message?")) {
                         onDeleteMessage(message);
                       }
                     }}
                     onEdit={() => onEditMessage(message)}
-                    onOpenThreadPanel={() => onOpenThreadPanel(message.id)}
                     onReact={(emoji) => onToggleReaction(message, emoji)}
-                    onReply={() => onReply(message.id)}
-                    onToggleInlineThread={() =>
-                      onToggleInlineThread(message.id)
-                    }
+                    onReply={() => onOpenThreadPanel(message.id)}
                   />
-                  {inlineExpanded ? (
-                    <section
-                      aria-label={`Replies to ${presentation.profile.name}`}
-                      className="mb-2 ml-10 border-l border-black/10 pl-2 dark:border-white/10 sm:ml-14 sm:pl-3"
-                      data-testid={`inline-thread-${message.id}`}
-                      id={`inline-thread-${message.id}`}
-                    >
-                      <p className="px-2 pt-2 text-xs font-medium text-black/40 dark:text-white/35">
-                        {replies.length}{" "}
-                        {replies.length === 1 ? "reply" : "replies"}
-                      </p>
-                      {replies.map((reply) => {
-                        const replyPresentation = messagePresentation(
-                          reply,
-                          profileFor,
-                        );
-                        return (
-                          <WorkspaceMessageRow
-                            customEmoji={customEmoji}
-                            key={reply.id}
-                            message={reply}
-                            ownPubkey={ownPubkey}
-                            profile={replyPresentation.profile}
-                            status={
-                              replyPresentation.workflowName
-                                ? null
-                                : statusFor(replyPresentation.statusPubkey)
-                            }
-                            workflowName={replyPresentation.workflowName}
-                            reactions={reactions?.get(reply.id) ?? []}
-                            replyCount={0}
-                            reactionActorName={reactionActorName}
-                            onDelete={() => onDeleteMessage(reply)}
-                            onEdit={() => onEditMessage(reply)}
-                            onOpenThreadPanel={() =>
-                              onSetThreadRoot(message.id)
-                            }
-                            onReact={(emoji) => onToggleReaction(reply, emoji)}
-                            onReply={() => onReply(message.id)}
-                            onToggleInlineThread={() => {}}
-                          />
-                        );
-                      })}
-                      {activeChannel ? (
-                        <WorkspaceComposer
-                          agents={agents}
-                          channel={activeChannel}
-                          customEmoji={customEmoji}
-                          members={members}
-                          compact
-                          draftPubkey={ownPubkey}
-                          replyTo={replyTarget}
-                          sending={sendPending}
-                          onTyping={onTyping}
-                          onCancelReply={() => onCloseInlineThread(message.id)}
-                          onSend={(content, mentions, mediaTags) =>
-                            onSend(content, mentions, mediaTags, replyTarget)
-                          }
-                        />
-                      ) : null}
-                    </section>
+                  {replyCount > 0 ? (
+                    <WorkspaceThreadSummaryBar
+                      lastReplyAt={lastReplyTimestamp(replies)}
+                      messageId={message.id}
+                      replierProfiles={replierProfiles}
+                      replyCount={replyCount}
+                      onOpen={() => onOpenThreadPanel(message.id)}
+                    />
                   ) : null}
                 </div>
               );
@@ -505,14 +452,11 @@ export function WorkspaceConversation({
                   }
                   workflowName={presentation.workflowName}
                   reactions={reactions?.get(message.id) ?? []}
-                  replyCount={0}
                   reactionActorName={reactionActorName}
                   onDelete={() => onDeleteMessage(message)}
                   onEdit={() => onEditMessage(message)}
-                  onOpenThreadPanel={() => {}}
                   onReact={(emoji) => onToggleReaction(message, emoji)}
                   onReply={() => {}}
-                  onToggleInlineThread={() => {}}
                 />
               );
             })}
