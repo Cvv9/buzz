@@ -1630,6 +1630,76 @@ impl Db {
         Ok(result)
     }
 
+    /// Fold an accepted kind:40003 edit into the search and mention indexes of
+    /// its target message.
+    ///
+    /// Two writes, both keyed to the *target* (not the edit) event:
+    /// - **Search (Bug 1):** set the target's `edited_content` override so its
+    ///   generated `search_tsv` reflects the edited body. Guarded last-writer-
+    ///   wins by `edited_at` (edit `created_at`, seconds): only a strictly newer
+    ///   edit overwrites, so an out-of-order or replayed older (or equal-dated)
+    ///   edit cannot clobber a newer body — mirroring the client's
+    ///   newest-edit-wins folding.
+    /// - **Mentions (Bug 2):** insert feed-mention rows for `new_mention_pubkeys`
+    ///   (pubkeys the edit mentions that the target did not already mention),
+    ///   dated at the edit's `created_at` so they surface as fresh mentions of
+    ///   the target message. The caller computes the delta; this method only
+    ///   persists it. Rows are keyed to the target event id, whose kind is in
+    ///   the feed allowlist, so `query_mentions` returns the edited message.
+    ///
+    /// `new_mention_pubkeys` must be lowercase 64-hex strings. Best-effort:
+    /// callers log failures but do not fail the accepted edit.
+    pub async fn apply_message_edit_index(
+        &self,
+        community_id: CommunityId,
+        target: &StoredEvent,
+        edit_content: &str,
+        edit_created_at: i64,
+        new_mention_pubkeys: &[String],
+    ) -> Result<()> {
+        let target_id = target.event.id.as_bytes();
+
+        // Search override (Bug 1). LWW fence: only overwrite when this edit is
+        // at least as new as the last-applied edit.
+        sqlx::query(
+            "UPDATE events SET edited_content = $1, edited_at = $2 \
+             WHERE community_id = $3 AND id = $4 \
+               AND (edited_at IS NULL OR edited_at < $2)",
+        )
+        .bind(edit_content)
+        .bind(edit_created_at)
+        .bind(community_id.as_uuid())
+        .bind(target_id.as_slice())
+        .execute(&self.pool)
+        .await?;
+
+        // Delta mentions (Bug 2). Nothing new to notify → no second round trip.
+        if new_mention_pubkeys.is_empty() {
+            return Ok(());
+        }
+
+        let created_at = DateTime::from_timestamp(edit_created_at, 0)
+            .ok_or(crate::error::DbError::InvalidTimestamp(edit_created_at))?;
+        let target_kind = target.event.kind.as_u16() as i32;
+
+        let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
+            "INSERT INTO event_mentions \
+             (community_id, pubkey_hex, event_id, event_created_at, channel_id, event_kind) ",
+        );
+        qb.push_values(new_mention_pubkeys, |mut b, pubkey| {
+            b.push_bind(community_id.as_uuid())
+                .push_bind(pubkey.as_str())
+                .push_bind(target_id.as_slice())
+                .push_bind(created_at)
+                .push_bind(target.channel_id)
+                .push_bind(target_kind);
+        });
+        qb.push(" ON CONFLICT DO NOTHING");
+        qb.build().execute(&self.pool).await?;
+
+        Ok(())
+    }
+
     /// Queries events matching the given filter parameters.
     ///
     /// Always reads from the WRITER pool. If the result influences a write

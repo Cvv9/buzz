@@ -311,11 +311,11 @@ export async function listWorkspaceChannels(
   );
   return metadata
     .map((event): WorkspaceChannel | null => {
-      const id = firstTag(event, "d");
+      const id = firstTag(event, "d"); // hidden is a public-list hint; still show the viewer's own
       if (
         !id ||
         firstTag(event, "archived") === "true" ||
-        event.tags.some((tag) => tag[0] === "hidden")
+        (allTags(event, "hidden").length > 0 && !channelIds.includes(id))
       ) {
         return null;
       }

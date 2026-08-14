@@ -192,7 +192,15 @@ Primary files:
 4. Owner/admin send adds them through `add_channel_members` with role `bot`.
 5. `send_channel_message` includes agent pubkeys as `p` tags.
 6. The web client mirrors this in `useAgentMentionDelivery.ts` using
-   `addWorkspaceMember` and `sendWorkspaceMessage`.
+   `addWorkspaceMember` and `sendWorkspaceMessage`. Its composer assembles
+   mention candidates from agents plus channel members in
+   `workspace-mention-policy.ts` (`WorkspaceComposer.tsx` typeahead).
+7. A kind `40003` edit that adds `p` tags delivers the *delta* mentions:
+   `handle_stream_message_edit` (`buzz-relay/src/handlers/side_effects.rs`)
+   computes edit-minus-target pubkeys and `Db::apply_message_edit_index`
+   writes `event_mentions` rows keyed to the target message (and sets the
+   target's `edited_content` so FTS indexes the edited body). Already-tagged
+   pubkeys are never re-notified.
 
 ### Run an agent-targeted workflow step
 

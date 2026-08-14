@@ -21,10 +21,19 @@ import type {
   WorkspaceChannel,
   WorkspaceProfile,
 } from "@/features/workspace/workspace-api";
+import {
+  activeMentionQuery,
+  applyMentionSelection,
+  extractMentionPubkeys,
+  filterMentionCandidates,
+  type ActiveMention,
+  type MentionCandidate,
+} from "@/features/workspace/workspace-mention-policy";
 import type { TimelineMessage } from "../workspace-messages";
 
 type WorkspaceComposerProps = {
   agents: WorkspaceProfile[];
+  members: WorkspaceProfile[];
   channel: WorkspaceChannel;
   customEmoji: readonly CustomEmoji[];
   compact?: boolean;
@@ -41,6 +50,7 @@ export function WorkspaceComposer({
   customEmoji,
   draftPubkey,
   agents,
+  members,
   replyTo,
   onCancelReply,
   onSend,
@@ -59,6 +69,54 @@ export function WorkspaceComposer({
   const [draggingFiles, setDraggingFiles] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
   const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+  const candidates = React.useMemo<MentionCandidate[]>(() => {
+    const seen = new Set<string>();
+    const result: MentionCandidate[] = [];
+    for (const profile of [...agents, ...members]) {
+      const key = profile.pubkey.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      result.push({
+        pubkey: profile.pubkey,
+        name: profile.name,
+        aliases: profile.aliases,
+        picture: profile.picture,
+        isAgent: agents.includes(profile),
+      });
+    }
+    return result;
+  }, [agents, members]);
+  const [mention, setMention] = React.useState<ActiveMention | null>(null);
+  const [mentionIndex, setMentionIndex] = React.useState(0);
+  const suggestions = mention
+    ? filterMentionCandidates(candidates, mention.query, 8)
+    : [];
+  const updateMentionFromTextarea = (nextContent: string) => {
+    const caret = textareaRef.current?.selectionStart ?? nextContent.length;
+    const next = activeMentionQuery(nextContent, caret);
+    setMention((previous) => {
+      if (previous?.start !== next?.start || previous?.query !== next?.query)
+        setMentionIndex(0);
+      return next;
+    });
+  };
+  const selectMentionCandidate = (candidate: MentionCandidate) => {
+    if (!mention) return;
+    const caret = textareaRef.current?.selectionStart ?? content.length;
+    const result = applyMentionSelection(
+      content,
+      mention,
+      caret,
+      candidate.name,
+    );
+    setContent(result.text);
+    setMention(null);
+    onTyping?.();
+    window.requestAnimationFrame(() => {
+      textareaRef.current?.focus();
+      textareaRef.current?.setSelectionRange(result.caret, result.caret);
+    });
+  };
   const {
     addFiles,
     attachments,
@@ -107,14 +165,7 @@ export function WorkspaceComposer({
       return;
     }
     if (!trimmed && readyAttachments.length === 0) return;
-    const lowered = trimmed.toLocaleLowerCase();
-    const mentions = agents
-      .filter((agent) =>
-        [agent.name, ...(agent.aliases ?? [])].some((name) =>
-          lowered.includes(`@${name.toLocaleLowerCase()}`),
-        ),
-      )
-      .map((agent) => agent.pubkey);
+    const mentions = extractMentionPubkeys(trimmed, candidates);
     const outgoing = buildOutgoingMediaMessage(trimmed, readyAttachments);
     onSend(outgoing.content, mentions, [
       ...(outgoing.mediaTags ?? []),
@@ -195,36 +246,109 @@ export function WorkspaceComposer({
             event.target.value = "";
           }}
         />
-        <textarea
-          aria-label={`Message ${channel.name}`}
-          className={cn(
-            "block max-h-40 w-full resize-none bg-transparent px-4 py-3 text-sm outline-none placeholder:text-muted-foreground",
-            compact ? "min-h-12" : "min-h-16",
-          )}
-          placeholder={
-            agents.length
-              ? `Message #${channel.name}, or @mention an agent`
-              : `Message #${channel.name}`
-          }
-          ref={textareaRef}
-          rows={compact ? 1 : 2}
-          value={content}
-          onChange={(event) => {
-            setContent(event.target.value);
-            onTyping?.();
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              submit();
+        <div className="relative">
+          {suggestions.length ? (
+            <div
+              className="absolute bottom-full left-3 z-30 mb-1 max-h-64 w-72 overflow-y-auto rounded-xl border border-border bg-card p-1 shadow-lg"
+              data-testid="mention-autocomplete"
+            >
+              {suggestions.map((candidate, index) => (
+                <button
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm",
+                    index === mentionIndex
+                      ? "bg-accent text-accent-foreground"
+                      : "hover:bg-accent hover:text-accent-foreground",
+                  )}
+                  key={candidate.pubkey}
+                  type="button"
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    selectMentionCandidate(candidate);
+                  }}
+                  onMouseEnter={() => setMentionIndex(index)}
+                >
+                  {candidate.picture ? (
+                    <img
+                      alt=""
+                      className="size-6 shrink-0 rounded-full object-cover"
+                      src={candidate.picture}
+                    />
+                  ) : (
+                    <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs text-muted-foreground">
+                      {candidate.name.charAt(0).toUpperCase()}
+                    </span>
+                  )}
+                  <span className="truncate">{candidate.name}</span>
+                  {candidate.isAgent ? (
+                    <span className="ml-auto shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[0.6875rem] text-muted-foreground">
+                      Agent
+                    </span>
+                  ) : null}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          <textarea
+            aria-label={`Message ${channel.name}`}
+            className={cn(
+              "block max-h-40 w-full resize-none bg-transparent px-4 py-3 text-sm outline-none placeholder:text-muted-foreground",
+              compact ? "min-h-12" : "min-h-16",
+            )}
+            placeholder={
+              candidates.length
+                ? `Message #${channel.name}, or @mention someone`
+                : `Message #${channel.name}`
             }
-          }}
-          onPaste={(event) => {
-            if (event.clipboardData.files.length === 0) return;
-            event.preventDefault();
-            acceptFiles(event.clipboardData.files);
-          }}
-        />
+            ref={textareaRef}
+            rows={compact ? 1 : 2}
+            value={content}
+            onChange={(event) => {
+              const next = event.target.value;
+              setContent(next);
+              updateMentionFromTextarea(next);
+              onTyping?.();
+            }}
+            onBlur={() => setMention(null)}
+            onSelect={() => updateMentionFromTextarea(content)}
+            onKeyDown={(event) => {
+              if (suggestions.length) {
+                if (event.key === "ArrowDown") {
+                  event.preventDefault();
+                  setMentionIndex((index) => (index + 1) % suggestions.length);
+                  return;
+                }
+                if (event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setMentionIndex(
+                    (index) =>
+                      (index - 1 + suggestions.length) % suggestions.length,
+                  );
+                  return;
+                }
+                if (event.key === "Enter" || event.key === "Tab") {
+                  event.preventDefault();
+                  selectMentionCandidate(suggestions[mentionIndex]);
+                  return;
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setMention(null);
+                  return;
+                }
+              }
+              if (event.key === "Enter" && !event.shiftKey) {
+                event.preventDefault();
+                submit();
+              }
+            }}
+            onPaste={(event) => {
+              if (event.clipboardData.files.length === 0) return;
+              event.preventDefault();
+              acceptFiles(event.clipboardData.files);
+            }}
+          />
+        </div>
         <div className="flex items-center justify-between px-3 pb-2.5">
           <p className="text-[0.6875rem] text-muted-foreground">
             Enter to send · Shift + Enter for a new line

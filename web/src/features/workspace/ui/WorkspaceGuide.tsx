@@ -168,8 +168,9 @@ export function WorkspaceGuide({
             {companion
               ? `${companion.name} works only for you. `
               : "Each team member has a private Companion. "}
-            Use your private <Code>brief-yourname</Code> channel for assigned
-            work, reminders, mentions, and your morning summary. The Companion
+            Use your private brief channel (for example{" "}
+            <Code>brief-varun</Code>) for assigned work, reminders, mentions, and
+            your morning summary. The Companion
             must not post that personal information into general or project
             channels.
           </p>
