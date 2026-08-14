@@ -3144,6 +3144,19 @@ async fn ingest_event_inner(
         }
     }
 
+    // kind:40003 is not a `handle_side_effects` kind: fold the accepted edit
+    // into the target message's search index (so FTS reflects the edited body,
+    // not the pre-edit one) and deliver mentions for any p-tags the edit newly
+    // adds. Best-effort — the edit is already stored; a failure here only means
+    // search/feed lag, not a rejected write.
+    if kind_u32 == KIND_STREAM_MESSAGE_EDIT {
+        if let Err(e) =
+            crate::handlers::side_effects::handle_stream_message_edit(tenant, &event, state).await
+        {
+            error!(event_id = %event_id_hex, "stream message edit indexing failed: {e}");
+        }
+    }
+
     // A freshly inserted reply changed its thread's counters (updated in the
     // same transaction as the insert) — push a fresh relay-signed 39005 so
     // subscribed clients can update badge counts without refetching the head

@@ -2492,6 +2492,88 @@ fn extract_h_tag_channel(event: &Event) -> Option<Uuid> {
 }
 
 /// Extract target pubkey from first `p` tag.
+/// Lowercased, validated (64-hex) `p`-tag pubkeys of an event, de-duplicated
+/// and preserving first-seen order.
+fn ordered_p_tags(event: &Event) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for tag in event.tags.iter() {
+        let s = tag.as_slice();
+        if s.len() >= 2 && s[0] == "p" {
+            let pk = s[1].as_str();
+            if pk.len() == 64 && pk.chars().all(|c| c.is_ascii_hexdigit()) {
+                let lower = pk.to_ascii_lowercase();
+                if !out.contains(&lower) {
+                    out.push(lower);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Compute the `p`-tag pubkeys a kind:40003 edit mentions that its target
+/// message did not already mention — the delta that must be freshly notified.
+///
+/// Existing mentions are deliberately excluded so a re-save that keeps a person
+/// tagged does not re-notify them. Returns lowercase 64-hex, de-duplicated, in
+/// the edit's first-seen order.
+pub(crate) fn new_mention_delta(target: &Event, edit: &Event) -> Vec<String> {
+    let existing = ordered_p_tags(target);
+    ordered_p_tags(edit)
+        .into_iter()
+        .filter(|pk| !existing.contains(pk))
+        .collect()
+}
+
+/// Fold an accepted kind:40003 edit into the search and mention indexes of its
+/// target message (see [`buzz_db::Db::apply_message_edit_index`]).
+///
+/// The target is resolved from the edit's `e` tag; ownership was already checked
+/// pre-storage in `validate_edit_ownership`. A target that is missing (hard
+/// deleted, or never stored on this relay) is a no-op, not an error.
+pub async fn handle_stream_message_edit(
+    tenant: &TenantContext,
+    event: &Event,
+    state: &AppState,
+) -> anyhow::Result<()> {
+    let target_hex = event
+        .tags
+        .iter()
+        .find_map(|t| {
+            let s = t.as_slice();
+            if s.len() >= 2 && s[0] == "e" {
+                let v = s[1].as_str();
+                if v.len() == 64 && v.chars().all(|c| c.is_ascii_hexdigit()) {
+                    return Some(v.to_string());
+                }
+            }
+            None
+        })
+        .ok_or_else(|| anyhow::anyhow!("edit missing e tag target"))?;
+    let target_bytes = hex::decode(&target_hex)?;
+
+    let Some(target) = state
+        .db
+        .get_event_by_id(tenant.community(), &target_bytes)
+        .await?
+    else {
+        return Ok(());
+    };
+
+    let delta = new_mention_delta(&target.event, event);
+    state
+        .db
+        .apply_message_edit_index(
+            tenant.community(),
+            &target,
+            &event.content,
+            event.created_at.as_secs() as i64,
+            &delta,
+        )
+        .await?;
+    Ok(())
+}
+
 fn extract_p_tag(event: &Event) -> Option<Vec<u8>> {
     for tag in event.tags.iter() {
         if tag.kind().to_string() == "p" {
@@ -3587,5 +3669,83 @@ mod tests {
         }];
 
         assert!(actor_is_channel_owner_or_admin(&members, &actor));
+    }
+
+    /// Build a signed event of `kind` carrying the given `p` tags (raw values,
+    /// so malformed ones can be exercised too).
+    fn event_with_p_tags(kind: u32, p_values: &[&str]) -> Event {
+        let keys = nostr::Keys::generate();
+        let tags: Vec<Tag> = p_values
+            .iter()
+            .map(|v| Tag::parse(["p", v]).expect("tag parse"))
+            .collect();
+        EventBuilder::new(Kind::Custom(kind as u16), "")
+            .tags(tags)
+            .sign_with_keys(&keys)
+            .expect("sign")
+    }
+
+    #[test]
+    fn new_mention_delta_returns_only_added_p_tags() {
+        let a = "aa".repeat(32);
+        let b = "bb".repeat(32);
+        let c = "cc".repeat(32);
+        let target = event_with_p_tags(9, &[&a, &b]);
+        let edit = event_with_p_tags(40003, &[&a, &b, &c]);
+        assert_eq!(new_mention_delta(&target, &edit), vec![c]);
+    }
+
+    #[test]
+    fn new_mention_delta_empty_when_no_new_mentions() {
+        let a = "aa".repeat(32);
+        let b = "bb".repeat(32);
+        let target = event_with_p_tags(9, &[&a, &b]);
+        // Edit keeps the same mentions (a re-save): nobody is re-notified.
+        let edit = event_with_p_tags(40003, &[&b, &a]);
+        assert!(new_mention_delta(&target, &edit).is_empty());
+    }
+
+    #[test]
+    fn new_mention_delta_ignores_removed_mentions() {
+        let a = "aa".repeat(32);
+        let b = "bb".repeat(32);
+        let target = event_with_p_tags(9, &[&a, &b]);
+        // Edit drops `b` and adds nothing: delta is empty (removal never
+        // produces a notification).
+        let edit = event_with_p_tags(40003, &[&a]);
+        assert!(new_mention_delta(&target, &edit).is_empty());
+    }
+
+    #[test]
+    fn new_mention_delta_is_case_insensitive_against_existing() {
+        let a_lower = "ab".repeat(32);
+        let a_upper = a_lower.to_ascii_uppercase();
+        let target = event_with_p_tags(9, &[&a_lower]);
+        // Same pubkey, uppercase, must not count as newly mentioned.
+        let edit = event_with_p_tags(40003, &[&a_upper]);
+        assert!(new_mention_delta(&target, &edit).is_empty());
+    }
+
+    #[test]
+    fn new_mention_delta_normalizes_and_dedupes_added() {
+        let a = "aa".repeat(32);
+        let c_lower = "cd".repeat(32);
+        let c_upper = c_lower.to_ascii_uppercase();
+        let target = event_with_p_tags(9, &[&a]);
+        // Edit mentions the new pubkey twice in different case: one delta entry,
+        // lowercased.
+        let edit = event_with_p_tags(40003, &[&a, &c_upper, &c_lower]);
+        assert_eq!(new_mention_delta(&target, &edit), vec![c_lower]);
+    }
+
+    #[test]
+    fn new_mention_delta_skips_malformed_p_tags() {
+        let a = "aa".repeat(32);
+        let target = event_with_p_tags(9, &[&a]);
+        // "not-hex" and a short value are dropped; only the valid new pubkey
+        // survives.
+        let c = "cc".repeat(32);
+        let edit = event_with_p_tags(40003, &[&a, "not-hex", "abcd", &c]);
+        assert_eq!(new_mention_delta(&target, &edit), vec![c]);
     }
 }

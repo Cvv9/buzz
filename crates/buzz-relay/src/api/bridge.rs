@@ -1692,6 +1692,11 @@ async fn handle_bridge_search(
 
     let mut events: Vec<Value> = Vec::new();
     let mut seen_ids: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
+    // Accepted hit ids, so the edit-folding aux closure below can surface the
+    // kind:40003 edits that rewrote them (FTS matches edited bodies; the client
+    // needs the edit event to render the edited content, exactly as the
+    // channel-window aux closure delivers it).
+    let mut accepted_hit_ids: Vec<[u8; 32]> = Vec::new();
 
     for (raw, filter) in raw_filters.iter().zip(filters) {
         let search_mode = extract_search_mode(raw);
@@ -1805,6 +1810,48 @@ async fn handle_bridge_search(
             }
             if let Ok(v) = serde_json::to_value(&stored.event) {
                 events.push(v);
+                accepted_hit_ids.push(*id_array);
+            }
+        }
+    }
+
+    // Edit-folding aux closure: fetch the kind:40003 edits targeting accepted
+    // hits and append them so the client folds the edited body into the result,
+    // the same way the channel-window path delivers edits. Signature-safe: the
+    // original signed event and its signed edit are both returned; the relay
+    // never rewrites content. Each edit shares its target's channel (enforced at
+    // ingest), so a target the reader could see implies an edit it may see; the
+    // per-event visibility gate is applied anyway for defense in depth.
+    if !accepted_hit_ids.is_empty() {
+        let hit_hex: Vec<String> = accepted_hit_ids.iter().map(hex::encode).collect();
+        let mut edit_query = buzz_db::EventQuery::for_community(tenant.community());
+        edit_query.kinds = Some(vec![buzz_core::kind::KIND_STREAM_MESSAGE_EDIT as i32]);
+        edit_query.e_tags = Some(hit_hex);
+        edit_query.limit = Some(1000);
+        match state
+            .db
+            .query_events_routed("bridge_search_edit_aux", &edit_query)
+            .await
+        {
+            Ok(edit_events) => {
+                for se in edit_events {
+                    let id = se.event.id.to_bytes();
+                    if !seen_ids.insert(id) {
+                        continue;
+                    }
+                    if !crate::handlers::req::event_visible_to_reader(&se.event, pubkey_bytes) {
+                        continue;
+                    }
+                    if let Ok(v) = serde_json::to_value(&se.event) {
+                        events.push(v);
+                    }
+                }
+            }
+            Err(e) => {
+                // Best-effort fold: the matched hits are already in `events`, so
+                // a failed aux fetch degrades to unfolded (original) content, not
+                // a failed search.
+                tracing::warn!("bridge search edit-aux fetch failed: {e}");
             }
         }
     }
