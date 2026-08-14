@@ -46,7 +46,9 @@ function SearchPageContent() {
   const searchQuery = useWorkspaceSearch(filters);
   const authorPubkeys = React.useMemo(
     () =>
-      [...new Set((searchQuery.data ?? []).map((event) => event.pubkey))].sort(),
+      [
+        ...new Set((searchQuery.data ?? []).map((event) => event.pubkey)),
+      ].sort(),
     [searchQuery.data],
   );
   const profilesQuery = useQuery({

@@ -1,4 +1,7 @@
-import type { WorkspaceCommunityMember, WorkspaceProfile } from "./workspace-api";
+import type {
+  WorkspaceCommunityMember,
+  WorkspaceProfile,
+} from "./workspace-api";
 
 /**
  * Split channel-invite candidates into humans and agents so the invite picker
