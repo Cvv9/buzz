@@ -4,11 +4,6 @@ Scope: `desktop/src/features/agents/` (config surfaces, shared config renderer,
 and the agent config core). Read this before changing how harness / provider /
 model / effort configuration is modeled, rendered, persisted, or applied.
 
-Cross-surface plan: `docs/agent-surface-map.md`. Read and update that map when
-changing agent identity, avatar, model, access, channel membership, mentions,
-Inbox/history presentation, routes, event shapes, or cache invalidation. A
-configuration change is incomplete when only the `/agents` screen is updated.
-
 Plan of record: `Buzz/Harness-Provider-Model.md` in Morgan's Obsidian vault
 (PR sequence, decisions log). PRs: #2140 (rename), #2148 (flag reduction),
 #2156 (honest model states), #2158 (Agent Config Core).
@@ -42,16 +37,6 @@ X" flag): add it to `KnownAcpRuntime` first, expose it on
 with a TypeScript lookup table or an id comparison in a component.
 
 ## Rules
-
-Hosted-agent identity/config is a separate capability-driven path. The hosted
-runtime advertises its model catalog in its signed kind:10100 directory event;
-the frontend must render those options and must not maintain a provider/model
-table. Admin edits are stored in an admin-authored public kind:30180 event keyed by the
-hosted agent pubkey. `list_relay_agents` accepts only community owner/admin
-authors (or the agent's declared owner), chooses the newest authorized head,
-and every presentation surface treats that merged name/avatar as
-authoritative over stale kind:0 metadata. A hosted model save also uses the
-authenticated observer `switch_model` control for the agent's known channels.
 
 1. **No hardcoded harness-ID checks in render code.** `runtime.id === "claude"`
    belongs in `deriveAgentConfigFieldModel` (once, with a named reason), never
@@ -113,10 +98,7 @@ authenticated observer `switch_model` control for the agent's known channels.
    picker while discovery is in flight and after IPC resolves with no usable
    options (`modelDiscoverySuccessfulEmpty` / `isSuccessfulEmptyDiscovery`).
    A thrown or unavailable discovery keeps the control so #2246 failure UI can
-   render, and must not heal/clear persisted model or effort. When that control
-   remains visible for an `acpNative` harness, its zero-value option is
-   **Runtime default** even when no baked/global fallback exists; optional
-   native selection must never collapse to only **Custom model**. Full disclosure
+   render, and must not heal/clear persisted model or effort. Full disclosure
    still shows the control when Custom model is available. Required-model
    harnesses always keep the field. Gate: `defaults hides model when optional
    harness has empty discovery` (and the failed-discovery counterpart) in
@@ -189,6 +171,32 @@ authenticated observer `switch_model` control for the agent's known channels.
    `getAgentAccessOwnerOnly()` is true, every managed agent's access control is
    locked to owner-only, including provider-backed agents. A provider backend
    does not prove remote execution and must never create a policy carve-out.
+12. **Shared instructions must be reviewable byte-for-byte.** Agent definitions
+   execute their `system_prompt` verbatim, so catalog and snapshot review
+   surfaces render the literal prompt, never the chat Markdown projection
+   (which can conceal spoilers, link destinations, and image sources). Reject
+   Unicode default-ignorable, bidirectional-formatting, and non-layout control
+   characters at both the untrusted catalog parser and the Rust persistence /
+   import boundary. Do not silently strip them: rejection keeps the reviewed
+   string identical to the executed string. New sharing paths must reuse the
+   same validation before they persist or activate a definition.
+13. **Profile runtime sections render only reported agent data.** Missing
+   runtime, model, status, command, MCP, advanced, or diagnostics values stay
+   absent in every build mode. Do not fill profile or agent-panel gaps with
+   development/staging examples, preview controls, or synthetic configuration;
+   those values can be mistaken for the viewed agent's real configuration.
+   Configuration rows show the effective value regardless of whether it came
+   from an explicit choice, global default, config file, or runtime override.
+   Do not add provenance lines, shadowed/struck-through values, pre-start
+   placeholders, or whole-section dimming; use an em dash for an unknown value.
+   Info, activity, agent-configuration, and model-setting rows use the same bare
+   16px leading-icon treatment as agent management actions. Keep semantic icons
+   visible in profile variants and do not wrap them in background shapes. An
+   owned agent profile is entry-point invariant: opening the same deployed
+   agent from Agents, a DM, or a channel must expose the same actions, tabs,
+   fields, and profile-wide activity selection. Caller context may control the
+   panel shell or return navigation, but must not filter or replace profile
+   content.
 
 ## The tests that enforce this
 
@@ -209,6 +217,15 @@ authenticated observer `switch_model` control for the agent's known channels.
 - `lib/agentAccessWarning.test.mjs` — every mode × run-location copy variant
   plus both resolvers, including unknown-reads-as-local and
   blank-`runOn`-is-not-a-provider.
+- `lib/personaCatalogRelay.test.mjs` and
+  `ui/personaCatalogOwnerLabel.test.mjs` — reject invisible definition text
+  and keep Markdown concealment syntax literal in the review surface.
+- `../profile/ui/UserProfileRuntimeContent.test.mjs` — profile runtime panels
+  cannot reintroduce build-mode previews or synthetic fallback controls.
+- `desktop/tests/e2e/profile.spec.ts` — the owned-agent parity flow compares
+  every profile tab when opened from Agents and from the agent's DM.
+- `ui/AgentConfigPanelPresentation.test.mjs` — shared profile/agent config rows
+  show only effective values, with an em dash for unknown values.
 - `desktop/tests/e2e/onboarding-agent-defaults.spec.ts` — onboarding behavior
   acceptance coverage for readiness, failure states, defaults, session-draft
   restoration, zero-write Skip, Next save failure/retry, navigation, and
@@ -216,10 +233,8 @@ authenticated observer `switch_model` control for the agent's known channels.
 - Rust: `runtime_metadata_env_vars` tests pin spawn-time key application.
 - Rust: persona sharing/retention tests pin relay+owner scoping, durable
   enqueue errors, relay rejection/unavailability, and accepted publication.
-- `lib/agentSurfaceMapContract.test.mjs` — all declared desktop/web routes stay
-  inventoried, search and mentions share the canonical access policy, Inbox
-  overlays current hosted presentation, and both clients retain hosted-config
-  readers.
+- Rust: `definition_validation` and inbound persona tests pin the shared
+  Unicode/control-character policy at local, import, publish, and sync gates.
 
 ## Keep this file true
 

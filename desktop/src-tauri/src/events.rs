@@ -1,21 +1,23 @@
 //! Signed-event builders for desktop write operations.
-//!
 //! Mirrors the buzz-sdk builder patterns but uses nostr 0.37 API
 //! (the desktop is excluded from the workspace which pins nostr 0.36).
 //!
-//! Mental model:
 //!   caller params → build_*() → EventBuilder → submit_event() signs + POSTs
 //!
 //! Each function validates inputs and returns a nostr::EventBuilder.
 //! Signing and submission happen in relay::submit_event.
 use buzz_core_pkg::kind::{KIND_IA_ARCHIVE_REQUEST, KIND_IA_UNARCHIVE_REQUEST};
 use nostr::{EventBuilder, EventId, Kind, Tag};
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 mod channel_catalog_events;
+mod message_tags;
+
 pub use channel_catalog_events::{
     build_create_channel_with_catalog_section, build_update_channel_with_catalog_section,
+};
+use message_tags::{
+    append_client_tags, append_sent_from_thread_tag, emoji_tags, imeta_tags, mention_reference_tags,
 };
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -25,7 +27,6 @@ const MAX_CONTENT_BYTES: usize = 64 * 1024;
 /// Maximum mention count — matches buzz-sdk.
 const MAX_MENTIONS: usize = 50;
 
-/// Maximum emoji length in characters — matches buzz-sdk.
 const MAX_EMOJI_CHARS: usize = 64;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -80,56 +81,6 @@ fn mention_tags(mentions: &[&str]) -> Result<Vec<Tag>, String> {
     Ok(tags)
 }
 
-fn mention_reference_tags(mentions: &[Vec<String>], tags: &mut Vec<Tag>) -> Result<(), String> {
-    for mention in mentions {
-        if mention.first().map(String::as_str) != Some("mention") {
-            return Err(format!(
-                "mention reference tags must use 'mention' prefix (got {:?})",
-                mention.first()
-            ));
-        }
-        let Some(pubkey) = mention.get(1) else {
-            return Err("mention reference tag missing pubkey".into());
-        };
-        check_pubkey(pubkey)?;
-        tags.push(tag(vec!["mention", &pubkey.to_ascii_lowercase()])?);
-    }
-    Ok(())
-}
-
-/// Validate and append imeta tags. Rejects any tag whose first element is not "imeta"
-/// to prevent injection of arbitrary tags (e.g., forged "h", "e", or "p" tags).
-fn imeta_tags(media_tags: &[Vec<String>], tags: &mut Vec<Tag>) -> Result<(), String> {
-    for mt in media_tags {
-        if mt.first().map(String::as_str) != Some("imeta") {
-            return Err(format!(
-                "media tags must use 'imeta' prefix (got {:?})",
-                mt.first()
-            ));
-        }
-        let parts: Vec<&str> = mt.iter().map(String::as_str).collect();
-        tags.push(Tag::parse(parts).map_err(|e| format!("invalid imeta tag: {e}"))?);
-    }
-    Ok(())
-}
-
-/// Validate and append NIP-30 custom-emoji tags. Mirrors `imeta_tags`: rejects
-/// any tag whose first element is not "emoji" so this path can't be used to
-/// smuggle forged "h"/"e"/"p" tags. Each tag is `["emoji", shortcode, url]`.
-fn emoji_tags(emoji_tags: &[Vec<String>], tags: &mut Vec<Tag>) -> Result<(), String> {
-    for et in emoji_tags {
-        if et.first().map(String::as_str) != Some("emoji") {
-            return Err(format!(
-                "emoji tags must use 'emoji' prefix (got {:?})",
-                et.first()
-            ));
-        }
-        let parts: Vec<&str> = et.iter().map(String::as_str).collect();
-        tags.push(Tag::parse(parts).map_err(|e| format!("invalid emoji tag: {e}"))?);
-    }
-    Ok(())
-}
-
 /// Validate a hex pubkey is exactly 64 hex characters.
 fn check_pubkey(pubkey: &str) -> Result<(), String> {
     if pubkey.len() != 64 || !pubkey.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -152,15 +103,23 @@ pub fn build_create_channel(
     about: Option<&str>,
     ttl_seconds: Option<i32>,
 ) -> Result<EventBuilder, String> {
-    build_create_channel_with_catalog_section(
-        channel_id,
-        name,
-        visibility,
-        channel_type,
-        about,
-        ttl_seconds,
-        None,
-    )
+    let name = buzz_sdk_pkg::canonical_channel_name(name);
+    if name.trim().is_empty() {
+        return Err("channel name is required".into());
+    }
+    let mut tags = vec![
+        tag(vec!["h", &channel_id.to_string()])?,
+        tag(vec!["name", name])?,
+        tag(vec!["visibility", visibility])?,
+        tag(vec!["channel_type", channel_type])?,
+    ];
+    if let Some(a) = about {
+        tags.push(tag(vec!["about", a])?);
+    }
+    if let Some(ttl) = ttl_seconds {
+        tags.push(tag(vec!["ttl", &ttl.to_string()])?);
+    }
+    Ok(EventBuilder::new(Kind::Custom(9007), "").tags(tags))
 }
 
 /// Kind 9021 — join channel.
@@ -178,7 +137,6 @@ pub fn build_leave(channel_id: Uuid) -> Result<EventBuilder, String> {
 /// Kind 9002 — update channel name/description/visibility/ttl.
 /// `ttl`: outer `None` leaves it unchanged; `Some(Some(secs))` sets the
 /// ephemeral timeout; `Some(None)` clears it (emits `["ttl", ""]`).
-#[allow(dead_code)]
 pub fn build_update_channel(
     channel_id: Uuid,
     name: Option<&str>,
@@ -186,7 +144,35 @@ pub fn build_update_channel(
     visibility: Option<&str>,
     ttl: Option<Option<i32>>,
 ) -> Result<EventBuilder, String> {
-    build_update_channel_with_catalog_section(channel_id, name, about, visibility, ttl, None)
+    if name.is_none() && about.is_none() && visibility.is_none() && ttl.is_none() {
+        return Err("at least one of name, about, visibility, or ttl must be provided".into());
+    }
+    if let Some(v) = visibility {
+        if v != "open" && v != "private" {
+            return Err("visibility must be \"open\" or \"private\"".into());
+        }
+    }
+    let name = name.map(buzz_sdk_pkg::canonical_channel_name);
+    if name.is_some_and(|name| name.trim().is_empty()) {
+        return Err("channel name is required".into());
+    }
+    let mut tags = vec![tag(vec!["h", &channel_id.to_string()])?];
+    if let Some(n) = name {
+        tags.push(tag(vec!["name", n])?);
+    }
+    if let Some(a) = about {
+        tags.push(tag(vec!["about", a])?);
+    }
+    if let Some(v) = visibility {
+        tags.push(tag(vec!["visibility", v])?);
+    }
+    if let Some(ttl) = ttl {
+        match ttl {
+            Some(secs) => tags.push(tag(vec!["ttl", &secs.to_string()])?),
+            None => tags.push(tag(vec!["ttl", ""])?),
+        }
+    }
+    Ok(EventBuilder::new(Kind::Custom(9002), "").tags(tags))
 }
 
 /// Kind 9002 — set topic.
@@ -273,6 +259,7 @@ pub fn build_message(
     custom_emoji_tags: &[Vec<String>],
     mention_ref_tags: &[Vec<String>],
     link_preview_tags: &[Vec<String>],
+    sent_from_thread_tag: Option<&[String]>,
     relay_base: &str,
 ) -> Result<EventBuilder, String> {
     build_message_with_client_tags(
@@ -284,6 +271,7 @@ pub fn build_message(
         custom_emoji_tags,
         mention_ref_tags,
         link_preview_tags,
+        sent_from_thread_tag,
         relay_base,
         &[],
     )
@@ -304,9 +292,13 @@ pub fn build_message_with_client_tags(
     custom_emoji_tags: &[Vec<String>],
     mention_ref_tags: &[Vec<String>],
     link_preview_tags: &[Vec<String>],
+    sent_from_thread_tag: Option<&[String]>,
     relay_base: &str,
     client_tags: &[Vec<String>],
 ) -> Result<EventBuilder, String> {
+    if sent_from_thread_tag.is_some() && thread_ref.is_some() {
+        return Err("sent-from-thread provenance requires a top-level message".into());
+    }
     check_content(content)?;
     let mut tags = vec![tag(vec!["h", &channel_id.to_string()])?];
     if let Some(tr) = thread_ref {
@@ -317,25 +309,9 @@ pub fn build_message_with_client_tags(
     emoji_tags(custom_emoji_tags, &mut tags)?;
     mention_reference_tags(mention_ref_tags, &mut tags)?;
     crate::link_preview_tags::append(link_preview_tags, relay_base, &mut tags)?;
+    append_sent_from_thread_tag(sent_from_thread_tag, &mut tags)?;
     append_client_tags(client_tags, &mut tags)?;
     Ok(EventBuilder::new(Kind::Custom(9), content).tags(tags))
-}
-
-fn append_client_tags(client_tags: &[Vec<String>], tags: &mut Vec<Tag>) -> Result<(), String> {
-    for client_tag in client_tags {
-        if client_tag.first().map(String::as_str) != Some("client") {
-            return Err(format!(
-                "client tags must use 'client' prefix (got {:?})",
-                client_tag.first()
-            ));
-        }
-        if client_tag.len() < 2 {
-            return Err("client tag missing marker".into());
-        }
-        let parts: Vec<&str> = client_tag.iter().map(String::as_str).collect();
-        tags.push(Tag::parse(parts).map_err(|e| format!("invalid client tag: {e}"))?);
-    }
-    Ok(())
 }
 
 /// Kind 45001 — forum post.
@@ -372,15 +348,20 @@ pub fn build_forum_comment(
     Ok(EventBuilder::new(Kind::Custom(45003), content).tags(tags))
 }
 
+pub struct MessageEditTags<'a> {
+    pub media: &'a [Vec<String>],
+    pub custom_emoji: &'a [Vec<String>],
+    pub mentions: &'a [&'a str],
+    pub mention_refs: Option<&'a [Vec<String>]>,
+}
+
 /// Kind 40003 — edit a message with full content, media, emoji, mentions,
 /// and optional monotonic link-preview suppression.
 pub fn build_message_edit(
     channel_id: Uuid,
     target_event_id: EventId,
     content: &str,
-    media_tags: &[Vec<String>],
-    custom_emoji_tags: &[Vec<String>],
-    mentions: &[&str],
+    edit_tags: MessageEditTags<'_>,
     suppress_link_previews: bool,
 ) -> Result<EventBuilder, String> {
     check_content(content)?;
@@ -388,9 +369,13 @@ pub fn build_message_edit(
         tag(vec!["h", &channel_id.to_string()])?,
         tag(vec!["e", &target_event_id.to_hex()])?,
     ];
-    tags.extend(mention_tags(mentions)?);
-    imeta_tags(media_tags, &mut tags)?;
-    emoji_tags(custom_emoji_tags, &mut tags)?;
+    tags.extend(mention_tags(edit_tags.mentions)?);
+    imeta_tags(edit_tags.media, &mut tags)?;
+    emoji_tags(edit_tags.custom_emoji, &mut tags)?;
+    if let Some(mention_refs) = edit_tags.mention_refs {
+        mention_reference_tags(mention_refs, &mut tags)?;
+        tags.push(tag(vec!["buzz:mention-snapshot"])?);
+    }
     if suppress_link_previews {
         tags.push(tag(vec!["link-preview", "none"])?);
     }
@@ -440,9 +425,33 @@ pub fn build_set_canvas(channel_id: Uuid, content: &str) -> Result<EventBuilder,
 
 // ── Profile ──────────────────────────────────────────────────────────────────
 
-#[path = "profile_event.rs"]
-mod profile_event;
-pub use profile_event::build_profile_with_existing;
+/// Kind 0 — NIP-01 profile metadata (full snapshot).
+pub fn build_profile(
+    display_name: Option<&str>,
+    name: Option<&str>,
+    picture: Option<&str>,
+    about: Option<&str>,
+    nip05: Option<&str>,
+) -> Result<EventBuilder, String> {
+    let mut map = serde_json::Map::new();
+    if let Some(v) = display_name {
+        map.insert("display_name".into(), serde_json::Value::String(v.into()));
+    }
+    if let Some(v) = name {
+        map.insert("name".into(), serde_json::Value::String(v.into()));
+    }
+    if let Some(v) = picture {
+        map.insert("picture".into(), serde_json::Value::String(v.into()));
+    }
+    if let Some(v) = about {
+        map.insert("about".into(), serde_json::Value::String(v.into()));
+    }
+    if let Some(v) = nip05 {
+        map.insert("nip05".into(), serde_json::Value::String(v.into()));
+    }
+    let content = serde_json::Value::Object(map).to_string();
+    Ok(EventBuilder::new(Kind::Custom(0), content))
+}
 
 // ── Huddles ──────────────────────────────────────────────────────────────────
 
@@ -780,15 +789,13 @@ pub fn build_workflow_trigger(workflow_id: &str) -> Result<EventBuilder, String>
 
 /// Kind 46030 — grant an approval token (with optional note).
 pub fn build_approval_grant(token: &str, note: Option<&str>) -> Result<EventBuilder, String> {
-    let token_hash = hex::encode(Sha256::digest(token.as_bytes()));
-    let tags = vec![tag(vec!["d", &token_hash])?];
+    let tags = vec![tag(vec!["t", token])?];
     Ok(EventBuilder::new(Kind::Custom(46030), note.unwrap_or("")).tags(tags))
 }
 
 /// Kind 46031 — deny an approval token (with optional note).
 pub fn build_approval_deny(token: &str, note: Option<&str>) -> Result<EventBuilder, String> {
-    let token_hash = hex::encode(Sha256::digest(token.as_bytes()));
-    let tags = vec![tag(vec!["d", &token_hash])?];
+    let tags = vec![tag(vec!["t", token])?];
     Ok(EventBuilder::new(Kind::Custom(46031), note.unwrap_or("")).tags(tags))
 }
 
@@ -798,25 +805,6 @@ pub fn build_approval_deny(token: &str, note: Option<&str>) -> Result<EventBuild
 mod tests {
     use super::*;
     use nostr::Keys;
-
-    #[test]
-    fn approval_actions_reference_the_relay_token_hash_with_a_d_tag() {
-        let token = "approval-token";
-        let expected_hash = hex::encode(Sha256::digest(token.as_bytes()));
-        for builder in [
-            build_approval_grant(token, Some("yes")).unwrap(),
-            build_approval_deny(token, Some("no")).unwrap(),
-        ] {
-            let event = builder.sign_with_keys(&Keys::generate()).unwrap();
-            let tags: Vec<Vec<String>> = event
-                .tags
-                .iter()
-                .map(|tag| tag.as_slice().to_vec())
-                .collect();
-            assert_eq!(tags, vec![vec!["d".to_string(), expected_hash.clone()]]);
-        }
-    }
-
     #[test]
     fn channel_builders_reject_hash_only_names() {
         let channel_id = Uuid::new_v4();
@@ -898,25 +886,35 @@ mod tests {
         assert_eq!(event.pubkey.to_hex(), TARGET_HEX);
     }
 
-    // ── build_message_edit `p`-tag emission (lane 8ace8eed) ──────────────
-    //
-    // The composer diffs the edited body's mentions against the original and
-    // hands `build_message_edit` only the *newly added* pubkeys. These tests
-    // pin the builder's contract given that contract: emit a `p` per added
-    // mention (deduped, lowercased), and none when the added set is empty
-    // (typo-fix edit) — so an unchanged mention set re-wakes nobody.
-
     const CH_ID: &str = "11111111-1111-4111-8111-111111111111";
     const ALICE_HEX: &str = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
     const BOB_HEX: &str = "c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5";
 
     fn edit_tags(mentions: &[&str]) -> Vec<Vec<String>> {
+        edit_tags_with_refs(mentions, Some(&[]))
+    }
+
+    fn edit_tags_with_refs(
+        mentions: &[&str],
+        mention_refs: Option<&[Vec<String>]>,
+    ) -> Vec<Vec<String>> {
         let channel = Uuid::parse_str(CH_ID).unwrap();
         let target =
             EventId::from_hex("d24da132115ca0a46233cf4c2ad8338fbf914250cbcaa9181a6dd59533cb5ac1")
                 .unwrap();
-        let builder =
-            build_message_edit(channel, target, "hi @alice", &[], &[], mentions, false).unwrap();
+        let builder = build_message_edit(
+            channel,
+            target,
+            "hi @alice",
+            MessageEditTags {
+                media: &[],
+                custom_emoji: &[],
+                mentions,
+                mention_refs,
+            },
+            false,
+        )
+        .unwrap();
         let secret = nostr::SecretKey::from_hex(
             "0000000000000000000000000000000000000000000000000000000000000003",
         )
@@ -930,7 +928,6 @@ mod tests {
         let tags = edit_tags(&[ALICE_HEX]);
         assert_eq!(tags[0][0], "h");
         assert_eq!(tags[1][0], "e");
-        // The `p` tag rides right after the `e` tag (insertion order).
         assert_eq!(tags[2], vec!["p".to_string(), ALICE_HEX.to_string()]);
     }
 
@@ -945,6 +942,42 @@ mod tests {
                 .any(|t| t.first().map(String::as_str) == Some("p")),
             "unchanged-mention edit must not emit any `p` tag, got {tags:?}"
         );
+    }
+
+    #[test]
+    fn edit_emits_full_mention_reference_snapshot() {
+        let tags = edit_tags_with_refs(&[], Some(&[vec!["mention".into(), ALICE_HEX.into()]]));
+        assert!(
+            tags.iter().any(|tag| tag == &["mention", ALICE_HEX]),
+            "stable mention reference must be present: {tags:?}"
+        );
+        assert!(
+            tags.iter().any(|tag| tag == &["buzz:mention-snapshot"]),
+            "snapshot marker must be present: {tags:?}"
+        );
+    }
+
+    #[test]
+    fn empty_edit_mention_snapshot_is_explicit() {
+        let tags = edit_tags_with_refs(&[], Some(&[]));
+        assert!(
+            tags.iter().any(|tag| tag == &["buzz:mention-snapshot"]),
+            "empty snapshot must still clear stale references: {tags:?}"
+        );
+        assert!(!tags
+            .iter()
+            .any(|tag| tag.first().map(String::as_str) == Some("mention")));
+    }
+
+    #[test]
+    fn partial_edit_omits_mention_snapshot() {
+        let tags = edit_tags_with_refs(&[], None);
+        assert!(!tags
+            .iter()
+            .any(|tag| tag.first().map(String::as_str) == Some("mention")));
+        assert!(!tags
+            .iter()
+            .any(|tag| tag.first().map(String::as_str) == Some("buzz:mention-snapshot")));
     }
 
     #[test]

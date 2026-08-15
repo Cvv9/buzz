@@ -93,10 +93,10 @@ async function sendChannelMessage(
         throw new Error("Tauri invoke bridge is unavailable.");
       }
 
-      const channels = (await invoke("get_channels")) as Array<{
-        id: string;
-        name: string;
-      }>;
+      const payload = (await invoke("get_channels")) as {
+        channels: Array<{ id: string; name: string }> | null;
+      };
+      const channels = payload.channels ?? [];
       const channel = channels.find(({ name }) => name === targetChannelName);
       if (!channel) {
         throw new Error(`Channel not found: ${targetChannelName}`);
@@ -134,10 +134,10 @@ async function joinChannel(
       throw new Error("Tauri invoke bridge is unavailable.");
     }
 
-    const channels = (await invoke("get_channels")) as Array<{
-      id: string;
-      name: string;
-    }>;
+    const payload = (await invoke("get_channels")) as {
+      channels: Array<{ id: string; name: string }> | null;
+    };
+    const channels = payload.channels ?? [];
     const channel = channels.find(({ name }) => name === targetChannelName);
     if (!channel) {
       throw new Error(`Channel not found: ${targetChannelName}`);
@@ -309,7 +309,7 @@ test("live mentions refetch Alerts without waiting for polling", async ({
     await targetPage.getByTestId("open-alerts-view").click();
     await expect(targetPage.getByTestId("home-inbox-list")).toBeVisible();
     await expect(targetPage.getByTestId("home-inbox-list")).toContainText(
-      message,
+      message.replace("@tyler", "tyler"),
     );
     await expect(targetPage.getByTestId("sidebar-home-count")).toHaveCount(0);
     await expect.poll(() => getLoggedNotificationCount(targetPage)).toBe(1);
@@ -362,7 +362,7 @@ test("live forum mentions refetch Alerts without waiting for polling", async ({
     await targetPage.getByTestId("open-alerts-view").click();
     await expect(targetPage.getByTestId("home-inbox-list")).toBeVisible();
     await expect(targetPage.getByTestId("home-inbox-list")).toContainText(
-      message,
+      message.replace("@tyler", "tyler"),
     );
     await expect(targetPage.getByTestId("sidebar-home-count")).toHaveCount(0);
     await expect.poll(() => getLoggedNotificationCount(targetPage)).toBe(1);
