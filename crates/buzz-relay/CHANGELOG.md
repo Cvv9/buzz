@@ -1,6 +1,10 @@
 # Changelog
 
-## relay-v0.2.11
+## relay-v0.2.12
+
+- Publish the workspace UX overhaul under a fresh tag: relay-v0.2.11 was already claimed by the pre-consolidation 2026-08-10 history, so the 0.2.11 version bump below never produced an image.
+
+## relay-v0.2.11 (unpublished)
 
 - fix(web): workspace UX overhaul - unread, sections, DMs, avatars, emoji ([#57](https://github.com/Cvv9/buzz/pull/57)) ([`cfbb932d7`](https://github.com/Cvv9/buzz/commit/cfbb932d7f8c38bf12f7e90ccff7dd479424f805))
 
