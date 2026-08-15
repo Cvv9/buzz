@@ -2741,6 +2741,20 @@ impl Db {
         user::ensure_user(&self.pool, community_id, pubkey).await
     }
 
+    /// Atomically bind an agent to its immutable owner and restrict channel
+    /// adds to that owner. Returns `true` when the binding was newly created;
+    /// `false` when the same pair was already bound.
+    #[datastore_span(name = "bind_agent_owner_owner_only", system = "postgresql")]
+    pub async fn bind_agent_owner_owner_only(
+        &self,
+        community_id: CommunityId,
+        agent_pubkey: &[u8],
+        owner_pubkey: &[u8],
+    ) -> Result<bool> {
+        user::bind_agent_owner_owner_only(&self.pool, community_id, agent_pubkey, owner_pubkey)
+            .await
+    }
+
     /// Get a single user record by pubkey.
     #[datastore_span(name = "get_user", system = "postgresql")]
     pub async fn get_user(
