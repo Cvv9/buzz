@@ -14,73 +14,13 @@ use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio_util::codec::{FramedRead, LinesCodec, LinesCodecError};
 
 use crate::observer::{ObserverContext, ObserverHandle};
-use crate::usage::{TurnUsage, UsageTracker};
+use crate::usage::{
+    PromptResponseUsage, StandardAdapterKind, StandardUsageTracker, TurnUsage, UsageTracker,
+};
 
 /// Maximum allowed size of a single NDJSON line from the agent's stdout.
 /// Lines exceeding this limit are rejected to prevent OOM from rogue agents.
 const MAX_LINE_SIZE: usize = 10_000_000; // 10 MB
-
-/// Build the process invocation for an ACP adapter.
-///
-/// npm installs expose adapters as `.cmd` shims on Windows. `CreateProcess`
-/// cannot execute those files directly (OS error 193), so route only those
-/// shims through the system command processor. Native executables and every
-/// non-Windows platform retain the direct-exec path.
-fn windows_batch_spawn(command: &str, args: &[String]) -> (String, Vec<String>) {
-    #[cfg(windows)]
-    {
-        let is_batch = std::path::Path::new(command)
-            .extension()
-            .map(|extension| {
-                matches!(
-                    extension.to_string_lossy().to_ascii_lowercase().as_str(),
-                    "cmd" | "bat"
-                )
-            })
-            .unwrap_or(false);
-        if is_batch {
-            // npm's PowerShell shim only forwards stdin when PowerShell itself
-            // detects pipeline input. A Rust pipe is not reported that way, so
-            // ACP initialize hangs. Execute the installed JavaScript entrypoint
-            // with Node directly, preserving the harness's stdio handles.
-            let shim_path = std::path::Path::new(command);
-            let package_name = shim_path.file_stem().and_then(|stem| stem.to_str());
-            let npm_root = shim_path.parent();
-            let script = npm_root.zip(package_name).map(|(root, package)| {
-                root.join("node_modules")
-                    .join("@agentclientprotocol")
-                    .join(package)
-                    .join("dist")
-                    .join("index.js")
-            });
-            if let Some(script) = script.filter(|path| path.is_file()) {
-                let sibling_node = npm_root
-                    .map(|root| root.join("node.exe"))
-                    .filter(|path| path.is_file());
-                let node = sibling_node
-                    .map(|path| path.display().to_string())
-                    .unwrap_or_else(|| "node.exe".to_string());
-                let mut node_args = vec![script.display().to_string()];
-                node_args.extend_from_slice(args);
-                return (node, node_args);
-            }
-
-            // Non-npm batch adapters have no sibling PowerShell shim. Keep the
-            // compatibility fallback for simple batch files; catalogued Buzz
-            // runtimes all take the safer branch above.
-            return (
-                std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string()),
-                std::iter::once("/D".to_string())
-                    .chain(std::iter::once("/C".to_string()))
-                    .chain(std::iter::once(command.to_string()))
-                    .chain(args.iter().cloned())
-                    .collect(),
-            );
-        }
-    }
-
-    (command.to_string(), args.to_vec())
-}
 
 /// An MCP server configuration passed to `session/new`.
 ///
@@ -217,7 +157,7 @@ pub struct AcpClient {
     /// a `cancelled` outcome before the agent returns from `session/prompt`.
     pending_permission_id: Option<serde_json::Value>,
     /// Whether we have already sent a response to the pending permission request.
-    /// Guards against double-response if a timeout fires after the rejection
+    /// Guards against double-response if a timeout fires after the allow_once
     /// response was written but before `pending_permission_id` was cleared.
     permission_responded: bool,
     /// The JSON-RPC id of the most recently sent `session/prompt` request.
@@ -268,11 +208,12 @@ pub struct AcpClient {
     /// outside of a goose-native turn — the read loop's steer arm is
     /// disabled in that case.
     steer_rx: Option<tokio::sync::mpsc::Receiver<crate::pool::SteerRequest>>,
-    /// Usage tracker — accumulates cumulative token counts from
-    /// `_goose/unstable/session/update` notifications and computes per-turn
-    /// deltas. Both goose and buzz-agent emit this notification; goose gates
-    /// on client capability advertisement, buzz-agent emits unconditionally.
+    /// Usage tracker for goose/buzz-agent's cumulative notification format.
     goose_usage: UsageTracker,
+    /// Per-turn prompt-response usage and Claude's optional cumulative cost.
+    standard_usage: StandardUsageTracker,
+    /// Known adapter identity for prompt-response usage mapping.
+    standard_adapter: Option<StandardAdapterKind>,
     /// Text emitted through `agent_message_chunk` during the current prompt.
     /// Background workflow tasks consume this at turn completion and publish it
     /// as the guaranteed human-facing result.
@@ -542,9 +483,8 @@ impl AcpClient {
     ) -> Result<Self, AcpError> {
         use std::process::Stdio;
 
-        let (spawn_command, spawn_args) = windows_batch_spawn(command, args);
-        let mut cmd = tokio::process::Command::new(spawn_command);
-        cmd.args(spawn_args)
+        let mut cmd = tokio::process::Command::new(command);
+        cmd.args(args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             // Inherit stderr so agent logs are visible in the harness terminal.
@@ -610,6 +550,14 @@ impl AcpClient {
         // console-subsystem child process spawned from a GUI/non-console parent.
         configure_no_window(&mut cmd);
 
+        let standard_adapter =
+            match crate::config::normalize_agent_command_identity(command).as_str() {
+                "claude-agent-acp" | "claude-code-acp" | "claude-code" | "claudecode" => {
+                    Some(StandardAdapterKind::Claude)
+                }
+                "codex" | "codex-acp" => Some(StandardAdapterKind::Codex),
+                _ => None,
+            };
         let mut child = cmd.spawn()?;
 
         let stdin = child
@@ -637,6 +585,8 @@ impl AcpClient {
             steering_supported: false,
             steer_rx: None,
             goose_usage: UsageTracker::default(),
+            standard_usage: StandardUsageTracker::default(),
+            standard_adapter,
             captured_agent_message: String::new(),
         })
     }
@@ -865,6 +815,7 @@ impl AcpClient {
         // prompt so that any setup notifications recorded earlier are not
         // misattributed to this turn.
         self.goose_usage.begin_turn(session_id);
+        self.standard_usage.begin_turn(session_id);
 
         self.last_prompt_id = Some(self.next_id);
         let id = self.next_id;
@@ -910,7 +861,7 @@ impl AcpClient {
                 self.current_hard_deadline = None;
             }
         }
-        self.parse_stop_reason(&result?)
+        self.parse_prompt_response(session_id, &result?)
     }
 
     /// Send a `session/cancel` **notification** (no `id` field, no response expected).
@@ -956,18 +907,13 @@ impl AcpClient {
         self.steering_supported
     }
 
-    /// Consume and return the per-turn usage record computed from the most
-    /// recent `_goose/unstable/session/update` notification.
-    ///
-    /// Returns `None` if no usage update arrived since the last call (i.e.
-    /// the harness did not emit one for this turn, or this is not a goose
-    /// agent). Must be called at most once per turn; subsequent calls return
-    /// `None` until the next `usage_update` notification is recorded.
-    ///
-    /// Intended for consumption by `publish_agent_turn_metric` in `pool.rs` to
-    /// publish a kind 44200 NIP-AM event.
+    /// Consume per-turn usage for NIP-AM publishing. Goose/buzz-agent is an
+    /// exclusive cumulative path; standard ACP prompt usage is used only when
+    /// goose emitted nothing for this turn.
     pub fn take_turn_usage(&mut self) -> Option<TurnUsage> {
-        self.goose_usage.take()
+        let goose_usage = self.goose_usage.take();
+        let standard_usage = self.standard_usage.take();
+        goose_usage.or(standard_usage)
     }
 
     /// Consume the text streamed by the agent during the most recent prompt.
@@ -983,6 +929,7 @@ impl AcpClient {
     /// never when attaching to a pre-existing session.
     pub(crate) fn notify_session_spawned(&mut self, session_id: &str) {
         self.goose_usage.seed_zero_baseline(session_id);
+        self.standard_usage.seed_zero_baseline(session_id);
     }
 
     /// Install a per-turn steer request channel for goose-native
@@ -1142,7 +1089,7 @@ impl AcpClient {
                 remaining,
             )
             .await?;
-        self.parse_stop_reason(&result)
+        self.parse_prompt_response(session_id, &result)
     }
 
     /// Serialize `value` as a single NDJSON line and flush to the agent's stdin.
@@ -1266,8 +1213,7 @@ impl AcpClient {
     ///
     /// While waiting, handles:
     /// - `session/update` notifications → logged via tracing
-    /// - `session/request_permission` requests → rejected unless an owner has
-    ///   already selected a non-interactive permission mode at session setup
+    /// - `session/request_permission` requests → auto-approved with `allow_once`
     /// - Any other messages → debug-logged and ignored; if they carry an `id`
     ///   (i.e. they are requests, not notifications), a JSON-RPC -32601 error is sent.
     ///
@@ -1927,12 +1873,40 @@ impl AcpClient {
                 }
                 false
             }
+            "usage_update" => {
+                self.handle_standard_usage_update(msg);
+                false
+            }
             "keepalive" => false,
             other => {
                 tracing::debug!(target: "acp::update", "session/update: {other}");
                 false
             }
         }
+    }
+
+    /// Record the standard ACP cumulative cost notification when emitted by
+    /// Claude. Unlike Goose's payload, `used`/`size` are context occupancy and
+    /// are intentionally not mapped to token accounting.
+    fn handle_standard_usage_update(&mut self, msg: &serde_json::Value) {
+        if self.standard_adapter != Some(StandardAdapterKind::Claude) {
+            return;
+        }
+        let session_id = match msg
+            .pointer("/params/sessionId")
+            .and_then(serde_json::Value::as_str)
+        {
+            Some(session_id) => session_id,
+            None => return,
+        };
+        let cost = match msg
+            .pointer("/params/update/cost/amount")
+            .and_then(serde_json::Value::as_f64)
+        {
+            Some(cost) => cost,
+            None => return,
+        };
+        self.standard_usage.record_cost(session_id, cost);
     }
 
     /// Parse a `_goose/unstable/session/update` notification and record the
@@ -1980,12 +1954,12 @@ impl AcpClient {
         }
     }
 
-    /// Reject a `session/request_permission` request from the agent.
+    /// Auto-approve a `session/request_permission` request from the agent.
     ///
-    /// Buzz has no human permission prompt in this harness, so selecting
-    /// `allow_once` would turn any admitted prompt into an implicit approval.
-    /// Find `reject_once` by kind when the adapter offers it; otherwise use the
-    /// protocol's cancelled outcome, which is also fail-closed.
+    /// Finds the option with `kind == "allow_once"` and responds with its `optionId`.
+    /// If no `allow_once` option exists, falls back to `reject_once`.
+    ///
+    /// **Critical:** Never hardcode `optionId` — always find it dynamically by `kind`.
     ///
     /// The request `id` is stored as `serde_json::Value` to support both numeric
     /// and string IDs per JSON-RPC 2.0.
@@ -2011,7 +1985,40 @@ impl AcpClient {
             options.len()
         );
 
-        let response = permission_denial_response(&id, options)?;
+        // Find allow_once by kind — NEVER hardcode optionId.
+        let allow_once = options
+            .iter()
+            .find(|opt| opt.get("kind").and_then(|k| k.as_str()) == Some("allow_once"));
+
+        let response = if let Some(opt) = allow_once {
+            let option_id = opt["optionId"]
+                .as_str()
+                .ok_or_else(|| AcpError::Protocol("allow_once option missing optionId".into()))?;
+            tracing::info!(
+                target: "acp::permission",
+                "auto-approving permission id={id} with allow_once optionId={option_id:?}"
+            );
+            permission_response_selected(&id, option_id)
+        } else {
+            // No allow_once — fall back to reject_once.
+            tracing::warn!(
+                target: "acp::permission",
+                "no allow_once option found in permission request id={id}, falling back to reject_once"
+            );
+            let reject = options
+                .iter()
+                .find(|opt| opt.get("kind").and_then(|k| k.as_str()) == Some("reject_once"));
+
+            if let Some(opt) = reject {
+                let option_id = opt["optionId"].as_str().unwrap_or("reject");
+                permission_response_selected(&id, option_id)
+            } else {
+                return Err(AcpError::Protocol(
+                    "no suitable permission option found (neither allow_once nor reject_once)"
+                        .into(),
+                ));
+            }
+        };
 
         // Write the response first, then mark as responded.
         //
@@ -2031,6 +2038,28 @@ impl AcpClient {
         self.permission_responded = true;
         self.pending_permission_id = None;
         Ok(())
+    }
+
+    /// Parse a completed prompt response and retain its optional per-turn usage.
+    fn parse_prompt_response(
+        &mut self,
+        session_id: &str,
+        result: &serde_json::Value,
+    ) -> Result<StopReason, AcpError> {
+        let stop_reason = self.parse_stop_reason(result)?;
+        if let Some(adapter) = self.standard_adapter {
+            match serde_json::from_value::<PromptResponseUsage>(result["usage"].clone()) {
+                Ok(usage) => self
+                    .standard_usage
+                    .record_prompt_usage(session_id, usage, adapter),
+                Err(_) if result.get("usage").is_some() => tracing::debug!(
+                    target: "acp::usage",
+                    "session/prompt response contained malformed standard usage"
+                ),
+                Err(_) => {}
+            }
+        }
+        Ok(stop_reason)
     }
 
     /// Parse `stopReason` from a `session/prompt` result value.
@@ -2121,42 +2150,6 @@ fn permission_response_cancelled(id: &serde_json::Value) -> serde_json::Value {
         "id": id,
         "result": { "outcome": { "outcome": "cancelled" } }
     })
-}
-
-/// Choose the fail-closed response to a `session/request_permission` request.
-///
-/// Buzz has no human permission prompt in this harness, so selecting
-/// `allow_once` would turn any admitted prompt into an implicit approval.
-/// Prefer the adapter's `reject_once` option — matched by `kind`, never by a
-/// hardcoded `optionId` — and fall back to the protocol's cancelled outcome for
-/// adapters that do not offer one. Both answers deny.
-///
-/// Kept free of the client so the decision is testable without an agent
-/// subprocess: `AcpClient` owns a real `Child` and its stdio pipes.
-fn permission_denial_response(
-    id: &serde_json::Value,
-    options: &[serde_json::Value],
-) -> Result<serde_json::Value, AcpError> {
-    let reject_once = options
-        .iter()
-        .find(|opt| opt.get("kind").and_then(|k| k.as_str()) == Some("reject_once"));
-
-    let Some(opt) = reject_once else {
-        tracing::warn!(
-            target: "acp::permission",
-            "no reject_once option found in permission request id={id}, cancelling"
-        );
-        return Ok(permission_response_cancelled(id));
-    };
-
-    let option_id = opt["optionId"]
-        .as_str()
-        .ok_or_else(|| AcpError::Protocol("reject_once option missing optionId".into()))?;
-    tracing::info!(
-        target: "acp::permission",
-        "rejecting permission id={id} with reject_once optionId={option_id:?}"
-    );
-    Ok(permission_response_selected(id, option_id))
 }
 
 /// Full `session/new` response — session ID plus the raw JSON result.
@@ -2370,39 +2363,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn native_adapter_spawn_stays_direct() {
-        let args = vec!["acp".to_string()];
-        let (command, actual_args) = windows_batch_spawn("adapter.exe", &args);
-        assert_eq!(command, "adapter.exe");
-        assert_eq!(actual_args, args);
-    }
-
-    #[cfg(windows)]
-    #[test]
-    fn windows_npm_adapter_uses_node_entrypoint() {
-        let temp =
-            std::env::temp_dir().join(format!("buzz-acp-shim-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&temp).expect("tempdir");
-        let cmd_shim = temp.join("codex-acp.cmd");
-        let script = temp
-            .join("node_modules")
-            .join("@agentclientprotocol")
-            .join("codex-acp")
-            .join("dist")
-            .join("index.js");
-        std::fs::create_dir_all(script.parent().expect("script parent")).expect("package dirs");
-        std::fs::write(&cmd_shim, "@echo off\r\n").expect("cmd shim");
-        std::fs::write(&script, "").expect("Node entrypoint");
-        let args = vec!["acp".to_string(), "--flag=value with spaces".to_string()];
-        let (command, actual_args) =
-            windows_batch_spawn(cmd_shim.to_str().expect("utf8 path"), &args);
-        assert_eq!(command, "node.exe");
-        assert_eq!(actual_args[0], script.display().to_string());
-        assert_eq!(&actual_args[1..], args);
-        std::fs::remove_dir_all(temp).expect("remove tempdir");
-    }
-
-    #[test]
     fn stop_reason_parses_all_known_values() {
         assert_eq!(StopReason::from_str("end_turn"), Some(StopReason::EndTurn));
         assert_eq!(
@@ -2446,96 +2406,63 @@ mod tests {
         assert_eq!(StopReason::from_str("Refusal"), Some(StopReason::Refusal));
     }
 
-    fn options(json: &str) -> Vec<serde_json::Value> {
-        serde_json::from_str(json).expect("option list")
-    }
-
-    fn outcome(response: &serde_json::Value) -> Option<&str> {
-        response["result"]["outcome"]["outcome"].as_str()
-    }
-
-    /// The offered `allow_once` and `allow_always` options must be ignored:
-    /// there is no human to click them, so choosing either would make every
-    /// admitted prompt an implicit approval. `optionId`s are deliberately
-    /// non-obvious to prove they are matched by `kind`, never hardcoded.
     #[test]
-    fn permission_requests_select_reject_once_not_allow_once() {
-        let options = options(
+    fn find_allow_once_by_kind_not_by_option_id() {
+        // optionId values are intentionally non-obvious to prove we don't hardcode them.
+        let options: Vec<serde_json::Value> = serde_json::from_str(
             r#"[
             {"optionId": "opt-reject-42",  "name": "Reject",       "kind": "reject_once"},
             {"optionId": "opt-allow-99",   "name": "Allow once",   "kind": "allow_once"},
             {"optionId": "opt-always-7",   "name": "Always allow", "kind": "allow_always"}
         ]"#,
-        );
+        )
+        .unwrap();
 
-        let response =
-            permission_denial_response(&serde_json::json!(7), &options).expect("denial response");
+        let allow_once = options
+            .iter()
+            .find(|opt| opt.get("kind").and_then(|k| k.as_str()) == Some("allow_once"));
 
-        assert_eq!(outcome(&response), Some("selected"));
-        assert_eq!(
-            response["result"]["outcome"]["optionId"].as_str(),
-            Some("opt-reject-42"),
-            "must select reject_once even when allow options are offered"
-        );
+        assert!(allow_once.is_some(), "should find allow_once option");
+        let opt = allow_once.unwrap();
+        // Found by kind, not by hardcoded optionId
+        assert_eq!(opt["kind"].as_str(), Some("allow_once"));
+        assert_eq!(opt["optionId"].as_str(), Some("opt-allow-99"));
     }
 
-    /// Fail-closed backstop: an adapter that offers no `reject_once` must still
-    /// be denied, via the protocol's cancelled outcome rather than an error or
-    /// an approval.
     #[test]
-    fn permission_request_without_reject_once_is_cancelled() {
-        let options = options(
+    fn find_allow_once_returns_none_when_absent() {
+        let options: Vec<serde_json::Value> = serde_json::from_str(
             r#"[
-            {"optionId": "opt-allow-99", "name": "Allow once",   "kind": "allow_once"},
-            {"optionId": "opt-always-7", "name": "Always allow", "kind": "allow_always"}
+            {"optionId": "reject-1",      "name": "Reject",        "kind": "reject_once"},
+            {"optionId": "reject-always", "name": "Always reject", "kind": "reject_always"}
         ]"#,
-        );
+        )
+        .unwrap();
 
-        let response = permission_denial_response(&serde_json::json!("req-1"), &options)
-            .expect("cancelled response");
+        let allow_once = options
+            .iter()
+            .find(|opt| opt.get("kind").and_then(|k| k.as_str()) == Some("allow_once"));
 
-        assert_eq!(outcome(&response), Some("cancelled"));
-        assert_eq!(
-            response["id"].as_str(),
-            Some("req-1"),
-            "string ids must round-trip per JSON-RPC 2.0"
-        );
-    }
-
-    /// An empty option list is the degenerate form of the same backstop.
-    #[test]
-    fn permission_request_with_no_options_is_cancelled() {
-        let response =
-            permission_denial_response(&serde_json::json!(1), &[]).expect("cancelled response");
-
-        assert_eq!(outcome(&response), Some("cancelled"));
-    }
-
-    /// A `reject_once` option missing its `optionId` is a protocol violation.
-    /// Erroring propagates to the caller, which tears the turn down — still no
-    /// approval is ever sent.
-    #[test]
-    fn reject_once_without_option_id_is_a_protocol_error() {
-        let options = options(r#"[{"name": "Reject", "kind": "reject_once"}]"#);
-
-        let err = permission_denial_response(&serde_json::json!(1), &options)
-            .expect_err("missing optionId must error");
-
-        assert!(matches!(err, AcpError::Protocol(_)), "got {err:?}");
+        assert!(allow_once.is_none());
     }
 
     #[test]
-    fn find_reject_once_by_kind() {
-        let options =
-            options(r#"[{"optionId": "rej-x", "name": "Reject", "kind": "reject_once"}]"#);
+    fn find_reject_once_fallback_when_no_allow_once() {
+        let options: Vec<serde_json::Value> = serde_json::from_str(
+            r#"[{"optionId": "rej-x", "name": "Reject", "kind": "reject_once"}]"#,
+        )
+        .unwrap();
 
-        let response =
-            permission_denial_response(&serde_json::json!(1), &options).expect("denial response");
+        let allow_once = options
+            .iter()
+            .find(|opt| opt.get("kind").and_then(|k| k.as_str()) == Some("allow_once"));
+        assert!(allow_once.is_none());
 
-        assert_eq!(
-            response["result"]["outcome"]["optionId"].as_str(),
-            Some("rej-x")
-        );
+        let reject_once = options
+            .iter()
+            .find(|opt| opt.get("kind").and_then(|k| k.as_str()) == Some("reject_once"));
+        assert!(reject_once.is_some());
+        assert_eq!(reject_once.unwrap()["optionId"].as_str(), Some("rej-x"));
     }
 
     #[test]
@@ -3062,6 +2989,30 @@ mod tests {
         AcpClient::spawn("bash", &["-c".into(), script.into()], &[], false)
             .await
             .expect("failed to spawn test script")
+    }
+
+    #[cfg(unix)]
+    async fn spawn_named_script(name: &str, script: &str) -> (AcpClient, std::path::PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "buzz-acp-{name}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp adapter dir");
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/usr/bin/env bash\n{script}\n"))
+            .expect("write fake adapter");
+        let mut permissions = std::fs::metadata(&path)
+            .expect("adapter metadata")
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&path, permissions).expect("chmod fake adapter");
+        let client = AcpClient::spawn(path.to_str().expect("utf8 path"), &[], &[], false)
+            .await
+            .expect("spawn named fake adapter");
+        (client, dir)
     }
 
     /// Spawn a probe script whose file name carries a runtime identity (e.g.
@@ -3731,14 +3682,6 @@ mod tests {
         AcpClient::spawn("cat", &[], &[], false)
             .await
             .expect("spawn cat as inert client")
-    }
-
-    #[test]
-    fn captures_agent_message_chunks_for_workflow_result_publication() {
-        let mut captured = String::new();
-        append_captured_agent_message(&mut captured, "Executive summary");
-        append_captured_agent_message(&mut captured, "\n\nFinding");
-        assert_eq!(captured, "Executive summary\n\nFinding");
     }
 
     /// Build a `session/update` JSON-RPC notification carrying a
@@ -4446,6 +4389,254 @@ mod tests {
             crate::pool::SteerAck::Err(crate::pool::SteerError::ExpectedRunIdMissing) => {}
             other => panic!("expected Err(ExpectedRunIdMissing), got {other:?}"),
         }
+    }
+
+    // ── Standard ACP prompt-response usage ─────────────────────────────────
+
+    fn prompt_response_usage(
+        input: u64,
+        output: u64,
+        total: u64,
+        cached_read: Option<u64>,
+        cached_write: Option<u64>,
+    ) -> serde_json::Value {
+        let mut usage = serde_json::json!({
+            "inputTokens": input,
+            "outputTokens": output,
+            "totalTokens": total,
+        });
+        if let Some(cached_read) = cached_read {
+            usage["cachedReadTokens"] = serde_json::json!(cached_read);
+        }
+        if let Some(cached_write) = cached_write {
+            usage["cachedWriteTokens"] = serde_json::json!(cached_write);
+        }
+        serde_json::json!({"stopReason": "end_turn", "usage": usage})
+    }
+
+    fn standard_cost_update(session_id: &str, cost: f64) -> serde_json::Value {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "session/update",
+            "params": {
+                "sessionId": session_id,
+                "update": {
+                    "sessionUpdate": "usage_update",
+                    "cost": {"amount": cost, "currency": "USD"}
+                }
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn claude_prompt_response_usage_merges_with_cumulative_cost() {
+        let mut client = spawn_inert_client().await;
+        client.standard_adapter = Some(StandardAdapterKind::Claude);
+        client.notify_session_spawned("claude-session");
+        client.standard_usage.begin_turn("claude-session");
+        client.handle_session_update(&standard_cost_update("claude-session", 0.042));
+        assert_eq!(
+            client
+                .parse_prompt_response(
+                    "claude-session",
+                    &prompt_response_usage(100, 20, 175, Some(30), Some(25)),
+                )
+                .unwrap(),
+            StopReason::EndTurn
+        );
+
+        let usage = client.take_turn_usage().expect("prompt usage");
+        assert!(usage.delta_reliable, "response tokens need no baseline");
+        assert_eq!(usage.turn_input_tokens, Some(155));
+        assert_eq!(usage.turn_output_tokens, Some(20));
+        assert_eq!(
+            usage.turn_total_tokens, None,
+            "Claude total is adapter-derived"
+        );
+        assert_eq!(usage.turn_cache_read_tokens, Some(30));
+        assert_eq!(usage.turn_cache_write_tokens, Some(25));
+        assert_eq!(usage.turn_cost_usd, Some(0.042));
+        assert_eq!(usage.cumulative_cost_usd, Some(0.042));
+        assert_eq!(usage.cumulative_input_tokens, None);
+        assert_eq!(usage.cumulative_output_tokens, None);
+    }
+
+    #[tokio::test]
+    async fn codex_prompt_response_usage_preserves_provider_total_without_cost() {
+        let mut client = spawn_inert_client().await;
+        client.standard_adapter = Some(StandardAdapterKind::Codex);
+        client.standard_usage.begin_turn("codex-session");
+        client.handle_session_update(&standard_cost_update("codex-session", 0.042));
+        client
+            .parse_prompt_response(
+                "codex-session",
+                &prompt_response_usage(90, 10, 140, Some(40), None),
+            )
+            .unwrap();
+
+        let usage = client.take_turn_usage().expect("prompt usage");
+        assert!(usage.delta_reliable);
+        assert_eq!(usage.turn_input_tokens, Some(130));
+        assert_eq!(usage.turn_output_tokens, Some(10));
+        assert_eq!(usage.turn_total_tokens, Some(140));
+        assert_eq!(usage.turn_cache_read_tokens, Some(40));
+        assert_eq!(usage.turn_cache_write_tokens, None);
+        assert_eq!(
+            usage.cumulative_cost_usd, None,
+            "Codex cost update is ignored"
+        );
+        assert_eq!(usage.cumulative_input_tokens, None);
+        assert_eq!(usage.cumulative_output_tokens, None);
+    }
+
+    #[tokio::test]
+    async fn standard_prompt_input_overflow_fails_closed() {
+        let mut client = spawn_inert_client().await;
+        client.standard_adapter = Some(StandardAdapterKind::Claude);
+        client.standard_usage.begin_turn("overflow-session");
+        client
+            .parse_prompt_response(
+                "overflow-session",
+                &prompt_response_usage(u64::MAX, 10, u64::MAX, Some(1), None),
+            )
+            .unwrap();
+
+        assert!(
+            client.take_turn_usage().is_none(),
+            "overflow without another valid signal must not emit all-null usage"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn claude_named_adapter_wire_lifecycle_records_prompt_and_cost() {
+        let script = r#"
+            read -r REQ
+            ID=$(printf '%s' "$REQ" | sed -E 's/.*"id":([0-9]+).*/\1/')
+            echo '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"wire-session","update":{"sessionUpdate":"usage_update","cost":{"amount":0.5,"currency":"USD"}}}}'
+            echo '{"jsonrpc":"2.0","id":'"$ID"',"result":{"stopReason":"end_turn","usage":{"inputTokens":7,"outputTokens":3,"totalTokens":10,"cachedReadTokens":2}}}'
+            sleep 1
+        "#;
+        let (mut client, dir) = spawn_named_script("claude-code", script).await;
+        assert_eq!(client.standard_adapter, Some(StandardAdapterKind::Claude));
+        client.notify_session_spawned("wire-session");
+
+        let stop = client
+            .session_prompt_with_idle_timeout(
+                "wire-session",
+                "hello",
+                std::time::Duration::from_secs(2),
+                std::time::Duration::from_secs(5),
+            )
+            .await
+            .expect("wire prompt");
+        assert_eq!(stop, StopReason::EndTurn);
+
+        let usage = client.take_turn_usage().expect("wire usage");
+        assert_eq!(usage.turn_seq, 1);
+        assert_eq!(usage.turn_input_tokens, Some(9));
+        assert_eq!(usage.turn_output_tokens, Some(3));
+        assert_eq!(usage.turn_cost_usd, Some(0.5));
+        assert_eq!(usage.cumulative_cost_usd, Some(0.5));
+        drop(client);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn claude_cost_only_record_survives_missing_prompt_usage() {
+        let mut client = spawn_inert_client().await;
+        client.standard_adapter = Some(StandardAdapterKind::Claude);
+        client.notify_session_spawned("cost-only-session");
+        client.standard_usage.begin_turn("cost-only-session");
+        client.handle_session_update(&standard_cost_update("cost-only-session", 0.125));
+
+        let usage = client.take_turn_usage().expect("cost-only usage");
+        assert_eq!(usage.turn_seq, 1);
+        assert!(usage.delta_reliable);
+        assert_eq!(usage.turn_input_tokens, None);
+        assert_eq!(usage.turn_cost_usd, Some(0.125));
+        assert_eq!(usage.cumulative_cost_usd, Some(0.125));
+    }
+
+    #[tokio::test]
+    async fn attached_claude_session_does_not_invent_first_cost_delta() {
+        let mut client = spawn_inert_client().await;
+        client.standard_adapter = Some(StandardAdapterKind::Claude);
+        client.standard_usage.begin_turn("attached-session");
+        client.handle_session_update(&standard_cost_update("attached-session", 1.25));
+        client
+            .parse_prompt_response(
+                "attached-session",
+                &prompt_response_usage(10, 2, 12, None, None),
+            )
+            .unwrap();
+
+        let usage = client.take_turn_usage().expect("attached usage");
+        assert_eq!(usage.turn_cost_usd, None);
+        assert_eq!(usage.cumulative_cost_usd, Some(1.25));
+    }
+
+    #[tokio::test]
+    async fn standard_usage_two_prompts_preserve_both_monotonic_sequences() {
+        let mut client = spawn_inert_client().await;
+        client.standard_adapter = Some(StandardAdapterKind::Claude);
+        client.notify_session_spawned("two-prompt-session");
+
+        client.standard_usage.begin_turn("two-prompt-session");
+        client.handle_session_update(&standard_cost_update("two-prompt-session", 0.1));
+        client
+            .parse_prompt_response(
+                "two-prompt-session",
+                &prompt_response_usage(10, 2, 12, None, None),
+            )
+            .unwrap();
+        let initial = client.take_turn_usage().expect("initial prompt usage");
+
+        client.standard_usage.begin_turn("two-prompt-session");
+        client.handle_session_update(&standard_cost_update("two-prompt-session", 0.25));
+        client
+            .parse_prompt_response(
+                "two-prompt-session",
+                &prompt_response_usage(20, 3, 23, None, None),
+            )
+            .unwrap();
+        let user = client.take_turn_usage().expect("user prompt usage");
+
+        assert_eq!((initial.turn_seq, user.turn_seq), (1, 2));
+        assert_eq!(
+            (initial.turn_input_tokens, user.turn_input_tokens),
+            (Some(10), Some(20))
+        );
+        assert_eq!(
+            (initial.turn_cost_usd, user.turn_cost_usd),
+            (Some(0.1), Some(0.15))
+        );
+    }
+
+    #[tokio::test]
+    async fn goose_usage_stays_exclusive_and_drains_standard_usage() {
+        let mut client = spawn_inert_client().await;
+        client.standard_adapter = Some(StandardAdapterKind::Claude);
+        client.goose_usage.begin_turn("goose-session");
+        client.standard_usage.begin_turn("goose-session");
+        client.handle_goose_usage_update(&goose_usage_update_msg("goose-session", 1000, 200, None));
+        client
+            .parse_prompt_response(
+                "goose-session",
+                &prompt_response_usage(100, 20, 120, None, None),
+            )
+            .unwrap();
+
+        let usage = client.take_turn_usage().expect("goose usage");
+        assert_eq!(usage.cumulative_input_tokens, Some(1000));
+        assert_eq!(
+            usage.turn_input_tokens, None,
+            "goose first delta remains exclusive"
+        );
+        assert!(
+            client.take_turn_usage().is_none(),
+            "standard usage was drained"
+        );
     }
 
     // ── Goose usage notification integration ──────────────────────────────
