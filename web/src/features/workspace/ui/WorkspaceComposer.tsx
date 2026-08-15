@@ -7,6 +7,7 @@ import {
   type CustomEmoji,
 } from "@/features/custom-emoji/custom-emoji-policy";
 import { CustomEmojiPickerButton } from "@/features/custom-emoji/ui/CustomEmojiPickerButton";
+import { EmojiPickerButton } from "@/features/custom-emoji/ui/EmojiPickerButton";
 import { buildOutgoingMediaMessage } from "@/features/media/media-policy";
 import { ComposerAttachments } from "@/features/media/ui/ComposerAttachments";
 import { useComposerAttachments } from "@/features/media/useComposerAttachments";
@@ -15,6 +16,7 @@ import {
   writeLocalChannelDrafts,
 } from "@/features/channel-state/channel-state-api";
 import { draftContextId } from "@/features/channel-state/channel-state-policy";
+import { useAuthenticatedPicture } from "@/shared/lib/authenticated-media";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 import type {
@@ -30,6 +32,23 @@ import {
   type MentionCandidate,
 } from "@/features/workspace/workspace-mention-policy";
 import type { TimelineMessage } from "../workspace-messages";
+
+function MentionAvatar({ candidate }: { candidate: MentionCandidate }) {
+  // Relay-hosted avatars need an authorized fetch; a raw <img src> would 401
+  // and render every agent as a broken image in the mention popup.
+  const picture = useAuthenticatedPicture(candidate.picture);
+  return picture ? (
+    <img
+      alt=""
+      className="size-6 shrink-0 rounded-full object-cover"
+      src={picture}
+    />
+  ) : (
+    <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs text-muted-foreground">
+      {candidate.name.charAt(0).toUpperCase()}
+    </span>
+  );
+}
 
 type WorkspaceComposerProps = {
   agents: WorkspaceProfile[];
@@ -268,17 +287,7 @@ export function WorkspaceComposer({
                   }}
                   onMouseEnter={() => setMentionIndex(index)}
                 >
-                  {candidate.picture ? (
-                    <img
-                      alt=""
-                      className="size-6 shrink-0 rounded-full object-cover"
-                      src={candidate.picture}
-                    />
-                  ) : (
-                    <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-muted text-xs text-muted-foreground">
-                      {candidate.name.charAt(0).toUpperCase()}
-                    </span>
-                  )}
+                  <MentionAvatar candidate={candidate} />
                   <span className="truncate">{candidate.name}</span>
                   {candidate.isAgent ? (
                     <span className="ml-auto shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[0.6875rem] text-muted-foreground">
@@ -295,11 +304,13 @@ export function WorkspaceComposer({
               "block max-h-40 w-full resize-none bg-transparent px-4 py-3 text-sm outline-none placeholder:text-muted-foreground",
               compact ? "min-h-12" : "min-h-16",
             )}
-            placeholder={
-              candidates.length
-                ? `Message #${channel.name}, or @mention someone`
-                : `Message #${channel.name}`
-            }
+            placeholder={(() => {
+              const target =
+                channel.type === "dm" ? channel.name : `#${channel.name}`;
+              return candidates.length
+                ? `Message ${target}, or @mention someone`
+                : `Message ${target}`;
+            })()}
             ref={textareaRef}
             rows={compact ? 1 : 2}
             value={content}
@@ -389,6 +400,10 @@ export function WorkspaceComposer({
             >
               <ClipboardPaste className="size-3.5" />
             </Button>
+            <EmojiPickerButton
+              label="Insert emoji"
+              onSelect={insertCustomEmoji}
+            />
             <CustomEmojiPickerButton
               emoji={customEmoji}
               label="Insert custom emoji"

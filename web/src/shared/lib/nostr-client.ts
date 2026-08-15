@@ -33,6 +33,7 @@ export type PublishedEvent = {
 
 const QUERY_TIMEOUT_MS = 10_000;
 const PUBLISH_TIMEOUT_MS = 10_000;
+const SHARED_RETRY_COOLDOWN_MS = 5_000;
 
 type RelayEnvelope = unknown[];
 
@@ -45,12 +46,266 @@ function parseEnvelope(data: unknown): RelayEnvelope | null {
   }
 }
 
+// ─── Shared authenticated connection ────────────────────────────────────────
+//
+// Historically every query and publish opened its own WebSocket and performed
+// a full NIP-42 AUTH round trip, which made each send and each channel load
+// pay a connection handshake plus two signatures. Queries and publishes now
+// multiplex over one persistent authenticated socket; the per-call socket
+// code below remains as the fallback when the shared transport is
+// unavailable (no durable signer yet, relay closed the connection, …).
+
+type SharedSubscription = {
+  onEvent: (event: NostrEvent) => void;
+  onEose: () => void;
+  onClosed: (reason: string) => void;
+  onDisconnect: () => void;
+};
+
+type SharedOkResult = {
+  accepted: boolean;
+  message: string | null;
+  connectionLost: boolean;
+};
+
+type SharedConnection = {
+  url: string;
+  ws: WebSocket;
+  ready: Promise<void>;
+  subscriptions: Map<string, SharedSubscription>;
+  okWaiters: Map<string, (result: SharedOkResult) => void>;
+};
+
+let activeSharedConnection: SharedConnection | null = null;
+let sharedUnavailableUntil = 0;
+
+function createSharedConnection(wsUrl: string): SharedConnection {
+  const ws = new WebSocket(wsUrl);
+  let readyResolve!: () => void;
+  let readyReject!: (error: Error) => void;
+  const ready = new Promise<void>((resolve, reject) => {
+    readyResolve = resolve;
+    readyReject = reject;
+  });
+  // The ready promise is awaited lazily; avoid unhandled-rejection noise.
+  ready.catch(() => {});
+
+  const connection: SharedConnection = {
+    url: wsUrl,
+    ws,
+    ready,
+    subscriptions: new Map(),
+    okWaiters: new Map(),
+  };
+
+  let readySettled = false;
+  let authEventId: string | null = null;
+  let authTimer: number | null = null;
+
+  const settleReady = (error?: Error) => {
+    if (readySettled) return;
+    readySettled = true;
+    if (authTimer !== null) window.clearTimeout(authTimer);
+    if (error) {
+      sharedUnavailableUntil = Date.now() + SHARED_RETRY_COOLDOWN_MS;
+      readyReject(error);
+    } else {
+      readyResolve();
+    }
+  };
+
+  const dropConnection = () => {
+    settleReady(new Error("The relay connection closed."));
+    for (const subscription of connection.subscriptions.values()) {
+      subscription.onDisconnect();
+    }
+    connection.subscriptions.clear();
+    for (const waiter of connection.okWaiters.values()) {
+      waiter({ accepted: false, message: null, connectionLost: true });
+    }
+    connection.okWaiters.clear();
+    if (activeSharedConnection === connection) activeSharedConnection = null;
+  };
+
+  ws.addEventListener("open", () => {
+    // Buzz relays challenge immediately; give the AUTH frame a beat to
+    // arrive, then proceed unauthenticated for open relays.
+    authTimer = window.setTimeout(() => settleReady(), 150);
+  });
+
+  ws.addEventListener("message", async (message) => {
+    const data = parseEnvelope(message.data);
+    if (!data) return;
+    const [type] = data;
+    if (type === "AUTH" && typeof data[1] === "string") {
+      if (authTimer !== null) {
+        window.clearTimeout(authTimer);
+        authTimer = null;
+      }
+      try {
+        const signed = await signNostrEvent(makeAuthEvent(wsUrl, data[1]), {
+          requireNip07: true,
+        });
+        authEventId = signed.id;
+        ws.send(JSON.stringify(["AUTH", signed]));
+      } catch (error) {
+        settleReady(
+          error instanceof Error
+            ? error
+            : new Error("Relay authentication failed."),
+        );
+        ws.close();
+      }
+      return;
+    }
+    if (type === "OK" && typeof data[1] === "string") {
+      if (data[1] === authEventId) {
+        if (data[2] === true) settleReady();
+        else {
+          settleReady(
+            new Error(
+              typeof data[3] === "string"
+                ? data[3]
+                : "Relay authentication failed.",
+            ),
+          );
+          ws.close();
+        }
+        return;
+      }
+      const waiter = connection.okWaiters.get(data[1]);
+      if (waiter) {
+        connection.okWaiters.delete(data[1]);
+        waiter({
+          accepted: data[2] === true,
+          message: typeof data[3] === "string" ? data[3] : null,
+          connectionLost: false,
+        });
+      }
+      return;
+    }
+    if (type === "EVENT" && typeof data[1] === "string" && data[2]) {
+      connection.subscriptions.get(data[1])?.onEvent(data[2] as NostrEvent);
+    } else if (type === "EOSE" && typeof data[1] === "string") {
+      connection.subscriptions.get(data[1])?.onEose();
+    } else if (type === "CLOSED" && typeof data[1] === "string") {
+      const subscription = connection.subscriptions.get(data[1]);
+      connection.subscriptions.delete(data[1]);
+      subscription?.onClosed(
+        typeof data[2] === "string" ? data[2] : "subscription closed by relay",
+      );
+    }
+  });
+
+  ws.addEventListener("error", () => ws.close());
+  ws.addEventListener("close", dropConnection);
+  return connection;
+}
+
+async function acquireSharedConnection(
+  wsUrl: string,
+): Promise<SharedConnection> {
+  if (Date.now() < sharedUnavailableUntil) {
+    throw new Error("The shared relay transport is cooling down.");
+  }
+  let connection = activeSharedConnection;
+  if (
+    !connection ||
+    connection.url !== wsUrl ||
+    (connection.ws.readyState !== WebSocket.OPEN &&
+      connection.ws.readyState !== WebSocket.CONNECTING)
+  ) {
+    connection = createSharedConnection(wsUrl);
+    activeSharedConnection = connection;
+  }
+  await connection.ready;
+  if (connection.ws.readyState !== WebSocket.OPEN) {
+    throw new Error("The relay connection closed.");
+  }
+  return connection;
+}
+
+function runSharedQuery(
+  connection: SharedConnection,
+  filter: NostrFilter,
+): Promise<{ events: NostrEvent[]; connectionLost: boolean }> {
+  return new Promise((resolve, reject) => {
+    const subId = `q-${crypto.randomUUID()}`;
+    const events: NostrEvent[] = [];
+    let settled = false;
+    const finish = (
+      outcome:
+        | { kind: "done" }
+        | { kind: "disconnect" }
+        | { kind: "error"; error: Error },
+    ) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      connection.subscriptions.delete(subId);
+      if (outcome.kind === "error") reject(outcome.error);
+      else resolve({ events, connectionLost: outcome.kind === "disconnect" });
+    };
+    const timeout = window.setTimeout(() => {
+      if (connection.ws.readyState === WebSocket.OPEN) {
+        try {
+          connection.ws.send(JSON.stringify(["CLOSE", subId]));
+        } catch {
+          // The subscription entry is already removed below.
+        }
+      }
+      finish({
+        kind: "error",
+        error: new Error(`Relay query timed out after ${QUERY_TIMEOUT_MS}ms`),
+      });
+    }, QUERY_TIMEOUT_MS);
+    connection.subscriptions.set(subId, {
+      onEvent: (event) => events.push(event),
+      onEose: () => {
+        if (connection.ws.readyState === WebSocket.OPEN) {
+          try {
+            connection.ws.send(JSON.stringify(["CLOSE", subId]));
+          } catch {
+            // Closing the finished subscription is best-effort.
+          }
+        }
+        finish({ kind: "done" });
+      },
+      onClosed: (reason) => finish({ kind: "error", error: new Error(reason) }),
+      onDisconnect: () => finish({ kind: "disconnect" }),
+    });
+    connection.ws.send(JSON.stringify(["REQ", subId, filter]));
+  });
+}
+
+/**
+ * Query the relay for events matching `filter`, collecting until EOSE.
+ * Runs over the shared authenticated socket when possible, falling back to
+ * a dedicated per-call socket otherwise.
+ */
+export async function queryEvents(
+  wsUrl: string,
+  filter: NostrFilter,
+): Promise<NostrEvent[]> {
+  let connection: SharedConnection;
+  try {
+    connection = await acquireSharedConnection(wsUrl);
+  } catch {
+    return queryEventsWithDedicatedSocket(wsUrl, filter);
+  }
+  const result = await runSharedQuery(connection, filter);
+  if (result.connectionLost) {
+    return queryEventsWithDedicatedSocket(wsUrl, filter);
+  }
+  return result.events;
+}
+
 /**
  * Open a WebSocket to `wsUrl`, authenticate via NIP-42 if challenged,
  * send a REQ with the given filter, collect EVENTs until EOSE, then
  * close and return them.
  */
-export function queryEvents(
+function queryEventsWithDedicatedSocket(
   wsUrl: string,
   filter: NostrFilter,
 ): Promise<NostrEvent[]> {
@@ -200,12 +455,58 @@ export async function publishEvent(
  * Publish a signed event and retain the relay's accepted `OK` message. Command
  * handlers use this standard Nostr acknowledgement to return a run identifier
  * or one-time webhook secret; no feature-specific HTTP endpoint is involved.
+ * Uses the shared authenticated socket when possible; a dropped connection
+ * retries once over a dedicated socket (relays deduplicate by event id).
  */
 export async function publishEventWithReceipt(
   wsUrl: string,
   template: Parameters<typeof signNostrEvent>[0],
 ): Promise<PublishedEvent> {
   const event = await signNostrEvent(template, { requireNip07: true });
+  let connection: SharedConnection | null = null;
+  try {
+    connection = await acquireSharedConnection(wsUrl);
+  } catch {
+    connection = null;
+  }
+  if (connection) {
+    const shared = connection;
+    const result = await new Promise<SharedOkResult>((resolve) => {
+      const timeout = window.setTimeout(() => {
+        shared.okWaiters.delete(event.id);
+        resolve({
+          accepted: false,
+          message: "Publishing to the relay timed out.",
+          connectionLost: false,
+        });
+      }, PUBLISH_TIMEOUT_MS);
+      shared.okWaiters.set(event.id, (outcome) => {
+        window.clearTimeout(timeout);
+        resolve(outcome);
+      });
+      try {
+        shared.ws.send(JSON.stringify(["EVENT", event]));
+      } catch {
+        window.clearTimeout(timeout);
+        shared.okWaiters.delete(event.id);
+        resolve({ accepted: false, message: null, connectionLost: true });
+      }
+    });
+    if (result.accepted) {
+      return { event, relayMessage: result.message };
+    }
+    if (!result.connectionLost) {
+      throw new Error(result.message ?? "The relay rejected the event.");
+    }
+    // Connection dropped before the acknowledgement — retry below.
+  }
+  return publishSignedEventWithDedicatedSocket(wsUrl, event);
+}
+
+function publishSignedEventWithDedicatedSocket(
+  wsUrl: string,
+  event: NostrEvent,
+): Promise<PublishedEvent> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
     let settled = false;

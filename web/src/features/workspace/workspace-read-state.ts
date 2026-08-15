@@ -677,11 +677,22 @@ export function useWorkspaceReadState({
     );
   }, [identityPubkey, recordIncomingMessage]);
 
-  const markChannelRead = React.useCallback(
+  const currentMessagesRef = React.useRef(currentMessages);
+  currentMessagesRef.current = currentMessages;
+
+  const advanceChannelMarker = React.useCallback(
     (channelId: string, timestamp?: number) => {
       if (channelId !== activeChannelIdRef.current) return;
-      unreadAnchorIdsRef.current.delete(channelId);
-      const observed = eventsByChannel.get(channelId) ?? [];
+      // The read-state store and the visible timeline load independently, so
+      // take the newest external message across both. Thread replies live in
+      // the same channel and count toward the same cursor — viewing the
+      // channel clears them, matching how the badge counted them.
+      const observed = [
+        ...(eventsByChannelRef.current.get(channelId) ?? []),
+        ...currentMessagesRef.current.filter(
+          (event) => event.channelId === channelId,
+        ),
+      ];
       const newest = observed.reduce(
         (latest, event) =>
           isExternalMessage(event, identityPubkey ?? "")
@@ -697,8 +708,48 @@ export function useWorkspaceReadState({
         return next;
       });
     },
-    [eventsByChannel, identityPubkey, persistAndPublish],
+    [identityPubkey, persistAndPublish],
   );
+
+  const markChannelRead = React.useCallback(
+    (channelId: string, timestamp?: number) => {
+      if (channelId !== activeChannelIdRef.current) return;
+      unreadAnchorIdsRef.current.delete(channelId);
+      advanceChannelMarker(channelId, timestamp);
+    },
+    [advanceChannelMarker],
+  );
+
+  const newestActiveExternalTimestamp = React.useMemo(() => {
+    if (!activeChannelId || !identityPubkey) return 0;
+    const observed = [
+      ...(eventsByChannel.get(activeChannelId) ?? []),
+      ...currentMessages.filter((event) => event.channelId === activeChannelId),
+    ];
+    return observed.reduce(
+      (latest, event) =>
+        isExternalMessage(event, identityPubkey)
+          ? Math.max(latest, event.created_at)
+          : latest,
+      0,
+    );
+  }, [activeChannelId, currentMessages, eventsByChannel, identityPubkey]);
+
+  // While the channel is actually on screen, keep the cursor at the newest
+  // message so the sidebar badge clears as messages load or arrive, instead
+  // of only once per visit. Returning to a hidden tab re-marks on focus.
+  React.useEffect(() => {
+    if (!activeChannelId || newestActiveExternalTimestamp === 0) return;
+    const markIfVisible = () => {
+      if (document.visibilityState === "visible") {
+        advanceChannelMarker(activeChannelId, newestActiveExternalTimestamp);
+      }
+    };
+    markIfVisible();
+    document.addEventListener("visibilitychange", markIfVisible);
+    return () =>
+      document.removeEventListener("visibilitychange", markIfVisible);
+  }, [activeChannelId, advanceChannelMarker, newestActiveExternalTimestamp]);
 
   const firstUnreadMessageId = React.useMemo(() => {
     if (!activeChannelId || !identityPubkey) return null;

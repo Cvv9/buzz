@@ -20,6 +20,10 @@ import {
   useDmVisibility,
 } from "../dm-visibility";
 import {
+  findDirectMessageChannel,
+  useDmChannelRenamer,
+} from "../dm-display-names";
+import {
   useChannelTyping,
   usePresenceHeartbeat,
   useTypingBroadcast,
@@ -28,7 +32,6 @@ import {
 import { useAgentMentionDelivery } from "../useAgentMentionDelivery";
 import { useWorkspaceIdentity } from "../useWorkspaceIdentity";
 import { useSyncedChannelState } from "@/features/channel-state/useSyncedChannelState";
-import { readBrowserPreferences } from "@/features/preferences/browser-preferences";
 import {
   type WorkspaceMessage,
   type WorkspaceProfile,
@@ -58,6 +61,7 @@ import {
 } from "@/features/workspace/workspace-messages";
 import { useWorkspaceReactions } from "@/features/workspace/useWorkspaceReactions";
 import { useWorkspaceReadState } from "@/features/workspace/workspace-read-state";
+import { maybeNotifyChannelMessage } from "@/features/workspace/workspace-notification";
 import { workspaceInvalidationTargets } from "../workspace-realtime-sync-policy";
 import { resolveActiveChannelId } from "../workspace-active-channel-policy";
 import {
@@ -375,6 +379,26 @@ export function WorkspacePage({
   });
   const profilePubkeyKey = profilePubkeys.join(",");
 
+  const renameDm = useDmChannelRenamer({
+    agents: agentsQuery.data,
+    profiles: profilesQuery.data,
+    viewerPubkey: identity?.pubkey,
+  });
+  const namedChannels = React.useMemo(
+    () => visibleChannels.map(renameDm),
+    [renameDm, visibleChannels],
+  );
+  const namedChannelsRef = React.useRef(namedChannels);
+  namedChannelsRef.current = namedChannels;
+  const channelIdsKey = React.useMemo(
+    () =>
+      channels
+        .map((channel) => channel.id)
+        .sort()
+        .join(","),
+    [channels],
+  );
+
   React.useEffect(() => {
     const renderedPubkeys = profilePubkeyKey ? profilePubkeyKey.split(",") : [];
     if (!renderedPubkeys.length) return;
@@ -391,50 +415,37 @@ export function WorkspacePage({
   }, [profilePubkeyKey, queryClient]);
 
   React.useEffect(() => {
-    if (!identity || channels.length === 0) return;
-    const channelsById = new Map(
-      channels.map((channel) => [channel.id, channel]),
-    );
-    return subscribeToChannels(
-      channels.map((channel) => channel.id),
-      (event) => {
-        queryClient.setQueryData<WorkspaceMessage[]>(
-          ["channel-messages", event.channelId],
-          (current = []) =>
-            current.some((existing) => existing.id === event.id)
-              ? current
-              : [...current, event].sort(
-                  (a, b) =>
-                    a.created_at - b.created_at || a.id.localeCompare(b.id),
-                ),
-        );
-        recordIncomingMessage(event);
-        if (
-          !isConversationalWorkspaceMessage(event) ||
-          event.pubkey === identity.pubkey
-        ) {
-          return;
-        }
-        const channel = channelsById.get(event.channelId);
-        if (
-          channel &&
-          document.hidden &&
-          readBrowserPreferences(identity.pubkey).notifications &&
-          typeof Notification !== "undefined" &&
-          Notification.permission === "granted"
-        ) {
-          new Notification(`New message in #${channel.name}`, {
-            body:
-              event.content.length > 180
-                ? `${event.content.slice(0, 177)}…`
-                : event.content,
-            tag: `buzz-channel-${event.channelId}`,
-            silent: !readBrowserPreferences(identity.pubkey).notificationSound,
-          });
-        }
-      },
-    );
-  }, [channels, identity, queryClient, recordIncomingMessage]);
+    if (!identity || !channelIdsKey) return;
+    // Key the subscription on the sorted id list, not the channels array
+    // reference — otherwise every catalog refetch tears down and
+    // re-authenticates the live message socket.
+    return subscribeToChannels(channelIdsKey.split(","), (event) => {
+      queryClient.setQueryData<WorkspaceMessage[]>(
+        ["channel-messages", event.channelId],
+        (current = []) =>
+          current.some((existing) => existing.id === event.id)
+            ? current
+            : [...current, event].sort(
+                (a, b) =>
+                  a.created_at - b.created_at || a.id.localeCompare(b.id),
+              ),
+      );
+      recordIncomingMessage(event);
+      if (
+        !isConversationalWorkspaceMessage(event) ||
+        event.pubkey === identity.pubkey
+      ) {
+        return;
+      }
+      maybeNotifyChannelMessage({
+        channel: namedChannelsRef.current.find(
+          (candidate) => candidate.id === event.channelId,
+        ),
+        event,
+        viewerPubkey: identity.pubkey,
+      });
+    });
+  }, [channelIdsKey, identity, queryClient, recordIncomingMessage]);
 
   React.useEffect(() => {
     if (!identity) return;
@@ -534,21 +545,20 @@ export function WorkspacePage({
     }) => {
       if (!identity)
         throw new Error("Sign in before opening a direct message.");
+      const participants = [identity.pubkey, ...recipients];
+      // Reuse an existing conversation with the same people without a relay
+      // round trip; hidden conversations still publish 41010 to reopen.
+      const existing = findDirectMessageChannel(
+        channelsQuery.data ?? [],
+        participants,
+      );
+      if (existing && !hiddenDmChannelIds.has(existing.id.toLowerCase())) {
+        if (content.trim()) await sendWorkspaceMessage(existing.id, content);
+        return existing.id;
+      }
       await openDirectMessage(recipients);
       const refreshed = (await channelsQuery.refetch()).data ?? [];
-      const participantSet = new Set(
-        [identity.pubkey, ...recipients].map((pubkey) => pubkey.toLowerCase()),
-      );
-      const directMessage = refreshed.find((channel) => {
-        const members = new Set(
-          channel.memberPubkeys.map((pubkey) => pubkey.toLowerCase()),
-        );
-        return (
-          channel.type === "dm" &&
-          members.size === participantSet.size &&
-          [...participantSet].every((pubkey) => members.has(pubkey))
-        );
-      });
+      const directMessage = findDirectMessageChannel(refreshed, participants);
       if (!directMessage) {
         throw new Error(
           "The conversation opened, but is still syncing. Try again in a moment.",
@@ -719,12 +729,14 @@ export function WorkspacePage({
       <WorkspaceSidebar
         activeChannelId={activeChannelId}
         agents={agentsQuery.data ?? []}
-        channels={visibleChannels}
-        hiddenDirectMessages={channels.filter(
-          (channel) =>
-            channel.type === "dm" &&
-            hiddenDmChannelIds.has(channel.id.toLowerCase()),
-        )}
+        channels={namedChannels}
+        hiddenDirectMessages={channels
+          .filter(
+            (channel) =>
+              channel.type === "dm" &&
+              hiddenDmChannelIds.has(channel.id.toLowerCase()),
+          )
+          .map(renameDm)}
         identity={identity}
         alertsUnreadCount={alertsUnreadCount}
         inboxUnreadCount={inboxUnreadCount}
@@ -736,6 +748,7 @@ export function WorkspacePage({
         onClose={() => setSidebarOpen(false)}
         onCreateChannel={() => setCreateChannelOpen(true)}
         onAddAgent={(agent) => addAgentMutation.mutate(agent)}
+        onOpenAgents={() => setWorkspaceView("agents")}
         onOpenGuide={() => setGuideOpen(true)}
         onOpenInbox={() => setWorkspaceView("inbox")}
         onOpenAlerts={() => setWorkspaceView("alerts")}
@@ -782,7 +795,7 @@ export function WorkspacePage({
           />
         ) : workspaceView === "inbox" ? (
           <WorkspaceInbox
-            channels={visibleChannels}
+            channels={namedChannels}
             items={inboxItems}
             onDismissAll={dismissAllInboxItems}
             onDismissItem={dismissInboxItem}
@@ -802,7 +815,7 @@ export function WorkspacePage({
           />
         ) : workspaceView === "alerts" ? (
           <WorkspaceInbox
-            channels={visibleChannels}
+            channels={namedChannels}
             items={alertItems}
             mode="alerts"
             onDismissAll={() => {
@@ -857,7 +870,7 @@ export function WorkspacePage({
           />
         ) : (
           <WorkspaceConversation
-            activeChannel={activeChannel}
+            activeChannel={activeChannel ? renameDm(activeChannel) : null}
             agents={agentsQuery.data ?? []}
             customEmoji={customEmoji}
             expandedThreadIds={expandedThreadIds}
@@ -926,7 +939,7 @@ export function WorkspacePage({
       </main>
 
       <WorkspaceContentDialogs
-        activeChannel={activeChannel}
+        activeChannel={activeChannel ? renameDm(activeChannel) : null}
         addingDmMembers={addingDmMembers}
         addDmMemberError={
           addDmMemberMutation.error instanceof Error
