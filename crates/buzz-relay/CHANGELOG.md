@@ -1,5 +1,9 @@
 # Changelog
 
+## relay-v0.2.11
+
+- fix(web): workspace UX overhaul - unread, sections, DMs, avatars, emoji ([#57](https://github.com/Cvv9/buzz/pull/57)) ([`cfbb932d7`](https://github.com/Cvv9/buzz/commit/cfbb932d7f8c38bf12f7e90ccff7dd479424f805))
+
 ## relay-v0.2.10
 
 - fix: address Buzz web production audit ([#42](https://github.com/Cvv9/buzz/pull/42))
