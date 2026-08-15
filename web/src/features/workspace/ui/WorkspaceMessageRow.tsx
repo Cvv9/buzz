@@ -4,6 +4,7 @@ import {
 } from "@/features/custom-emoji/custom-emoji-policy";
 import { CustomEmojiMarkdown } from "@/features/custom-emoji/ui/CustomEmojiMarkdown";
 import { CustomEmojiPickerButton } from "@/features/custom-emoji/ui/CustomEmojiPickerButton";
+import { EmojiPickerButton } from "@/features/custom-emoji/ui/EmojiPickerButton";
 import {
   parseImetaTags,
   stripAttachmentMarkdown,
@@ -53,6 +54,11 @@ function MessageActions({
           {emoji}
         </button>
       ))}
+      <EmojiPickerButton
+        label="Choose a reaction"
+        placement="bottom"
+        onSelect={onReact}
+      />
       <CustomEmojiPickerButton
         emoji={customEmoji}
         label="Choose custom reaction"

@@ -302,6 +302,12 @@ importers:
 
   web:
     dependencies:
+      '@emoji-mart/data':
+        specifier: ^1.2.1
+        version: 1.2.1
+      '@emoji-mart/react':
+        specifier: ^1.1.1
+        version: 1.1.1(emoji-mart@5.6.0)(react@19.2.8)
       '@fontsource-variable/inter':
         specifier: ^5.2.8
         version: 5.2.8
@@ -335,6 +341,9 @@ importers:
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
+      emoji-mart:
+        specifier: ^5.6.0
+        version: 5.6.0
       isomorphic-git:
         specifier: ^1.38.3
         version: 1.38.7(patch_hash=e9b414a60d4cf1d8aa18f7a779483984e821989967c235662566e94ef0238d3f)

@@ -101,7 +101,40 @@ export function useAgentMentionDelivery({
         ),
       };
     },
-    onError: (error) => {
+    onMutate: (variables) => {
+      // Echo the message into the timeline immediately; the relay round trip
+      // replaces it with the accepted event or rolls it back on failure.
+      const channelId = activeChannelId ?? "";
+      if (!identity || !channelId) return { channelId, pendingId: null };
+      const pendingId = `pending-${crypto.randomUUID().replace(/-/g, "")}`;
+      const pending: WorkspaceMessage = {
+        id: pendingId,
+        pubkey: identity.pubkey,
+        created_at: Math.floor(Date.now() / 1000),
+        kind: 9,
+        tags: [["h", channelId]],
+        content: variables.content,
+        sig: "",
+        channelId,
+        parentEventId: variables.replyTo?.id ?? null,
+        rootEventId: variables.replyTo
+          ? (variables.replyTo.rootEventId ?? variables.replyTo.id)
+          : null,
+      };
+      queryClient.setQueryData<WorkspaceMessage[]>(
+        ["channel-messages", channelId],
+        (current = []) => [...current, pending],
+      );
+      return { channelId, pendingId };
+    },
+    onError: (error, _variables, context) => {
+      if (context?.pendingId) {
+        queryClient.setQueryData<WorkspaceMessage[]>(
+          ["channel-messages", context.channelId],
+          (current = []) =>
+            current.filter((message) => message.id !== context.pendingId),
+        );
+      }
       toast.error("Message was not sent", {
         description:
           error instanceof Error
@@ -109,11 +142,18 @@ export function useAgentMentionDelivery({
             : "The hosted agent could not be added to this channel.",
       });
     },
-    onSuccess: ({ addedAgents, channelId, channelName, event }, variables) => {
+    onSuccess: (
+      { addedAgents, channelId, channelName, event },
+      variables,
+      context,
+    ) => {
       queryClient.setQueryData<WorkspaceMessage[]>(
         ["channel-messages", channelId],
         (current = []) => [
-          ...current,
+          ...current.filter(
+            (message) =>
+              message.id !== context?.pendingId && message.id !== event.id,
+          ),
           {
             ...event,
             channelId,

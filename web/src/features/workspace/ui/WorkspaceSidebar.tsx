@@ -18,7 +18,7 @@ import {
 import { Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import varvikMark from "@/assets/varvik-mark.svg";
-import { makeBlossomGetAuthHeader } from "@/shared/lib/blossom-auth";
+import { useAuthenticatedPicture } from "@/shared/lib/authenticated-media";
 import { cn } from "@/shared/lib/cn";
 import { truncatePubkey } from "@/shared/lib/pubkey";
 import type {
@@ -29,6 +29,15 @@ import { agentRoleLabel } from "../agent-presentation";
 import type { BrowserIdentity } from "@/shared/lib/browser-identity";
 
 const SECTION_STORAGE_PREFIX = "buzz-web:channel-sections:v1";
+
+// Channels without a catalog section land in the community's default
+// "General" group instead of a separate "Channels" bucket. Sections merge
+// case-insensitively so an admin-typed "GENERAL" and the default become one.
+const DEFAULT_SECTION_LABEL = "General";
+
+export function channelSectionKey(channel: WorkspaceChannel): string {
+  return (channel.catalogSection.trim() || DEFAULT_SECTION_LABEL).toLowerCase();
+}
 
 type ChannelSectionId = string;
 type AgentSectionId = "hostedAgents" | "privateAgents" | "sharedAgents";
@@ -108,61 +117,6 @@ export function ProfileAvatar({
   );
 }
 
-function useAuthenticatedPicture(source?: string): string | undefined {
-  const [resolved, setResolved] = useState<string>();
-
-  useEffect(() => {
-    if (!source) {
-      setResolved(undefined);
-      return;
-    }
-
-    let url: URL;
-    try {
-      url = new URL(source, window.location.origin);
-    } catch {
-      setResolved(undefined);
-      return;
-    }
-
-    if (
-      url.origin !== window.location.origin ||
-      !url.pathname.startsWith("/media/")
-    ) {
-      setResolved(url.href);
-      return;
-    }
-
-    const controller = new AbortController();
-    let objectUrl: string | undefined;
-    setResolved(undefined);
-    void (async () => {
-      try {
-        const response = await fetch(url.href, {
-          headers: {
-            Authorization: await makeBlossomGetAuthHeader(url.href, {
-              requireDurableSigner: true,
-            }),
-          },
-          signal: controller.signal,
-        });
-        if (!response.ok) return;
-        objectUrl = URL.createObjectURL(await response.blob());
-        setResolved(objectUrl);
-      } catch {
-        // Keep the initials/bot fallback when the image cannot be authorized.
-      }
-    })();
-
-    return () => {
-      controller.abort();
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [source]);
-
-  return resolved;
-}
-
 export function WorkspaceSidebar({
   identity,
   profile,
@@ -184,6 +138,7 @@ export function WorkspaceSidebar({
   onReopenDirectMessage,
   hiddenDirectMessages,
   onAddAgent,
+  onOpenAgents,
   starredChannelIds,
   onToggleStar,
 }: {
@@ -207,6 +162,7 @@ export function WorkspaceSidebar({
   onReopenDirectMessage: (channel: WorkspaceChannel) => void;
   hiddenDirectMessages: WorkspaceChannel[];
   onAddAgent: (agent: WorkspaceProfile) => void;
+  onOpenAgents: () => void;
   starredChannelIds: ReadonlySet<string>;
   onToggleStar: (channelId: string) => void;
 }) {
@@ -215,10 +171,17 @@ export function WorkspaceSidebar({
   const favoriteChannels = streams.filter((channel) =>
     starredChannelIds.has(channel.id),
   );
+  const sectionLabels = new Map<string, string>();
   const catalogSections = [...streams]
     .filter((channel) => !starredChannelIds.has(channel.id))
     .reduce<Map<string, WorkspaceChannel[]>>((sections, channel) => {
-      const section = channel.catalogSection.trim() || "Channels";
+      const section = channelSectionKey(channel);
+      if (!sectionLabels.has(section)) {
+        sectionLabels.set(
+          section,
+          channel.catalogSection.trim() || DEFAULT_SECTION_LABEL,
+        );
+      }
       const entries = sections.get(section) ?? [];
       entries.push(channel);
       sections.set(section, entries);
@@ -250,8 +213,7 @@ export function WorkspaceSidebar({
       (channel) => channel.id === activeChannelId,
     );
     if (!activeChannel) return;
-    const section: ChannelSectionId =
-      activeChannel.catalogSection.trim() || "Channels";
+    const section: ChannelSectionId = channelSectionKey(activeChannel);
     setCollapsedSections((current) =>
       current[section] ? { ...current, [section]: false } : current,
     );
@@ -418,7 +380,7 @@ export function WorkspaceSidebar({
                     collapsed={collapsedSections[section] === true}
                     id={section}
                     key={section}
-                    label={section}
+                    label={sectionLabels.get(section) ?? section}
                     onSelectChannel={selectChannel}
                     onToggle={() => toggleSection(section)}
                     onToggleStar={onToggleStar}
@@ -495,25 +457,40 @@ export function WorkspaceSidebar({
           ) : null}
 
           <section>
-            <button
-              aria-controls="hosted-agents-content"
-              aria-expanded={!collapsedSections.hostedAgents}
-              className="mb-2 flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs font-semibold text-black/45 hover:bg-black/4 hover:text-black/65 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a5a500] dark:text-white/40 dark:hover:bg-white/5 dark:hover:text-white/60"
-              data-testid="hosted-agents-toggle"
-              type="button"
-              onClick={() => toggleSection("hostedAgents")}
-            >
-              <ChevronRight
-                className={cn(
-                  "size-3 shrink-0 transition-transform",
-                  collapsedSections.hostedAgents ? "" : "rotate-90",
-                )}
-              />
-              <span className="min-w-0 flex-1 truncate">Hosted agents</span>
-              <span className="text-[0.6875rem] font-normal tabular-nums text-black/35 dark:text-white/30">
-                {agents.length}
-              </span>
-            </button>
+            <div className="mb-2 flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs font-semibold text-black/45 hover:bg-black/4 hover:text-black/65 dark:text-white/40 dark:hover:bg-white/5 dark:hover:text-white/60">
+              <button
+                aria-controls="hosted-agents-content"
+                aria-expanded={!collapsedSections.hostedAgents}
+                aria-label={
+                  collapsedSections.hostedAgents
+                    ? "Expand AI agents"
+                    : "Collapse AI agents"
+                }
+                className="rounded p-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a5a500]"
+                data-testid="hosted-agents-toggle"
+                type="button"
+                onClick={() => toggleSection("hostedAgents")}
+              >
+                <ChevronRight
+                  className={cn(
+                    "size-3 shrink-0 transition-transform",
+                    collapsedSections.hostedAgents ? "" : "rotate-90",
+                  )}
+                />
+              </button>
+              <button
+                className="flex min-w-0 flex-1 items-center gap-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a5a500]"
+                data-testid="hosted-agents-open"
+                title="Your AI teammates — click to view and manage them"
+                type="button"
+                onClick={onOpenAgents}
+              >
+                <span className="min-w-0 flex-1 truncate">AI agents</span>
+                <span className="text-[0.6875rem] font-normal tabular-nums text-black/35 dark:text-white/30">
+                  {agents.length}
+                </span>
+              </button>
+            </div>
             {!collapsedSections.hostedAgents && agents.length ? (
               <div
                 className="space-y-3"
@@ -714,11 +691,24 @@ function ChannelSection({
   onToggleStar: (channelId: string) => void;
 }) {
   const contentId = `channel-section-${id}`;
+  // A collapsed section must keep its channels' unread messages visible, so
+  // the header carries the aggregate count while the rows are hidden.
+  const collapsedUnreadCount = collapsed
+    ? channels.reduce(
+        (total, channel) => total + (unreadChannelCounts.get(channel.id) ?? 0),
+        0,
+      )
+    : 0;
   return (
     <section>
       <button
         aria-controls={contentId}
         aria-expanded={!collapsed}
+        aria-label={
+          collapsedUnreadCount
+            ? `${label}, ${collapsedUnreadCount} unread message${collapsedUnreadCount === 1 ? "" : "s"}`
+            : undefined
+        }
         className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-[0.6875rem] font-semibold uppercase tracking-[0.08em] text-black/40 hover:bg-black/4 hover:text-black/60 dark:text-white/35 dark:hover:bg-white/5 dark:hover:text-white/55"
         type="button"
         onClick={onToggle}
@@ -730,6 +720,11 @@ function ChannelSection({
           )}
         />
         <span className="min-w-0 flex-1 truncate">{label}</span>
+        {collapsedUnreadCount ? (
+          <span className="min-w-5 shrink-0 rounded-full bg-orange-500 px-1.5 py-0.5 text-center text-[0.6875rem] font-semibold normal-case tabular-nums tracking-normal text-white">
+            {collapsedUnreadCount > 99 ? "99+" : collapsedUnreadCount}
+          </span>
+        ) : null}
       </button>
       {!collapsed ? (
         <div className="mt-0.5 space-y-0.5" id={contentId}>
