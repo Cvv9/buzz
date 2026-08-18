@@ -351,6 +351,9 @@ type E2eConfig = {
     /** Delay (ms) applied to continuation channel-window requests so e2e
      *  tests can observe the in-flight prepend window. 0/undefined = instant. */
     channelWindowDelayMs?: number;
+    /** Delay (ms) after snapshotting a newest channel-window response so tests
+     *  can deliver live events while that stale head page is in flight. */
+    channelWindowHeadSnapshotDelayMs?: number;
     profileReadDelayMs?: number;
     profileReadError?: string;
     /** Override whether get_profile reports a real kind:0 event. */
@@ -5174,15 +5177,37 @@ async function handleGetChannelWindow(
     return relayQuery(config, [filter]);
   };
 
-  if (!args.cursor) {
-    return execute();
-  }
-
   const probe = window as unknown as {
     __CHANNEL_WINDOW_FETCH_COUNT__?: number;
     __CHANNEL_WINDOW_INFLIGHT__?: number;
     __CHANNEL_WINDOW_INFLIGHT_PEAK__?: number;
   };
+  if (!args.cursor) {
+    const headSnapshotDelayMs =
+      getConfig()?.mock?.channelWindowHeadSnapshotDelayMs ?? 0;
+    if (headSnapshotDelayMs <= 0) {
+      return execute();
+    }
+    probe.__CHANNEL_WINDOW_INFLIGHT__ =
+      (probe.__CHANNEL_WINDOW_INFLIGHT__ ?? 0) + 1;
+    probe.__CHANNEL_WINDOW_INFLIGHT_PEAK__ = Math.max(
+      probe.__CHANNEL_WINDOW_INFLIGHT_PEAK__ ?? 0,
+      probe.__CHANNEL_WINDOW_INFLIGHT__,
+    );
+    try {
+      // Snapshot before waiting to reproduce an older relay response landing
+      // after a live reply or thread-summary event.
+      const snapshot = await execute();
+      await new Promise((resolve) =>
+        window.setTimeout(resolve, headSnapshotDelayMs),
+      );
+      return snapshot;
+    } finally {
+      probe.__CHANNEL_WINDOW_INFLIGHT__ =
+        (probe.__CHANNEL_WINDOW_INFLIGHT__ ?? 1) - 1;
+    }
+  }
+
   probe.__CHANNEL_WINDOW_FETCH_COUNT__ =
     (probe.__CHANNEL_WINDOW_FETCH_COUNT__ ?? 0) + 1;
 
