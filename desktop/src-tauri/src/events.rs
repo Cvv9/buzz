@@ -425,6 +425,10 @@ pub fn build_set_canvas(channel_id: Uuid, content: &str) -> Result<EventBuilder,
 
 // ── Profile ──────────────────────────────────────────────────────────────────
 
+#[path = "profile_event.rs"]
+mod profile_event;
+pub use profile_event::build_profile_with_existing;
+
 /// Kind 0 — NIP-01 profile metadata (full snapshot).
 pub fn build_profile(
     display_name: Option<&str>,
