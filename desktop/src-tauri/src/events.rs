@@ -134,47 +134,6 @@ pub fn build_leave(channel_id: Uuid) -> Result<EventBuilder, String> {
     Ok(EventBuilder::new(Kind::Custom(9022), "").tags(tags))
 }
 
-/// Kind 9002 — update channel name/description/visibility/ttl.
-/// `ttl`: outer `None` leaves it unchanged; `Some(Some(secs))` sets the
-/// ephemeral timeout; `Some(None)` clears it (emits `["ttl", ""]`).
-pub fn build_update_channel(
-    channel_id: Uuid,
-    name: Option<&str>,
-    about: Option<&str>,
-    visibility: Option<&str>,
-    ttl: Option<Option<i32>>,
-) -> Result<EventBuilder, String> {
-    if name.is_none() && about.is_none() && visibility.is_none() && ttl.is_none() {
-        return Err("at least one of name, about, visibility, or ttl must be provided".into());
-    }
-    if let Some(v) = visibility {
-        if v != "open" && v != "private" {
-            return Err("visibility must be \"open\" or \"private\"".into());
-        }
-    }
-    let name = name.map(buzz_sdk_pkg::canonical_channel_name);
-    if name.is_some_and(|name| name.trim().is_empty()) {
-        return Err("channel name is required".into());
-    }
-    let mut tags = vec![tag(vec!["h", &channel_id.to_string()])?];
-    if let Some(n) = name {
-        tags.push(tag(vec!["name", n])?);
-    }
-    if let Some(a) = about {
-        tags.push(tag(vec!["about", a])?);
-    }
-    if let Some(v) = visibility {
-        tags.push(tag(vec!["visibility", v])?);
-    }
-    if let Some(ttl) = ttl {
-        match ttl {
-            Some(secs) => tags.push(tag(vec!["ttl", &secs.to_string()])?),
-            None => tags.push(tag(vec!["ttl", ""])?),
-        }
-    }
-    Ok(EventBuilder::new(Kind::Custom(9002), "").tags(tags))
-}
-
 /// Kind 9002 — set topic.
 pub fn build_set_topic(channel_id: Uuid, topic: &str) -> Result<EventBuilder, String> {
     let tags = vec![
@@ -428,34 +387,6 @@ pub fn build_set_canvas(channel_id: Uuid, content: &str) -> Result<EventBuilder,
 #[path = "profile_event.rs"]
 mod profile_event;
 pub use profile_event::build_profile_with_existing;
-
-/// Kind 0 — NIP-01 profile metadata (full snapshot).
-pub fn build_profile(
-    display_name: Option<&str>,
-    name: Option<&str>,
-    picture: Option<&str>,
-    about: Option<&str>,
-    nip05: Option<&str>,
-) -> Result<EventBuilder, String> {
-    let mut map = serde_json::Map::new();
-    if let Some(v) = display_name {
-        map.insert("display_name".into(), serde_json::Value::String(v.into()));
-    }
-    if let Some(v) = name {
-        map.insert("name".into(), serde_json::Value::String(v.into()));
-    }
-    if let Some(v) = picture {
-        map.insert("picture".into(), serde_json::Value::String(v.into()));
-    }
-    if let Some(v) = about {
-        map.insert("about".into(), serde_json::Value::String(v.into()));
-    }
-    if let Some(v) = nip05 {
-        map.insert("nip05".into(), serde_json::Value::String(v.into()));
-    }
-    let content = serde_json::Value::Object(map).to_string();
-    Ok(EventBuilder::new(Kind::Custom(0), content))
-}
 
 // ── Huddles ──────────────────────────────────────────────────────────────────
 
@@ -778,7 +709,15 @@ mod tests {
     fn channel_builders_reject_hash_only_names() {
         let channel_id = Uuid::new_v4();
         assert!(build_create_channel(channel_id, "###", "open", "stream", None, None).is_err());
-        assert!(build_update_channel(channel_id, Some("###"), None, None, None).is_err());
+        assert!(build_update_channel_with_catalog_section(
+            channel_id,
+            Some("###"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .is_err());
     }
     /// Builder layout regression for the NIP-IA owner-of-agent archive flow.
     /// Compares against `docs/nips/NIP-IA.md` §Vector 1.
