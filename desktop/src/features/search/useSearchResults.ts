@@ -4,6 +4,10 @@ import {
   useManagedAgentsQuery,
   useRelayAgentsQuery,
 } from "@/features/agents/hooks";
+import {
+  getSharedChannelIds,
+  relayAgentIsSharedWithUser,
+} from "@/features/agents/lib/agentAutocompleteEligibility";
 import { useIsArchivedPredicate } from "@/features/identity-archive/hooks";
 import {
   useUserSearchQuery,
@@ -26,6 +30,7 @@ import {
 } from "@/features/search/lib/parseSearchOperators";
 import type { SearchResult } from "@/features/search/ui/SearchResultItem";
 import type { Channel, SearchHit, UserSearchResult } from "@/shared/api/types";
+import { useIdentityQuery } from "@/shared/api/hooks";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 
 function formatUserResultName(user: UserSearchResult) {
@@ -112,6 +117,7 @@ export function useSearchResults({
   const [debouncedQuery, setDebouncedQuery] = React.useState("");
   const [selectedIndex, setSelectedIndex] = React.useState(0);
   const isArchivedDiscovery = useIsArchivedPredicate();
+  const identityQuery = useIdentityQuery();
 
   const channelLookup = React.useMemo(
     () => new Map(channels.map((channel) => [channel.id, channel])),
@@ -303,17 +309,32 @@ export function useSearchResults({
       ),
     [relayAgentsQuery.data],
   );
+  const sharedChannelIds = React.useMemo(
+    () => getSharedChannelIds(channels),
+    [channels],
+  );
   const eligibleAgentPubkeys = React.useMemo(() => {
     const pubkeys = new Set(managedAgentPubkeys);
 
     for (const agent of relayAgentsQuery.data ?? []) {
-      if (agent.respondTo === "anyone") {
+      if (
+        relayAgentIsSharedWithUser(
+          agent,
+          sharedChannelIds,
+          identityQuery.data?.pubkey,
+        )
+      ) {
         pubkeys.add(normalizePubkey(agent.pubkey));
       }
     }
 
     return pubkeys;
-  }, [managedAgentPubkeys, relayAgentsQuery.data]);
+  }, [
+    identityQuery.data?.pubkey,
+    managedAgentPubkeys,
+    relayAgentsQuery.data,
+    sharedChannelIds,
+  ]);
   const userResults = React.useMemo<UserSearchResult[]>(() => {
     if (scopeChannelId || ftsQuery.length < MIN_SEARCH_QUERY_LENGTH) {
       return [];
@@ -369,16 +390,16 @@ export function useSearchResults({
     }
 
     for (const agent of relayAgentsQuery.data ?? []) {
-      if (agent.respondTo !== "anyone") {
+      if (!eligibleAgentPubkeys.has(normalizePubkey(agent.pubkey))) {
         continue;
       }
 
       const candidate = {
         pubkey: agent.pubkey,
         displayName: agent.name,
-        avatarUrl: null,
+        avatarUrl: agent.avatarUrl ?? null,
         nip05Handle: null,
-        ownerPubkey: null,
+        ownerPubkey: agent.ownerPubkey ?? null,
         isAgent: true,
       };
 

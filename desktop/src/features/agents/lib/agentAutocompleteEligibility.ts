@@ -104,7 +104,10 @@ export function relayAgentIsSharedWithUser(
 }
 
 export function relayAgentCanRespondInChannel(
-  agent: Pick<RelayAgent, "channelIds" | "respondTo" | "respondToAllowlist">,
+  agent: Pick<
+    RelayAgent,
+    "channelIds" | "ownerPubkey" | "respondTo" | "respondToAllowlist"
+  >,
   channelId: string,
   currentPubkey?: string | null,
 ) {

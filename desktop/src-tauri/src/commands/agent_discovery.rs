@@ -1,14 +1,7 @@
-use tauri::State;
-
-use crate::{
-    app_state::AppState,
-    managed_agents::{
-        command_availability, is_npm_global_install, AcpRuntimeCatalogEntry,
-        DiscoverManagedAgentPrereqsRequest, InstallRuntimeResult, ManagedAgentPrereqsInfo,
-        RelayAgentInfo, DEFAULT_ACP_COMMAND,
-    },
-    nostr_convert,
-    relay::query_relay,
+use crate::managed_agents::{
+    command_availability, is_npm_global_install, AcpRuntimeCatalogEntry,
+    DiscoverManagedAgentPrereqsRequest, InstallRuntimeResult, ManagedAgentPrereqsInfo,
+    DEFAULT_ACP_COMMAND,
 };
 
 mod post_install_verification;
@@ -1037,163 +1030,30 @@ pub async fn discover_managed_agent_prereqs(
     .map_err(|e| format!("spawn_blocking failed: {e}"))
 }
 
-#[tauri::command]
-pub async fn list_relay_agents(state: State<'_, AppState>) -> Result<Vec<RelayAgentInfo>, String> {
-    // Query kind:10100 agent profile events from the relay.
-    let events = query_relay(
-        &state,
-        &[serde_json::json!({
-            "kinds": [10100],
-        })],
-    )
-    .await?;
-
-    // The convert helper returns `{"agents": [...]}`. Extract and re-deserialize
-    // into the strongly-typed `Vec<RelayAgentInfo>` the frontend expects.
-    let value = nostr_convert::agents_from_events(&events);
-    let mut agents: Vec<RelayAgentInfo> = serde_json::from_value(
-        value
-            .get("agents")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!([])),
-    )
-    .map_err(|e| format!("agent parse failed: {e}"))?;
-
-    // Hosted agents own their kind:10100 directory event, so an administrator
-    // cannot safely rewrite it. Merge public, admin-authored parameterized
-    // projections instead. Every client must see the same authorized head.
-    let config_events = query_relay(
-        &state,
-        &[serde_json::json!({
-            "kinds": [
-                buzz_core_pkg::kind::KIND_HOSTED_AGENT_CONFIG,
-                buzz_core_pkg::kind::KIND_MANAGED_AGENT,
-            ],
-        })],
-    )
-    .await?;
-    let membership_events = query_relay(
-        &state,
-        &[serde_json::json!({
-            "kinds": [buzz_core_pkg::kind::KIND_NIP43_MEMBERSHIP_LIST],
-            "limit": 1,
-        })],
-    )
-    .await?;
-    let admin_pubkeys: std::collections::HashSet<String> = membership_events
-        .first()
-        .map(|event| {
-            event
-                .tags
-                .iter()
-                .filter_map(|tag| {
-                    let parts = tag.as_slice();
-                    let role = parts.get(2).map(String::as_str).unwrap_or("member");
-                    (parts.first().map(String::as_str) == Some("member")
-                        && matches!(role, "owner" | "admin"))
-                    .then(|| parts.get(1).cloned())
-                    .flatten()
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    let mut latest_config_head = std::collections::HashMap::<String, (u64, String)>::new();
-
-    for event in config_events {
-        let d_tag = event.tags.iter().find_map(|tag| {
-            let parts = tag.as_slice();
-            (parts.first().map(String::as_str) == Some("d"))
-                .then(|| parts.get(1).cloned())
-                .flatten()
-        });
-        let Some(d_tag) = d_tag else {
-            continue;
-        };
-        let Ok(config) = serde_json::from_str::<serde_json::Value>(&event.content) else {
-            continue;
-        };
-        let kind = event.kind.as_u16() as u32;
-        let is_canonical = kind == buzz_core_pkg::kind::KIND_HOSTED_AGENT_CONFIG;
-        let is_compat_projection = kind == buzz_core_pkg::kind::KIND_MANAGED_AGENT;
-        if !is_canonical && !is_compat_projection {
-            continue;
-        }
-        if config.get("schema").and_then(serde_json::Value::as_str)
-            != Some("buzz.hosted-agent-config.v1")
-        {
-            continue;
-        }
-        let declared_agent_pubkey = config
-            .get("agent_pubkey")
-            .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|value| value.len() == 64 && value.chars().all(|c| c.is_ascii_hexdigit()))
-            .map(str::to_ascii_lowercase);
-        let d_target = if is_compat_projection {
-            d_tag.strip_prefix("hosted-agent:")
-        } else {
-            Some(d_tag.as_str())
-        }
-        .filter(|value| value.len() == 64 && value.chars().all(|c| c.is_ascii_hexdigit()))
-        .map(str::to_ascii_lowercase);
-        let (Some(agent_pubkey), Some(d_target)) = (declared_agent_pubkey, d_target) else {
-            continue;
-        };
-        // Both forms bind their JSON target to the NIP-33 coordinate. This
-        // prevents a valid admin signature over one agent's document from
-        // being applied as an overlay to another agent.
-        if agent_pubkey != d_target {
-            continue;
-        }
-        let Some(agent) = agents
-            .iter_mut()
-            .find(|agent| agent.pubkey.eq_ignore_ascii_case(&agent_pubkey))
-        else {
-            continue;
-        };
-        let author = event.pubkey.to_hex().to_ascii_lowercase();
-        let declared_owner = agent.owner_pubkey.as_deref().unwrap_or_default();
-        if !admin_pubkeys.contains(&author) && !declared_owner.eq_ignore_ascii_case(&author) {
-            continue;
-        }
-        let head = (event.created_at.as_secs(), event.id.to_hex());
-        if latest_config_head
-            .get(&agent_pubkey)
-            .is_some_and(|latest| *latest >= head)
-        {
-            continue;
-        }
-        latest_config_head.insert(agent_pubkey.clone(), head);
-        if let Some(name) = config
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
-            agent.name = name.to_string();
-        }
-        if let Some(avatar_url) = config.get("avatar_url") {
-            agent.avatar_url = avatar_url
-                .as_str()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string);
-        }
-        if let Some(model) = config.get("model") {
-            agent.model = model
-                .as_str()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string);
-        }
-    }
-
-    Ok(agents)
-}
+mod relay_directory;
+#[cfg(test)]
+use relay_directory::advance_relay_cursor;
+pub use relay_directory::list_relay_agents;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relay_directory_cursor_uses_timestamp_and_event_id() {
+        use nostr::{EventBuilder, Keys, Kind, Timestamp};
+
+        let event = EventBuilder::new(Kind::Custom(30177), "{}")
+            .custom_created_at(Timestamp::from(42))
+            .sign_with_keys(&Keys::generate())
+            .expect("sign cursor event");
+        let mut filter = serde_json::json!({"kinds": [30177]});
+
+        advance_relay_cursor(&mut filter, std::slice::from_ref(&event));
+
+        assert_eq!(filter["until"], 42);
+        assert_eq!(filter["before_id"], event.id.to_hex());
+    }
 
     // ── is_npm_global_install ─────────────────────────────────────────────────
 

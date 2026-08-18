@@ -270,9 +270,9 @@ export type RelayMember = {
   addedBy: string | null;
   createdAt: string;
 };
-
 export type RelayAgent = {
   pubkey: string;
+  ownerPubkey?: string | null;
   name: string;
   /** Avatar declared in the authoritative kind:10100 agent directory entry. */
   avatarUrl?: string | null;
@@ -284,7 +284,6 @@ export type RelayAgent = {
   respondTo: RespondToMode | null;
   respondToAllowlist: string[];
   audience?: "community" | "owner";
-  ownerPubkey?: string | null;
   accessTier?: "shared" | "personal" | "admin";
   /** Admin-authored desired model for this hosted agent. */
   model?: string | null;

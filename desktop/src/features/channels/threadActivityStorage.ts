@@ -132,7 +132,7 @@ export function addThreadActivityItems(
  */
 export function removeLegacyThreadActivityKey(pubkey: string): void {
   try {
-    window.localStorage.removeItem(`${ACTIVITY_STORAGE_PREFIX}:${pubkey}`);
+    window.localStorage.removeItem(`buzz-thread-activity.v1:${pubkey}`);
   } catch {
     // Ignore storage errors.
   }
