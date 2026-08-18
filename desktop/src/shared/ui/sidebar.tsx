@@ -423,6 +423,7 @@ const SidebarRail = React.forwardRef<
   (
     {
       className,
+      onLostPointerCapture,
       onPointerCancel,
       onPointerDown,
       onPointerMove,
@@ -541,6 +542,10 @@ const SidebarRail = React.forwardRef<
           resizeState.currentWidth = nextWidth;
           setSidebarWidth(nextWidth);
         }}
+        onLostPointerCapture={(event) => {
+          onLostPointerCapture?.(event);
+          finishResize(event);
+        }}
         onPointerUp={(event) => {
           onPointerUp?.(event);
           finishResize(event);
@@ -549,7 +554,9 @@ const SidebarRail = React.forwardRef<
         className={cn(
           "absolute inset-y-0 z-20 hidden w-4 -translate-x-1/2 transition-all ease-linear group-data-[side=left]:-right-4 group-data-[side=right]:left-0 sm:flex",
           "cursor-col-resize",
-          "after:absolute after:bottom-0 after:left-1/2 after:top-6 after:z-10 after:w-px after:-translate-x-1/2 after:bg-transparent after:content-['']",
+          "after:absolute after:bottom-0 after:left-1/2 after:top-6 after:z-10 after:w-px after:-translate-x-1/2 after:bg-transparent after:transition-[background-color,box-shadow] after:duration-150 after:content-['']",
+          "hover:after:bg-sidebar-border hover:after:shadow-[0_0_0_1px_hsl(var(--sidebar-border)/0.16)]",
+          "group-data-[resizing=true]:after:bg-sidebar-ring group-data-[resizing=true]:after:shadow-[0_0_0_1px_hsl(var(--sidebar-ring)/0.2)]",
           "disabled:pointer-events-none disabled:hidden",
           className,
         )}

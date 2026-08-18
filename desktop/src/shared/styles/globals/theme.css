@@ -152,7 +152,21 @@
 
   body {
     @apply bg-background text-foreground antialiased;
+    cursor: default;
     font-family: "Inter Variable", Inter, "Avenir Next", "Segoe UI", sans-serif;
+  }
+
+  /*
+   * Buzz is an application shell, not a document page. Chromium otherwise
+   * swaps to an I-beam over every selectable label and empty-state sentence,
+   * which makes inert chrome look editable. Keep the desktop arrow across the
+   * shell and opt actual editing surfaces back into the text cursor.
+   */
+  input,
+  textarea,
+  [contenteditable="true"],
+  [contenteditable="plaintext-only"] {
+    cursor: text;
   }
 
   /*
