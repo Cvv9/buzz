@@ -190,6 +190,22 @@ test("relayAgentIsSharedWithUser: accepts owner-only hosted agents for their own
   );
 });
 
+test("relayAgentIsSharedWithUser: accepts verified same-owner agents across machines", () => {
+  assert.equal(
+    relayAgentIsSharedWithUser(
+      {
+        ownerPubkey: CURRENT_PUBKEY.toUpperCase(),
+        respondTo: "owner-only",
+        respondToAllowlist: [],
+        channelIds: ["general"],
+      },
+      new Set(["general"]),
+      CURRENT_PUBKEY,
+    ),
+    true,
+  );
+});
+
 test("relayAgentIsSharedWithUser: accepts allowlist agents for the current user", () => {
   const sharedChannelIds = new Set(["general"]);
 

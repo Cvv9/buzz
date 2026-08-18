@@ -100,6 +100,7 @@ type RawSearchResponse = {
 
 type RawRelayAgent = {
   pubkey: string;
+  owner_pubkey?: string | null;
   name: string;
   avatar_url?: string | null;
   agent_type: string;
@@ -110,12 +111,10 @@ type RawRelayAgent = {
   respond_to?: RelayAgent["respondTo"];
   respond_to_allowlist?: string[];
   audience?: string;
-  owner_pubkey?: string | null;
   access_tier?: string;
   model?: string | null;
   models?: Array<{ id: string; name?: string | null }>;
 };
-
 import type { RestartDiffEntry as RawRestartDiffEntry } from "./restartDiff";
 export type RawManagedAgent = {
   pubkey: string;
@@ -658,10 +657,10 @@ export async function createAuthEvent(input: {
   const eventJson = await invokeTauri<string>("create_auth_event", input);
   return JSON.parse(eventJson) as RelayEvent;
 }
-
 function fromRawRelayAgent(agent: RawRelayAgent): RelayAgent {
   return {
     pubkey: agent.pubkey,
+    ownerPubkey: agent.owner_pubkey ?? null,
     name: agent.name,
     avatarUrl: agent.avatar_url ?? null,
     agentType: agent.agent_type,
@@ -675,7 +674,6 @@ function fromRawRelayAgent(agent: RawRelayAgent): RelayAgent {
       agent.audience === "owner" || agent.audience === "community"
         ? agent.audience
         : undefined,
-    ownerPubkey: agent.owner_pubkey ?? null,
     accessTier:
       agent.access_tier === "shared" ||
       agent.access_tier === "personal" ||

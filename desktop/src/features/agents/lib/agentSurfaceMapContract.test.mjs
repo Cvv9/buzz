@@ -70,9 +70,10 @@ test("historical Inbox presentation overlays the current hosted directory", () =
 });
 
 test("desktop and web hosted configuration readers remain represented", () => {
-  const desktopReader = read(
-    "desktop/src-tauri/src/commands/agent_discovery.rs",
-  );
+  const desktopReader = [
+    read("desktop/src-tauri/src/commands/agent_discovery.rs"),
+    read("desktop/src-tauri/src/commands/agent_discovery/relay_directory.rs"),
+  ].join("\n");
   const webReader = read("web/src/features/workspace/workspace-api.ts");
 
   for (const [surface, source] of [
