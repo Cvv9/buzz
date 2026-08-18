@@ -6,12 +6,6 @@ ignore = [
     # paste 1.0.15 — unmaintained. Transitive dep: mesh-llm → iroh → netlink-* → paste.
     # No safe upgrade available; tracked for upstream (iroh/netlink) replacement.
     { id = "RUSTSEC-2024-0436", reason = "transitive dep via mesh-llm → iroh → netlink; no upstream fix available" },
-    # nostr-relay-pool 0.44.3 — standalone crate is now unmaintained, but the
-    # pinned mesh-llm v0.74.0 runtime still reaches it through nostr-sdk 0.44.1.
-    # This advisory does not report a vulnerability and no compatible upstream
-    # replacement is available in that pinned graph. Remove with the mesh-llm
-    # upgrade that folds relay-pool functionality into its maintained client.
-    { id = "RUSTSEC-2026-0243", reason = "transitive via pinned mesh-llm→nostr-sdk; unmaintained-only advisory with no compatible upstream fix" },
     # quick-xml < 0.41: quadratic runtime on duplicate-attribute check (0194) and
     # unbounded namespace-declaration allocation in NsReader (0195). Both DoS-class,
     # requiring attacker-controlled XML. Our two locked versions only parse trusted
