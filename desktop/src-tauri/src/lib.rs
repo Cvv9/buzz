@@ -40,6 +40,7 @@ mod templates;
 mod terminal_runtime;
 #[cfg_attr(not(test), allow(dead_code))]
 mod terminal_transport;
+mod tray;
 #[cfg(target_os = "macos")]
 mod tray_menu;
 mod util;
@@ -315,6 +316,7 @@ pub fn run() {
         .manage(BuilderlabLogin::default())
         .manage(commands::pairing::PairingHandle::new())
         .manage(terminal_runtime::TerminalSessions::default())
+        .on_window_event(tray::handle_window_event)
         .setup(move |app| {
             let app_handle = app.handle().clone();
             #[cfg(target_os = "macos")]
@@ -897,6 +899,7 @@ pub fn run() {
             fetch_workspace_icon,
             fetch_join_policy,
             set_prevent_sleep_active,
+            set_close_to_tray,
             get_agent_memory,
             relay_reconnect_hook,
             relay_reconnect_hook_configured,
@@ -974,6 +977,10 @@ pub fn run() {
             }
         }
         RunEvent::ExitRequested { code, .. } => {
+            app_handle
+                .state::<AppState>()
+                .quitting
+                .store(true, Ordering::SeqCst);
             if is_restart_request(code) {
                 restart_requested.store(true, Ordering::SeqCst);
             }

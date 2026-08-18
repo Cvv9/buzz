@@ -15,7 +15,6 @@ import {
 import {
   buildReplyTags,
   getThreadReference,
-  isBroadcastReply,
   normalizeMentionPubkeys,
   resolveReplyRootId,
 } from "@/features/messages/lib/threading";
@@ -321,7 +320,6 @@ export function useChannelSubscription(channel: Channel | null) {
           (current = []) => mergeMessages(current, event),
         );
       }
-      if (!isBroadcastReply(event.tags)) return;
     }
     if (!isTimelineRow && !CHANNEL_AUX_KINDS.has(event.kind)) return;
     if (!isTimelineRow) {
