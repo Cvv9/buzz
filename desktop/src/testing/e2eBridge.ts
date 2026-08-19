@@ -116,10 +116,15 @@ type MockRelayAgentSeed = {
   pubkey: string;
   ownerPubkey?: string | null;
   name: string;
+  avatarUrl?: string | null;
   agentType?: string;
   capabilities?: string[];
   respondTo?: RawRelayAgent["respond_to"];
   respondToAllowlist?: string[];
+  audience?: NonNullable<RawRelayAgent["audience"]>;
+  accessTier?: NonNullable<RawRelayAgent["access_tier"]>;
+  model?: string | null;
+  models?: Array<{ id: string; name?: string | null }>;
   channelNames?: string[];
   channelIds?: string[];
   status?: PresenceStatus;
