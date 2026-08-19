@@ -35,8 +35,7 @@ test("admin can edit a hosted agent identity and advertised model", async ({
 
   const profile = page.getByTestId("user-profile-panel");
   await expect(profile).toContainText("Lanaya");
-  await page.getByTestId("user-profile-settings-menu-trigger").click();
-  await page.getByTestId("user-profile-agent-edit").click();
+  await page.getByTestId("user-profile-header-edit-agent").click();
 
   const dialog = page.getByTestId("hosted-agent-edit-dialog");
   await expect(dialog).toBeVisible();
