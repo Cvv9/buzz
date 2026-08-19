@@ -2,7 +2,9 @@
 import {
   DndContext,
   DragOverlay,
+  KeyboardSensor,
   PointerSensor,
+  closestCenter,
   pointerWithin,
   useDraggable,
   useDroppable,
@@ -13,6 +15,7 @@ import type { DragEndEvent, DragStartEvent } from "@dnd-kit/core";
 import {
   SortableContext,
   arrayMove,
+  sortableKeyboardCoordinates,
   verticalListSortingStrategy,
   useSortable,
 } from "@dnd-kit/sortable";
@@ -26,6 +29,15 @@ export type DndChannelData = { type: "channel"; channelId: string };
 export type DndSectionData = { type: "section"; sectionId: string };
 export type DndSectionDropData = { type: "section-drop"; sectionId: string };
 export type DndUngroupedData = { type: "ungrouped" };
+
+const sidebarCollisionDetection = (
+  args: Parameters<typeof pointerWithin>[0],
+) => {
+  const pointerCollisions = pointerWithin(args);
+  // Keyboard drags have no pointer coordinates. Fall back to geometry so
+  // sortable sections remain accessible and resolve a drop target correctly.
+  return pointerCollisions.length > 0 ? pointerCollisions : closestCenter(args);
+};
 
 export function DraggableChannelRow({
   channelId,
@@ -204,6 +216,9 @@ export function SidebarDndContext({
     React.useState<SidebarDragItem | null>(null);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
   );
 
   const handleDragStart = React.useCallback(
@@ -261,7 +276,7 @@ export function SidebarDndContext({
 
   return (
     <DndContext
-      collisionDetection={pointerWithin}
+      collisionDetection={sidebarCollisionDetection}
       onDragEnd={handleDragEnd}
       onDragStart={handleDragStart}
       sensors={sensors}
