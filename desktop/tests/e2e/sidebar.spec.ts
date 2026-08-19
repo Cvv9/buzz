@@ -571,11 +571,24 @@ test("aligns the sidebar search with the channel title outside the Buzz theme", 
 test("sidebar rail resizes without toggling the sidebar", async ({ page }) => {
   await page.goto("/");
   const rail = page.getByRole("button", { name: "Resize sidebar" });
+  await expect(rail).toHaveCSS("cursor", "col-resize");
   await rail.click();
   await expect(page.getByTestId("app-sidebar")).toBeVisible();
 
   await page.getByRole("button", { name: "Toggle Sidebar" }).click();
   await expect(rail).toBeHidden();
+});
+
+test("reserves the text cursor for editable surfaces", async ({ page }) => {
+  await page.goto("/");
+  await page.getByTestId("channel-general").click();
+
+  await expect(page.locator("body")).toHaveCSS("cursor", "default");
+  await expect(page.getByTestId("chat-title")).toHaveCSS("cursor", "default");
+  await expect(page.locator('[contenteditable="true"]').first()).toHaveCSS(
+    "cursor",
+    "text",
+  );
 });
 
 test("resizes, persists, and snaps to the default sidebar width", async ({

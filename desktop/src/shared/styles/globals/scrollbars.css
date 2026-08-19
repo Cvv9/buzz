@@ -1,15 +1,6 @@
-.buzz-sidebar-scrollbar {
-  scrollbar-color: transparent transparent;
-}
-
-.buzz-sidebar-scrollbar:hover {
-  scrollbar-color: var(
-      --buzz-sidebar-scrollbar-thumb,
-      hsl(var(--sidebar-border) / 0.8)
-    )
-    transparent;
-}
-
+/* Keep the standard `scrollbar-color` property unset here. Chromium gives it
+ * precedence over the WebKit pseudo-elements below; on Windows that restores
+ * the thick native track and arrow buttons instead of this quiet overlay. */
 .buzz-sidebar-scrollbar::-webkit-scrollbar {
   height: 10px;
   width: 10px;
