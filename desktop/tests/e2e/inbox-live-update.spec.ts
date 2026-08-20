@@ -283,6 +283,7 @@ test.describe("inbox stable-conversation regressions", () => {
   }) => {
     await installMockBridge(page);
     await page.goto("/");
+    await page.getByTestId("open-alerts-view").click();
     await expect(getListPane(page)).toBeVisible();
     await waitForBridgeReady(page);
     await installScrollSpy(page);
@@ -404,6 +405,7 @@ test.describe("inbox stable-conversation regressions", () => {
   }) => {
     await installMockBridge(page);
     await page.goto("/");
+    await page.getByTestId("open-alerts-view").click();
     await expect(getListPane(page)).toBeVisible();
     await waitForBridgeReady(page);
     await installScrollSpy(page);
@@ -540,6 +542,7 @@ test.describe("inbox stable-conversation regressions", () => {
 
     await installMockBridge(page);
     await page.goto("/");
+    await page.getByTestId("open-alerts-view").click();
     await expect(getListPane(page)).toBeVisible();
     await waitForBridgeReady(page);
 
@@ -753,6 +756,7 @@ test.describe("inbox stable-conversation regressions", () => {
 
     await installMockBridge(page);
     await page.goto("/");
+    await page.getByTestId("open-alerts-view").click();
     await expect(getListPane(page)).toBeVisible();
     await waitForBridgeReady(page);
 
@@ -863,7 +867,10 @@ test.describe("inbox stable-conversation regressions", () => {
           channel_id: channelId,
           channel_name: "general",
           tags: unrelated.tags,
-          category: "needs_action",
+          // Alerts displays direct mentions (and thread replies), whereas
+          // needs-action items belong to the approval-focused Inbox. Keep
+          // this deliberately unrelated live update visible on this surface.
+          category: "mention",
         });
       },
       {
@@ -952,6 +959,7 @@ test.describe("inbox stable-conversation regressions", () => {
 
     await installMockBridge(page);
     await page.goto("/");
+    await page.getByTestId("open-alerts-view").click();
     await expect(getListPane(page)).toBeVisible();
     await waitForBridgeReady(page);
     await installScrollSpy(page);
@@ -1131,6 +1139,7 @@ test.describe("inbox stable-conversation regressions", () => {
 
     await installMockBridge(page);
     await page.goto("/");
+    await page.getByTestId("open-alerts-view").click();
     await expect(getListPane(page)).toBeVisible();
     await waitForBridgeReady(page);
     await installScrollSpy(page);
@@ -1341,6 +1350,7 @@ test.describe("inbox stable-conversation regressions", () => {
 
     await installMockBridge(page);
     await page.goto("/");
+    await page.getByTestId("open-alerts-view").click();
     await expect(getListPane(page)).toBeVisible();
     await waitForBridgeReady(page);
     await installScrollSpy(page);

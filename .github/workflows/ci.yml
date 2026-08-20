@@ -143,7 +143,10 @@ jobs:
   desktop-core:
     name: Desktop Core
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # A cold Ubuntu image can spend most of an hour installing the WebKit/GTK
+    # development stack before the two clean/flagged Tauri recompilation passes.
+    # Leave headroom for the real test and compiled-flag verification afterwards.
+    timeout-minutes: 90
     needs: [changes]
     if: github.event_name == 'push' || needs.changes.outputs.desktop == 'true' || needs.changes.outputs.desktop-rust == 'true' || needs.changes.outputs.rust == 'true'
     permissions:

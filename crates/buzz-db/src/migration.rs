@@ -1324,15 +1324,15 @@ mod tests {
         );
     }
 
-    /// Structural parity between migration 0029's deletion surface and the
+    /// Structural parity between migration 0033's deletion surface and the
     /// desired-state bootstrap schema (`schema/schema.sql`).
     ///
     /// Compares parsed statements, not substrings: every deletion control-
-    /// plane table, function, trigger, and index 0028 creates must exist in
+    /// plane table, function, trigger, and index 0033 creates must exist in
     /// schema.sql with an identical normalized definition; every operator-
-    /// global registry row 0028 inserts must be inserted by schema.sql; the
+    /// global registry row 0033 inserts must be inserted by schema.sql; the
     /// write-fence attachment target sets must be equal; and every column
-    /// 0028 adds to `communities` must exist in the desired-state
+    /// 0033 adds to `communities` must exist in the desired-state
     /// `communities` table. A desired-state bootstrap that passes this test
     /// cannot silently omit part of the deletion surface the way the
     /// pre-parity schema.sql omitted `community_deletion_manifest_keys` (and
@@ -1340,7 +1340,7 @@ mod tests {
     /// healthy, then wedging post-fence when the freeze stage first touched
     /// the missing relation.
     #[test]
-    fn deletion_surface_parity_between_migration_0029_and_schema_sql() {
+    fn deletion_surface_parity_between_migration_0033_and_schema_sql() {
         use std::collections::BTreeMap;
 
         #[derive(Default)]
@@ -1431,10 +1431,10 @@ mod tests {
             surface
         }
 
-        let migration_0029: &str = MIGRATOR
+        let migration_0033: &str = MIGRATOR
             .iter()
-            .find(|migration| migration.version == 29)
-            .expect("embedded migration 0029")
+            .find(|migration| migration.version == 33)
+            .expect("embedded migration 0033")
             .sql
             .as_ref();
         let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -1444,13 +1444,13 @@ mod tests {
         let schema_sql = std::fs::read_to_string(workspace_root.join("schema/schema.sql"))
             .expect("read schema/schema.sql");
 
-        let migration = surface(migration_0029);
+        let migration = surface(migration_0033);
         let schema = surface(&schema_sql);
 
         assert_eq!(
             migration.tables.len(),
             7,
-            "0029 deletion control plane must define exactly the known tables: {:?}",
+            "0033 deletion control plane must define exactly the known tables: {:?}",
             migration.tables.keys().collect::<Vec<_>>()
         );
         assert!(!migration.fence_attachments.is_empty());
@@ -1464,7 +1464,7 @@ mod tests {
             if table != "community_deletion_requests" {
                 assert_eq!(
                     in_schema, definition,
-                    "schema.sql definition of {table} drifted from migration 0029"
+                    "schema.sql definition of {table} drifted from migration 0033"
                 );
             }
         }
@@ -1476,7 +1476,7 @@ mod tests {
             if function != "community_write_fence_excluded_table" {
                 assert_eq!(
                     in_schema, definition,
-                    "schema.sql definition of {function}() drifted from migration 0029"
+                    "schema.sql definition of {function}() drifted from migration 0033"
                 );
             }
         }
@@ -1487,7 +1487,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("schema.sql is missing deletion trigger {trigger}"));
             assert_eq!(
                 in_schema, definition,
-                "schema.sql definition of trigger {trigger} drifted from migration 0029"
+                "schema.sql definition of trigger {trigger} drifted from migration 0033"
             );
         }
         for index in &migration.indexes {

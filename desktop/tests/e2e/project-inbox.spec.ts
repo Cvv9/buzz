@@ -55,6 +55,11 @@ test("Buzz Git pull request renders and stays actionable in Projects", async ({
     page.getByRole("button", { name: "Merge", exact: true }),
   ).toBeVisible();
 
+  const detail = page
+    .getByTestId("project-workspace-panel")
+    .locator(":scope > [data-project-detail-panel]:visible");
+  const layout = detail.locator(":scope > .grid");
+
   await waitForAnimations(page);
   await page.screenshot({
     path: "test-results/project-pull-request/01-pull-request-detail.png",

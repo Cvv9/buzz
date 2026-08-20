@@ -116,10 +116,15 @@ type MockRelayAgentSeed = {
   pubkey: string;
   ownerPubkey?: string | null;
   name: string;
+  avatarUrl?: string | null;
   agentType?: string;
   capabilities?: string[];
   respondTo?: RawRelayAgent["respond_to"];
   respondToAllowlist?: string[];
+  audience?: NonNullable<RawRelayAgent["audience"]>;
+  accessTier?: NonNullable<RawRelayAgent["access_tier"]>;
+  model?: string | null;
+  models?: Array<{ id: string; name?: string | null }>;
   channelNames?: string[];
   channelIds?: string[];
   status?: PresenceStatus;
@@ -862,6 +867,7 @@ type RawRelayAgent = {
   pubkey: string;
   owner_pubkey?: string | null;
   name: string;
+  avatar_url?: string | null;
   agent_type: string;
   channels: string[];
   channel_ids: string[];
@@ -869,6 +875,10 @@ type RawRelayAgent = {
   status: PresenceStatus;
   respond_to?: "owner-only" | "allowlist" | "anyone";
   respond_to_allowlist?: string[];
+  audience?: "community" | "owner";
+  access_tier?: "shared" | "personal" | "admin";
+  model?: string | null;
+  models?: Array<{ id: string; name?: string | null }>;
 };
 
 type RawManagedAgent = {
@@ -1713,6 +1723,7 @@ function cloneRelayAgent(agent: RawRelayAgent): RawRelayAgent {
     channels: [...agent.channels],
     channel_ids: [...agent.channel_ids],
     capabilities: [...agent.capabilities],
+    models: agent.models?.map((model) => ({ ...model })),
   };
 }
 
@@ -2336,6 +2347,7 @@ function resetMockRelayAgents(config?: E2eConfig) {
       pubkey: seed.pubkey,
       owner_pubkey: seed.ownerPubkey ?? null,
       name: seed.name,
+      avatar_url: seed.avatarUrl ?? null,
       agent_type: seed.agentType ?? "goose",
       channels: channels.map((channel) => channel.name),
       channel_ids: channels.map((channel) => channel.id),
@@ -2343,6 +2355,10 @@ function resetMockRelayAgents(config?: E2eConfig) {
       status: seed.status ?? "online",
       respond_to: seed.respondTo ?? "owner-only",
       respond_to_allowlist: seed.respondToAllowlist ?? [],
+      audience: seed.audience ?? "community",
+      access_tier: seed.accessTier ?? "shared",
+      model: seed.model ?? null,
+      models: seed.models?.map((model) => ({ ...model })),
     });
   }
 }
@@ -8865,6 +8881,7 @@ async function handleUpdateManagedAgent(args: {
   input: {
     pubkey: string;
     name?: string;
+    avatarUrl?: string | null;
     model?: string | null;
     systemPrompt?: string | null;
     envVars?: Record<string, string>;
@@ -8875,6 +8892,13 @@ async function handleUpdateManagedAgent(args: {
   const agent = getMockManagedAgent(args.input.pubkey);
   if (args.input.name !== undefined) {
     agent.name = args.input.name;
+  }
+  if (args.input.avatarUrl !== undefined) {
+    agent.avatar_url = args.input.avatarUrl;
+    const profile = mockProfiles.get(agent.pubkey);
+    if (profile) {
+      profile.avatar_url = args.input.avatarUrl;
+    }
   }
   if (args.input.model !== undefined) {
     agent.model = args.input.model;

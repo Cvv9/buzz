@@ -26,21 +26,12 @@ async function seedChannelSections(page: Page) {
   );
 }
 
-// dnd-kit's PointerSensor activates only after the pointer travels past its
-// 6px distance constraint, so a single move never starts a drag. This walks the
-// pointer down, past the activation threshold, onto the target, then releases —
-// the sequence dnd-kit needs to fire onDragEnd and commit the reorder.
-async function dragOver(page: Page, source: Locator, target: Locator) {
-  const from = await source.boundingBox();
-  const to = await target.boundingBox();
-  if (!from || !to) throw new Error("drag handles not laid out");
-  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2 + 10);
-  await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, {
-    steps: 10,
-  });
-  await page.mouse.up();
+async function moveSectionDown(page: Page, source: Locator) {
+  await source.focus();
+  await source.press("Space");
+  await expect(page.getByTestId("sidebar-section-drag-overlay")).toBeVisible();
+  await source.press("ArrowDown");
+  await source.press("Space");
 }
 
 test.describe("list virtualization", () => {
@@ -174,9 +165,9 @@ test.describe("list virtualization", () => {
       );
     expect(await sectionOrder()).toEqual(["Priority", "Archive"]);
 
-    // Drag "Priority" past "Archive" — onDragEnd commits arrayMove and persists
-    // the new order. The drop must land for the order to flip.
-    await dragOver(page, topHeader, bottomHeader);
+    // Keyboard sorting drives the same DnD context as pointer dragging, while
+    // also proving custom sections are operable without a mouse.
+    await moveSectionDown(page, topHeader);
 
     // The drop landed: order flipped. A no-op drag would leave it unchanged.
     await expect.poll(sectionOrder).toEqual(["Archive", "Priority"]);
