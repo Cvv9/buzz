@@ -4,6 +4,23 @@ import { nsecEncode } from "nostr-tools/nip19";
 import { v2 as nip44 } from "nostr-tools/nip44";
 import { installWorkspaceRelayMock } from "./helpers/workspaceRelayMock";
 
+test("interactive controls expose the expected cursor affordance", async ({
+  page,
+}) => {
+  await page.goto("/");
+
+  const signInButton = page.getByRole("button", {
+    name: "Sign in with recovery key",
+  });
+  await expect(signInButton).toHaveCSS("cursor", "pointer");
+  await expect(page.getByLabel("Display name")).toHaveCSS("cursor", "text");
+
+  await signInButton.evaluate((button: HTMLButtonElement) => {
+    button.disabled = true;
+  });
+  await expect(signInButton).toHaveCSS("cursor", "default");
+});
+
 test("workspace appearance publishes the desktop-compatible encrypted coordinate", async ({
   page,
 }) => {

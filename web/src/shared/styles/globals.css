@@ -113,6 +113,30 @@
     @apply bg-background text-foreground antialiased;
     font-family: "Inter Variable", Inter, "Avenir Next", "Segoe UI", sans-serif;
   }
+
+  /*
+   * Tailwind v4's preflight no longer sets `cursor: pointer` on buttons.
+   * Restore it for clearly actionable elements so hover affordance is
+   * consistent with the desktop client. Disabled / aria-disabled elements
+   * keep the default cursor; explicit `cursor-*` utilities still win because
+   * utilities are emitted after the base layer.
+   */
+  button:not(:disabled),
+  a[href],
+  summary,
+  [role="button"]:not([aria-disabled="true"]),
+  [role="menuitem"]:not([aria-disabled="true"]),
+  [role="menuitemcheckbox"]:not([aria-disabled="true"]),
+  [role="menuitemradio"]:not([aria-disabled="true"]),
+  [role="tab"]:not([aria-disabled="true"]),
+  [role="link"] {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  [aria-disabled="true"] {
+    cursor: default;
+  }
 }
 
 /*
