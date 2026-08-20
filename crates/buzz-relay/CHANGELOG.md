@@ -1,5 +1,9 @@
 # Changelog
 
+## relay-v0.2.13
+
+- fix(web): restore pointer cursor affordances for enabled interactive controls ([#66](https://github.com/Cvv9/buzz/pull/66))
+
 ## relay-v0.2.12
 
 - Publish the workspace UX overhaul under a fresh tag: relay-v0.2.11 was already claimed by the pre-consolidation 2026-08-10 history, so the 0.2.11 version bump below never produced an image.
