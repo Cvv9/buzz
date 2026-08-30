@@ -1,5 +1,11 @@
 # Changelog
 
+## relay-v0.2.14
+
+- Add an authenticated hosted-agent runtime controller: owner-only, per-agent model and effort changes are acknowledged by the live runner and deferred until an active task finishes.
+- Restrict hosted runtime control requests to the pinned controller and preserve exact-event-id queries required for persona lookups.
+- Stabilize hosted runtime migration, terminal-response, profile, and web model-catalog behavior.
+
 ## relay-v0.2.13
 
 - fix(web): restore pointer cursor affordances for enabled interactive controls ([#66](https://github.com/Cvv9/buzz/pull/66))
