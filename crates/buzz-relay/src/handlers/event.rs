@@ -1064,7 +1064,14 @@ async fn handle_agent_observer_event(
         agent_bytes.clone(),
         owner_bytes.clone(),
     );
-    let is_owner = if session_owner_match {
+    let is_runtime_controller = observer_route_uses_runtime_controller(
+        state
+            .config
+            .hosted_agent_runtime_controller_pubkey
+            .as_deref(),
+        &route,
+    );
+    let is_owner = if session_owner_match || is_runtime_controller {
         true
     } else {
         match state.observer_owner_cache.get(&cache_key) {
@@ -1140,6 +1147,13 @@ async fn handle_agent_observer_event(
     fan_out_event_to_local_subscribers(&state, conn.tenant.community(), &stored_event).await;
 
     conn.send(RelayMessage::ok(event_id_hex, true, ""));
+}
+
+fn observer_route_uses_runtime_controller(
+    configured_controller: Option<&str>,
+    route: &AgentObserverRoute,
+) -> bool {
+    configured_controller.is_some_and(|controller| controller == route.owner.to_hex())
 }
 
 fn agent_observer_route(event: &Event) -> Result<Option<AgentObserverRoute>, String> {
@@ -1369,6 +1383,42 @@ mod tests {
         assert_eq!(route.agent, agent.public_key());
         assert_eq!(route.owner, owner.public_key());
         assert_eq!(route.direction, super::AgentObserverDirection::Control);
+        assert!(super::observer_route_uses_runtime_controller(
+            Some(&owner.public_key().to_hex()),
+            &route,
+        ));
+        assert!(!super::observer_route_uses_runtime_controller(
+            Some(&Keys::generate().public_key().to_hex()),
+            &route,
+        ));
+    }
+
+    #[test]
+    fn runtime_controller_receipt_route_is_authorized_to_the_pinned_recipient() {
+        let agent = Keys::generate();
+        let controller = Keys::generate();
+        let encrypted = encrypt_observer_payload(
+            &agent,
+            &controller.public_key(),
+            &serde_json::json!({"type": "runtime_defaults_applied"}),
+        )
+        .expect("encrypt receipt");
+        let event = EventBuilder::new(Kind::Custom(KIND_AGENT_OBSERVER_FRAME as u16), encrypted)
+            .tags([
+                Tag::parse(["p", &controller.public_key().to_hex()]).expect("p tag"),
+                Tag::parse([OBSERVER_AGENT_TAG, &agent.public_key().to_hex()]).expect("agent tag"),
+                Tag::parse([OBSERVER_FRAME_TAG, OBSERVER_FRAME_TELEMETRY]).expect("frame tag"),
+            ])
+            .sign_with_keys(&agent)
+            .expect("sign event");
+
+        let route = super::agent_observer_route(&event)
+            .expect("observer route")
+            .expect("route");
+        assert!(super::observer_route_uses_runtime_controller(
+            Some(&controller.public_key().to_hex()),
+            &route,
+        ));
     }
 
     #[test]

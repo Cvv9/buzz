@@ -41,10 +41,12 @@ use crate::queue::{
     PromptProfile, PromptProfileLookup, ThreadTags,
 };
 use crate::relay::{ChannelInfo, RestClient};
+use crate::runtime_catalog::{normalize_runtime_catalog, NormalizedRuntimeCatalog};
 use crate::runtime_defaults::{
     PendingRuntimeRevision, RuntimeApplyFailure, RuntimeDefaults, RuntimeDefaultsState,
     RuntimeRevisionDisposition, StaleRuntimeApplyResult,
 };
+use crate::runtime_identity::RuntimeIdentity;
 
 /// Window within which agent activity before a hard-cap death qualifies
 /// the turn as "recently active" (eligible for requeue instead of dead-letter).
@@ -92,6 +94,24 @@ pub struct AgentModelCapabilities {
     pub config_options_raw: Vec<serde_json::Value>,
     /// Unstable: SessionModelState from session/new.
     pub available_models_raw: Option<serde_json::Value>,
+}
+
+fn normalize_agent_runtime_catalog(
+    capabilities: &AgentModelCapabilities,
+) -> Option<NormalizedRuntimeCatalog> {
+    match normalize_runtime_catalog(
+        &capabilities.config_options_raw,
+        capabilities.available_models_raw.as_ref(),
+    ) {
+        Ok(catalog) => Some(catalog),
+        Err(error) => {
+            tracing::warn!(
+                target: "pool::runtime_defaults",
+                "adapter runtime catalog rejected: {error}"
+            );
+            None
+        }
+    }
 }
 
 /// Successful deliveries associated with one live channel session.
@@ -286,6 +306,8 @@ pub struct AgentPool {
     pub join_set: JoinSet<()>,
     task_map: HashMap<tokio::task::Id, TaskMeta>,
     runtime_defaults: Box<RuntimeDefaults>,
+    runtime_catalog: Option<NormalizedRuntimeCatalog>,
+    runtime_reconciled: bool,
 }
 
 /// Result returned by a completed prompt task.
@@ -580,9 +602,9 @@ pub struct PromptContext {
     pub turn_liveness_interval: Duration,
     pub dedup_mode: DedupMode,
     pub system_prompt: Option<String>,
-    /// Sanitized title for each new ACP session, sent as `_meta.sessionTitle`
-    /// on `session/new`. Never part of the prompt.
-    pub session_title: Option<String>,
+    /// Mutable runtime-facing name read for each fresh ACP session. This value
+    /// never replaces or mutates the Nostr signing identity.
+    pub runtime_identity: RuntimeIdentity,
     pub team_instructions: Option<String>,
     pub heartbeat_prompt: Option<String>,
     /// Base prompt content, or `None` if `--no-base-prompt` was passed.
@@ -736,6 +758,11 @@ impl AgentPool {
     /// the index invariant.
     pub fn from_slots(slots: Vec<Option<OwnedAgent>>) -> Self {
         let (result_tx, result_rx) = mpsc::unbounded_channel();
+        let runtime_catalog = slots
+            .iter()
+            .flatten()
+            .filter_map(|agent| agent.model_capabilities.as_ref())
+            .find_map(normalize_agent_runtime_catalog);
         Self {
             agents: slots,
             result_tx,
@@ -743,6 +770,8 @@ impl AgentPool {
             join_set: JoinSet::new(),
             task_map: HashMap::new(),
             runtime_defaults: Box::new(RuntimeDefaults::new(None)),
+            runtime_catalog,
+            runtime_reconciled: true,
         }
     }
 
@@ -753,7 +782,7 @@ impl AgentPool {
     ///
     /// Returns `None` if all agents are checked out.
     pub fn try_claim(&mut self, channel_id: Option<Uuid>) -> Option<OwnedAgent> {
-        if !self.runtime_defaults.dispatch_allowed() {
+        if !self.runtime_reconciled || !self.runtime_defaults.dispatch_allowed() {
             return None;
         }
         // Pass 1: prefer agent with existing session for this channel.
@@ -776,6 +805,12 @@ impl AgentPool {
     /// Return an agent to its slot after a task completes.
     pub fn return_agent(&mut self, agent: OwnedAgent) {
         let mut agent = agent;
+        if self.runtime_catalog.is_none() {
+            self.runtime_catalog = agent
+                .model_capabilities
+                .as_ref()
+                .and_then(normalize_agent_runtime_catalog);
+        }
         if let Some(effective) = self.runtime_defaults.effective() {
             if agent.desired_model.as_deref() != Some(effective.exact_selection_id()) {
                 install_runtime_revision(
@@ -820,7 +855,23 @@ impl AgentPool {
 
     /// Whether queued channel work and heartbeats may claim an agent.
     pub fn runtime_dispatch_allowed(&self) -> bool {
-        self.runtime_defaults.dispatch_allowed()
+        self.runtime_reconciled && self.runtime_defaults.dispatch_allowed()
+    }
+
+    /// Hold queued work while a configured controller proves the current
+    /// durable revision or replays a pending one.
+    pub fn require_runtime_reconciliation(&mut self) {
+        self.runtime_reconciled = false;
+    }
+
+    /// Release the startup gate after a trusted controller command/status.
+    pub fn mark_runtime_reconciled(&mut self) {
+        self.runtime_reconciled = true;
+    }
+
+    /// Whether the startup/controller reconciliation gate has opened.
+    pub fn runtime_is_reconciled(&self) -> bool {
+        self.runtime_reconciled
     }
 
     /// Preserve effective runtime state across lazy-pool teardown/wake.
@@ -848,6 +899,48 @@ impl AgentPool {
     #[allow(dead_code)] // Controller transport is wired in the next runtime-control slice.
     pub fn runtime_defaults_state(&self) -> RuntimeDefaultsState {
         self.runtime_defaults.state()
+    }
+
+    /// Return the normalized local catalog used to validate controller bindings.
+    pub fn runtime_catalog(&self) -> Option<NormalizedRuntimeCatalog> {
+        self.runtime_catalog.clone()
+    }
+
+    /// Probe one idle adapter before dispatch starts so controller revisions can
+    /// be validated even when the agent has not handled its first task yet.
+    pub async fn ensure_runtime_catalog(
+        &mut self,
+        cwd: &str,
+    ) -> anyhow::Result<NormalizedRuntimeCatalog> {
+        if let Some(catalog) = self.runtime_catalog.clone() {
+            return Ok(catalog);
+        }
+        let agent =
+            self.agents.iter_mut().flatten().next().ok_or_else(|| {
+                anyhow::anyhow!("no idle agent available for runtime catalog probe")
+            })?;
+        let response = agent
+            .acp
+            .session_new_full(cwd, Vec::new(), None, None)
+            .await
+            .map_err(|error| anyhow::anyhow!("runtime catalog probe failed: {error}"))?;
+        let capabilities = AgentModelCapabilities {
+            config_options_raw: extract_model_config_options(&response.raw),
+            available_models_raw: extract_model_state(&response.raw),
+        };
+        let catalog = normalize_runtime_catalog(
+            &capabilities.config_options_raw,
+            capabilities.available_models_raw.as_ref(),
+        )
+        .map_err(|error| anyhow::anyhow!("runtime catalog normalization failed: {error}"))?;
+        agent.model_capabilities = Some(capabilities);
+        self.runtime_catalog = Some(catalog.clone());
+        Ok(catalog)
+    }
+
+    /// Exact prior effective revision, retained when a new probe rolls back.
+    pub fn effective_runtime_revision(&self) -> Option<PendingRuntimeRevision> {
+        self.runtime_defaults.effective().cloned()
     }
 
     /// Complete the matching revision after its fresh-session probe succeeds.
@@ -1265,6 +1358,13 @@ struct NewSessionChannelContext<'a> {
     channel_type: Option<&'a str>,
 }
 
+fn runtime_session_title(identity: &RuntimeIdentity, channel_name: Option<&str>) -> Option<String> {
+    identity
+        .name()
+        .as_deref()
+        .map(|agent_name| compose_session_title(agent_name, channel_name))
+}
+
 async fn create_session_and_apply_model(
     agent: &mut OwnedAgent,
     ctx: &PromptContext,
@@ -1278,11 +1378,19 @@ async fn create_session_and_apply_model(
     // its own `[Agent Memory — core]` header, and canvas carries its own
     // `[Channel Canvas]` header; both are appended with a blank-line separator.
     let is_goose = agent.agent_name == "goose";
+    let runtime_name = ctx.runtime_identity.name();
     let combined_system_prompt = with_canvas(
         with_huddle_instructions(
             with_core(
                 with_team(
-                    framed_system_prompt(&ctx.cwd, ctx.base_prompt, ctx.system_prompt.as_deref()),
+                    with_runtime_identity(
+                        framed_system_prompt(
+                            &ctx.cwd,
+                            ctx.base_prompt,
+                            ctx.system_prompt.as_deref(),
+                        ),
+                        runtime_name.as_deref(),
+                    ),
                     ctx.team_instructions.as_deref(),
                 ),
                 agent_core,
@@ -1292,15 +1400,12 @@ async fn create_session_and_apply_model(
         channel.canvas,
     );
 
-    let session_title = ctx
-        .session_title
-        .as_deref()
-        .map(|agent_name| compose_session_title(agent_name, channel.name));
+    let session_title = runtime_session_title(&ctx.runtime_identity, channel.name);
     let mcp_servers = mcp_servers_with_git_origin(
         &ctx.mcp_servers,
         channel.id,
         channel.channel_type,
-        ctx.session_title.as_deref(),
+        runtime_name.as_deref(),
     );
 
     let resp = agent
@@ -1683,6 +1788,37 @@ fn with_team(prompt: Option<String>, instructions: Option<&str>) -> Option<Strin
         }
         (None, Some(instructions)) => Some(format!("[Team Instructions]\n{instructions}")),
         (Some(prompt), None) => Some(prompt),
+        (None, None) => None,
+    }
+}
+
+fn with_runtime_identity(prompt: Option<String>, name: Option<&str>) -> Option<String> {
+    let identity = name.map(str::trim).filter(|value| !value.is_empty());
+    match (prompt, identity) {
+        (Some(prompt), Some(name)) => Some(format!(
+            "{prompt}\n\n[Runtime Identity]\nYour runtime-facing name in Buzz is {name}."
+        )),
+        (None, Some(name)) => Some(format!(
+            "[Runtime Identity]\nYour runtime-facing name in Buzz is {name}."
+        )),
+        (Some(prompt), None) => Some(prompt),
+        (None, None) => None,
+    }
+}
+
+fn legacy_system_prompt_with_runtime(
+    system_prompt: Option<&str>,
+    name: Option<&str>,
+) -> Option<String> {
+    let identity = name.map(str::trim).filter(|value| !value.is_empty());
+    match (system_prompt, identity) {
+        (Some(prompt), Some(name)) => Some(format!(
+            "{prompt}\n\nRuntime identity: Your runtime-facing name in Buzz is {name}."
+        )),
+        (None, Some(name)) => Some(format!(
+            "Runtime identity: Your runtime-facing name in Buzz is {name}."
+        )),
+        (Some(prompt), None) => Some(prompt.to_owned()),
         (None, None) => None,
     }
 }
@@ -2134,9 +2270,14 @@ pub async fn run_prompt_task(
     // `is_new_session` comes from the session registry, which is cleared
     // whenever a session is invalidated — so the replacement session re-delivers
     // rather than leaving the agent unbriefed.
+    let runtime_identity_name = ctx.runtime_identity.name();
+    let legacy_system_prompt = legacy_system_prompt_with_runtime(
+        ctx.system_prompt.as_deref(),
+        runtime_identity_name.as_deref(),
+    );
     let standing = crate::queue::StandingContext {
         base_prompt: ctx.base_prompt,
-        system_prompt: ctx.system_prompt.as_deref(),
+        system_prompt: legacy_system_prompt.as_deref(),
         team_instructions: ctx.team_instructions.as_deref(),
         agent_core: agent_core.as_deref(),
         huddle_instructions: huddle_instructions.as_deref(),
@@ -7952,7 +8093,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             turn_liveness_interval: Duration::ZERO,
             dedup_mode: DedupMode::Drop,
             system_prompt: None,
-            session_title: None,
+            runtime_identity: RuntimeIdentity::new(None),
             team_instructions: None,
             heartbeat_prompt: None,
             base_prompt: None,
@@ -8475,6 +8616,29 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             "a DM name must never reach the session title"
         );
         server.abort();
+    }
+
+    #[test]
+    fn runtime_name_update_changes_every_later_session_title() {
+        let identity = RuntimeIdentity::new(Some("Market Intelligence".into()));
+        assert_eq!(
+            runtime_session_title(&identity, Some("research")).as_deref(),
+            Some("Market Intelligence · #research")
+        );
+        let updated =
+            serde_json::from_str("\"Competitive Intelligence\"").expect("valid runtime name");
+        identity.apply(&updated);
+        assert_eq!(
+            runtime_session_title(&identity, Some("research")).as_deref(),
+            Some("Competitive Intelligence · #research")
+        );
+        let modern =
+            with_runtime_identity(Some("[Base]\ncontext".into()), identity.name().as_deref())
+                .expect("modern prompt context");
+        let legacy = legacy_system_prompt_with_runtime(None, identity.name().as_deref())
+            .expect("legacy prompt context");
+        assert!(modern.contains("runtime-facing name in Buzz is Competitive Intelligence"));
+        assert!(legacy.contains("runtime-facing name in Buzz is Competitive Intelligence"));
     }
 
     /// The `"unknown"` placeholder `fetch_channel_info` substitutes for a

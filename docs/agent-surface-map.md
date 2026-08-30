@@ -36,7 +36,8 @@ historical event.
 | Team definition | kind `30176` (`KIND_TEAM`) | Owner | Owner-private grouping of persona ids. |
 | Managed-agent projection | kind `30177` (`KIND_MANAGED_AGENT`) | Owner | Public, secret-free managed-agent projection keyed by agent pubkey. Also supports the namespaced compatibility form `hosted-agent:<pubkey>` on older relays. |
 | Team catalog | kind `30178` (`KIND_TEAM_CATALOG`) | Owner | Shareable team projection with embedded public persona projections. |
-| Hosted admin override | kind `30180` (`KIND_HOSTED_AGENT_CONFIG`) | Exact current community owner | Public, secret-free hosted name, avatar, and desired model. Runtime-authored kind `10100` remains the source for a description and aliases. Its exact v1 schema accepts only `schema`, `agent_pubkey`, `name`, `avatar_url`, and `model`; a browser must never add a role, alias, or summary field to this event. Newest authorized `(created_at, event_id)` head wins over kind `10100` and kind `0`. Kind `30179` is exclusively the encrypted, author-only managed-agent aggregate. |
+| Hosted admin override | kind `30180` (`KIND_HOSTED_AGENT_CONFIG`) | Exact current community owner | Public, secret-free hosted name and avatar presentation. Its legacy `model` member is preserved for compatibility but is not an effective-runtime assertion. Runtime-authored kind `10100` remains the source for description, aliases, model catalog, and signed effective runtime. Kind `30179` is exclusively the encrypted, author-only managed-agent aggregate. |
+| Hosted runtime request/status | encrypted kind `24201` request, controller kind `30181` status, encrypted kind `24200` controller/runner frames, and agent kind `10100.runtime` acknowledgment | Exact current community owner → pinned controller → exact agent | Model, reasoning effort, and runtime-facing name are one per-agent revision. The controller status describes desired/pending state; only the exact self-authored `10100.runtime` acknowledgment is effective. |
 | Channel membership | NIP-29 membership events; channel state uses `h` tags, membership addressables use `d` tags | Channel owner/admin | Determines whether an agent is already in a channel. It does not determine whether a shared agent is discoverable before its first invitation. |
 | Channel catalog section | Relay `channels.catalog_section`, emitted as kind `39000` `catalog_section` tag | Channel owner/admin or community owner/admin via kind `9007`/`9002` | Shared web/desktop organization. It is not a local sidebar preference. An empty value explicitly clears the section. |
 | Agent channel-add admission | Community-scoped `users.agent_owner_pubkey` plus `users.channel_add_policy` | Relay-authenticated agent or root operator | Owner mapping is immutable. `buzz-admin set-agent-owner` atomically ensures both principals, binds the owner, and sets `owner_only`; it never opens an `anyone` window. |
@@ -53,7 +54,7 @@ historical event.
 | Hosted name/avatar | Authorized kind `30180` override, then kind `10100`, then kind `0`. Desktop projection: `getHostedAgentPresentation` / `overlayHostedAgentProfiles`. Web projection: `applyHostedAgentConfigs`. Only the namespaced `30177` `d=hosted-agent:<pubkey>` form is a compatibility read; `30179` is never read as hosted configuration. |
 | Managed name/avatar | Managed record plus its persona definition; kind `0` is republished for compatibility. Cache invalidation must follow successful edits. |
 | Hosted model options | Signed canonical `model_families` from kind `10100`; never a frontend provider/model table. The flat `models` array is a one-row-per-family compatibility projection only. Exact ACP stable/unstable aliases and switch bindings stay private to the runtime controller. |
-| Hosted selected model | Authorized kind `30180` desired model. A live save also sends observer `switch_model` to known agent channels. |
+| Hosted selected runtime | Self-authored kind `10100.runtime` for effective model, effort, runtime name, controller, revision, and catalog digest; pinned-controller kind `30181` for pending/applying/failed state. Kind `30180.model` is compatibility-only and never overlays effective runtime. |
 | Hosted resources | Signed kind `10100` `resources` list published by the runtime. It is descriptive metadata only; kind `30180` and browser UI cannot grant external credentials. Buzz channel access is enforced separately through NIP-29 membership. |
 | Hosted role/summary | The first sentence of signed kind `10100` `about`, then a signed `aliases` entry as a presentation fallback. Kind `30180` deliberately cannot override either field. Correct a stale or incorrect role by republishing the hosted runtime directory entry; do not add a browser-only override. |
 | Managed model options | Rust `KnownAcpRuntime` capability catalog and live discovery. Frontend fields are projected through `agentConfigCore.ts`. |
@@ -99,16 +100,22 @@ Primary files:
 3. `list_relay_agents` and web `listAgents` select the newest authorized head
    and merge it onto kind `10100`.
 4. The relay-agent query is invalidated/refetched.
-5. The web editor intentionally exposes only name, picture, and desired model.
+5. The web editor intentionally exposes name, picture, base model, and a
+   separate supported reasoning-effort choice.
    It cannot edit a hosted agent's role or summary: the relay rejects any extra
    `30180` JSON key, and kind `10100` remains runtime-authored. Correct that
    source and let the signed directory refresh both clients.
-6. If a model was selected, the desktop sends `switch_model` control to every
-   known channel for that agent. Web exposes only models advertised by the
-   signed runtime catalog and persists the desired selection; it does not
-   claim that a presentation event can install a provider or grant credentials.
-7. Rosters, profiles, search, mentions, messages, and Inbox resolve the merged
-   name/avatar/model by pubkey.
+6. A runtime change is encrypted to the pinned controller as kind `24201`.
+   The controller persists and sends an exact binding over controller-authored
+   kind `24200`. `buzz-acp` stops new claims, lets every active turn finish,
+   probes and commits model/effort/name together, merges a self-authored kind
+   `10100` acknowledgment, and then resumes the ordinary queue. Direct owner
+   observer `switch_model` returns `managed_by_controller` on managed runners.
+7. Startup remains gated until matching signed controller status plus agent
+   acknowledgment prove the current revision, or the controller replays a
+   pending revision. Lazy runners wake for a trusted controller frame.
+8. Rosters, profiles, search, mentions, messages, and Inbox resolve presentation
+   by pubkey while runtime cards project signed effective plus trusted pending state.
 
 Migration: historic `30179` documents are intentionally not read or migrated,
 because their NIP-33 coordinate overlaps the encrypted private managed-agent
@@ -124,6 +131,10 @@ Primary files:
 - `web/src/features/workspace/workspace-api.ts`
 - `web/src/features/workspace/workspace-agent-models.ts`
 - `web/src/features/workspace/ui/WorkspaceAgents.tsx`
+- `crates/buzz-acp/src/runtime_control.rs`
+- `crates/buzz-acp/src/runtime_defaults.rs`
+- `crates/buzz-acp/src/runtime_profile.rs`
+- `crates/buzz-acp/src/runtime_identity.rs`
 
 The hosted runtime probes stable ACP `configOptions` and unstable
 `availableModels` once per fresh session. `buzz-acp::runtime_catalog` collapses

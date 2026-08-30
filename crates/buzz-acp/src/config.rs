@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use clap::ValueEnum;
-use nostr::Keys;
+use nostr::{Keys, PublicKey};
 use thiserror::Error;
 use url::Url;
 use uuid::Uuid;
@@ -241,6 +241,15 @@ pub struct CliArgs {
     /// Agent owner pubkey (64-char hex). Used for --respond-to=owner-only gate.
     #[arg(long, env = "BUZZ_ACP_AGENT_OWNER")]
     pub agent_owner: Option<String>,
+
+    /// Pinned hosted-runtime controller pubkey (64-char hex). When present,
+    /// model, effort, and runtime-name changes are accepted only from this key.
+    #[arg(
+        long,
+        env = "BUZZ_ACP_RUNTIME_CONTROLLER_PUBKEY",
+        hide_env_values = true
+    )]
+    pub runtime_controller_pubkey: Option<String>,
 
     #[arg(long, env = "BUZZ_ACP_AGENT_COMMAND", default_value = "goose")]
     pub agent_command: String,
@@ -574,6 +583,8 @@ pub struct Config {
     /// Agent owner pubkey (hex). Used for `--respond-to=owner-only` gate.
     /// Replaces the old REST-based owner lookup.
     pub agent_owner: Option<String>,
+    /// Pinned controller allowed to apply hosted runtime revisions.
+    pub runtime_controller_pubkey: Option<PublicKey>,
     /// Disable the [Base] platform-context section prepended to every prompt.
     pub no_base_prompt: bool,
     /// Resolved content from `--base-prompt-file`, read and validated in
@@ -1072,6 +1083,18 @@ impl Config {
 
         validate_multiple_event_handling(args.multiple_event_handling, args.dedup)?;
 
+        let runtime_controller_pubkey = args
+            .runtime_controller_pubkey
+            .as_deref()
+            .map(str::trim)
+            .map(PublicKey::from_hex)
+            .transpose()
+            .map_err(|error| {
+                ConfigError::ConfigFile(format!(
+                    "BUZZ_ACP_RUNTIME_CONTROLLER_PUBKEY must be a 64-character hex pubkey: {error}"
+                ))
+            })?;
+
         let config = Config {
             keys,
             relay_url: args.relay_url,
@@ -1122,6 +1145,7 @@ impl Config {
             lazy_pool: args.lazy_pool,
             idle_pool_sleep_secs: args.idle_pool_sleep,
             agent_owner: args.agent_owner.map(|s| s.trim().to_ascii_lowercase()),
+            runtime_controller_pubkey,
             no_base_prompt: args.no_base_prompt,
             base_prompt_content,
         };
@@ -1499,6 +1523,7 @@ mod tests {
             lazy_pool: false,
             idle_pool_sleep_secs: 0,
             agent_owner: None,
+            runtime_controller_pubkey: None,
             no_base_prompt: false,
             base_prompt_content: None,
         }
@@ -2848,6 +2873,39 @@ channels = "ALL"
             result.is_ok(),
             "from_args should accept any mode when allowed list is unset: {result:?}"
         );
+    }
+
+    #[test]
+    fn runtime_controller_pubkey_is_validated_and_pinned() {
+        let controller = nostr::Keys::generate().public_key();
+        let args = CliArgs::try_parse_from([
+            "buzz-acp",
+            "--private-key",
+            TEST_PRIVATE_KEY,
+            "--runtime-controller-pubkey",
+            &controller.to_hex(),
+        ])
+        .expect("clap should parse args");
+
+        let config = Config::from_args(args).expect("valid controller pubkey");
+
+        assert_eq!(config.runtime_controller_pubkey, Some(controller));
+    }
+
+    #[test]
+    fn runtime_controller_pubkey_rejects_non_hex_or_wrong_length() {
+        let args = CliArgs::try_parse_from([
+            "buzz-acp",
+            "--private-key",
+            TEST_PRIVATE_KEY,
+            "--runtime-controller-pubkey",
+            "not-a-controller-key",
+        ])
+        .expect("clap should parse args");
+
+        let error = Config::from_args(args).expect_err("invalid controller key");
+
+        assert!(error.to_string().contains("RUNTIME_CONTROLLER_PUBKEY"));
     }
 
     // --- max_turn_duration ceiling gate ---
