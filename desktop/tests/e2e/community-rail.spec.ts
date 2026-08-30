@@ -443,7 +443,9 @@ test.describe("community rail", () => {
       ),
     );
     expect(publications).toHaveLength(0);
-    await expect(page.getByTestId("message-input")).toHaveText("");
+    // A community switch resets the selected channel, so the old composer is
+    // unmounted rather than retained with an empty draft.
+    await expect(page.getByTestId("message-input")).toHaveCount(0);
   });
 
   test("community switch stops preview media before it reaches the new community", async ({
