@@ -8,7 +8,8 @@ use tracing::{debug, error, info, warn};
 use buzz_core::event::StoredEvent;
 use buzz_core::kind::{
     event_kind_u32, is_ephemeral, is_unshared_gated_event, AUTHOR_ONLY_KINDS,
-    KIND_AGENT_OBSERVER_FRAME, KIND_GIFT_WRAP, KIND_PRESENCE_UPDATE,
+    KIND_AGENT_OBSERVER_FRAME, KIND_GIFT_WRAP, KIND_HOSTED_AGENT_RUNTIME_REQUEST,
+    KIND_PRESENCE_UPDATE,
 };
 use buzz_core::observer::{
     content_looks_like_nip44, OBSERVER_AGENT_TAG, OBSERVER_FRAME_CONTROL, OBSERVER_FRAME_TAG,
@@ -130,6 +131,24 @@ pub async fn filter_fanout_by_access(
         })
         .collect();
 
+    // Result-gated kinds are recipient-private even for live delivery. Apply
+    // the same per-event gate used by historical reads so a stale, kindless,
+    // or ID-only subscription can never bypass the request-time filter gate.
+    let matches =
+        if buzz_core::kind::RESULT_GATED_KINDS.contains(&event_kind_u32(&stored_event.event)) {
+            matches
+                .into_iter()
+                .filter(|(conn_id, _)| {
+                    state
+                        .conn_manager
+                        .pubkey_for_conn(*conn_id)
+                        .is_some_and(|reader| live_result_authorized(&stored_event.event, &reader))
+                })
+                .collect()
+        } else {
+            matches
+        };
+
     // Author-only kinds (NIP-ER reminders) may only ever be delivered to the
     // event's own author. This gate lives here — the chokepoint shared by the
     // ingest fan-out path and the Redis cross-node `subscribe_local` path, the
@@ -219,6 +238,10 @@ pub async fn filter_fanout_by_access(
         }
     }
     allowed
+}
+
+fn live_result_authorized(event: &Event, reader_pubkey: &[u8]) -> bool {
+    buzz_core::filter::reader_authorized_for_event(event, &hex::encode(reader_pubkey))
 }
 
 /// Deliver one event to this relay's local subscribers through the access gate.
@@ -810,6 +833,25 @@ async fn handle_ephemeral_event(
         Err(_) => return Err("error: internal error".to_string()),
     }
 
+    if event_kind_u32(&event) == KIND_HOSTED_AGENT_RUNTIME_REQUEST {
+        let now = chrono::Utc::now().timestamp().max(0) as u64;
+        let envelope = crate::hosted_agent_runtime::validate_runtime_request_envelope(
+            &event,
+            state
+                .config
+                .hosted_agent_runtime_controller_pubkey
+                .as_deref(),
+            now,
+        )?;
+        crate::hosted_agent_runtime::authorize_hosted_agent_runtime_request(
+            &state,
+            &conn.tenant,
+            &event,
+            &envelope,
+        )
+        .await?;
+    }
+
     // Special handling for presence events (kind:20001).
     if event_kind_u32(&event) == KIND_PRESENCE_UPDATE {
         // Accept both bare strings ("online") and legacy JSON ({"status":"online"}).
@@ -1181,6 +1223,34 @@ mod tests {
     use tokio::sync::{mpsc, Mutex, RwLock};
     use tokio_util::sync::CancellationToken;
     use uuid::Uuid;
+
+    #[test]
+    fn hosted_runtime_live_result_gate_delivers_only_to_controller() {
+        let owner = Keys::generate();
+        let controller = Keys::generate();
+        let attacker = Keys::generate();
+        let event = EventBuilder::new(
+            Kind::Custom(buzz_core::kind::KIND_HOSTED_AGENT_RUNTIME_REQUEST as u16),
+            "A".repeat(buzz_core::observer::NIP44_MIN_CONTENT_LEN),
+        )
+        .tags([
+            Tag::parse(["p", &controller.public_key().to_hex()]).expect("p"),
+            Tag::parse(["agent", &Keys::generate().public_key().to_hex()]).expect("agent"),
+            Tag::parse(["request", "550e8400-e29b-41d4-a716-446655440000"]).expect("request"),
+            Tag::parse(["expiration", "1788000300"]).expect("expiration"),
+        ])
+        .sign_with_keys(&owner)
+        .expect("sign");
+
+        assert!(super::live_result_authorized(
+            &event,
+            &controller.public_key().to_bytes()
+        ));
+        assert!(!super::live_result_authorized(
+            &event,
+            &attacker.public_key().to_bytes()
+        ));
+    }
 
     #[test]
     fn fanout_event_frame_matches_legacy_format_byte_for_byte() {

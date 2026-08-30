@@ -722,6 +722,12 @@ pub struct AppState {
     /// replace this with process-local caching; replay freshness must survive
     /// cross-pod routing.
     pub nip98_replay: Arc<dyn Nip98ReplayGuard>,
+    /// Shared, community/controller-scoped hosted runtime request replay guard.
+    ///
+    /// Uses Redis `SET NX EX` through the same fail-closed implementation as
+    /// NIP-98, but has a separate field so tests and future key rotation can
+    /// exercise runtime idempotency independently from HTTP authentication.
+    pub hosted_agent_runtime_replay: Arc<dyn Nip98ReplayGuard>,
     /// Shared Redis-backed admission limits for ordinary HTTP and WebSocket work.
     pub admission_rate_limiter: Arc<RedisRateLimiter>,
 
@@ -852,6 +858,8 @@ impl AppState {
         );
         let nip98_replay: Arc<dyn Nip98ReplayGuard> =
             Arc::new(RedisNip98ReplayGuard::new(redis_pool.clone()));
+        let hosted_agent_runtime_replay: Arc<dyn Nip98ReplayGuard> =
+            Arc::new(RedisNip98ReplayGuard::new(redis_pool.clone()));
         let admission_rate_limiter = Arc::new(RedisRateLimiter::new(redis_pool.clone()));
         let audit_enabled = audit_arc.is_some();
         let state = Self {
@@ -912,6 +920,7 @@ impl AppState {
             shutting_down: Arc::new(AtomicBool::new(false)),
             started_at: Instant::now(),
             nip98_replay,
+            hosted_agent_runtime_replay,
             admission_rate_limiter,
             observer_rate_limiter: Arc::new(DashMap::new()),
             media_upload_rate_limiter: Arc::new(DashMap::new()),

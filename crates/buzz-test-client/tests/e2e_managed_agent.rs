@@ -29,6 +29,42 @@ use nostr::{Alphabet, EventBuilder, Filter, Keys, Kind, SingleLetterTag, Tag, Ti
 
 const AGENT_KIND: u16 = 30177;
 
+#[test]
+fn hosted_runtime_request_result_gate_is_bound_to_the_controller() {
+    let owner = Keys::generate();
+    let controller = Keys::generate();
+    let attacker = Keys::generate();
+    let request: buzz_core::hosted_agent_runtime::HostedAgentRuntimeRequest =
+        serde_json::from_value(serde_json::json!({
+            "schema": "buzz.hosted-agent-runtime-request.v1",
+            "request_id": "550e8400-e29b-41d4-a716-446655440000",
+            "agent_pubkey": Keys::generate().public_key().to_hex(),
+            "model": "gpt-5.6-terra",
+            "effort": "high",
+            "presentation_event_id": null,
+            "catalog_digest": "c".repeat(64)
+        }))
+        .expect("runtime request");
+    let event = buzz_sdk::build_hosted_agent_runtime_request(
+        &controller.public_key().to_hex(),
+        &request,
+        1_788_000_300,
+        &"A".repeat(buzz_core::observer::NIP44_MIN_CONTENT_LEN),
+    )
+    .expect("runtime request event")
+    .sign_with_keys(&owner)
+    .expect("sign runtime request");
+
+    assert!(buzz_core::filter::reader_authorized_for_event(
+        &event,
+        &controller.public_key().to_hex()
+    ));
+    assert!(!buzz_core::filter::reader_authorized_for_event(
+        &event,
+        &attacker.public_key().to_hex()
+    ));
+}
+
 fn relay_url() -> String {
     std::env::var("RELAY_URL").unwrap_or_else(|_| "ws://localhost:3000".to_string())
 }
