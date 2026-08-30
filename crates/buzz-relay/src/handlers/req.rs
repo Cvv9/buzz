@@ -568,6 +568,16 @@ pub(crate) fn hosted_runtime_filters_authorized(
 ) -> bool {
     let p_tag = nostr::SingleLetterTag::lowercase(nostr::Alphabet::P);
     filters.iter().all(|filter| {
+        // A specific-event lookup cannot enumerate runtime requests. Runtime
+        // commands are ephemeral (and therefore absent from historical query
+        // results), while live fan-out independently applies the per-event
+        // `#p` gate in `event_visible_to_reader`. Keep this aligned with the
+        // general p-gated rule so ordinary kindless `{ids:[…]}` lookups are
+        // not rejected merely because this ephemeral kind exists.
+        if filter.ids.as_ref().is_some_and(|ids| !ids.is_empty()) {
+            return true;
+        }
+
         let can_match_runtime_request = filter.kinds.as_ref().is_none_or(|kinds| {
             kinds.iter().any(|kind| {
                 kind.as_u16() as u32 == buzz_core::kind::KIND_HOSTED_AGENT_RUNTIME_REQUEST
@@ -1576,6 +1586,12 @@ mod tests {
             &[Filter::new().custom_tag(p, controller.clone())],
             &controller,
             Some(&controller)
+        ));
+        assert!(hosted_runtime_filters_authorized(
+            &[Filter::new()
+                .id(nostr::EventId::from_hex(&"c".repeat(64)).expect("valid test event id"),)],
+            &other,
+            None,
         ));
         assert!(!hosted_runtime_filters_authorized(
             &[valid],
