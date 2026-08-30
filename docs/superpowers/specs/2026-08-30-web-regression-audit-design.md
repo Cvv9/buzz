@@ -1,7 +1,7 @@
 # Buzz web exhaustive regression audit
 
 **Date:** 2026-08-30
-**Status:** Draft for written-spec approval
+**Status:** Approved
 **Scope:** Browser web client, relay-backed behavior, production deployment, and repeatable regression evidence
 
 ## Goal

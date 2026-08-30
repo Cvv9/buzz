@@ -1,7 +1,7 @@
 # Durable hosted-agent runtime settings
 
 **Date:** 2026-08-30
-**Status:** Draft for written-spec approval
+**Status:** Approved
 **Scope:** Buzz web, relay, `buzz-acp`, hosted-agent deployment, and runtime controller
 
 ## Problem
