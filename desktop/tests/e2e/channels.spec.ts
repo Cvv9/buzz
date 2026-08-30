@@ -5,6 +5,7 @@ import {
   KIND_HUDDLE_STARTED,
   KIND_TYPING_INDICATOR,
 } from "../../src/shared/constants/kinds";
+import { userLabelCacheKey } from "../../src/features/profile/lib/userLabelStorage";
 import {
   TEST_IDENTITIES,
   installMockBridge,
@@ -525,34 +526,43 @@ test("sidebar shows all channel types", async ({ page }) => {
 test("shows cached profile labels while relay profiles revalidate", {
   tag: CACHED_PROFILE_LABELS_TAG,
 }, async ({ page }) => {
+  const cacheKey = userLabelCacheKey("ws://localhost:3000");
   await page.addInitScript(
-    ({ alicePubkey }) => {
+    ({ bobPubkey, storageKey }) => {
       window.localStorage.setItem(
-        "buzz-user-labels.v1:ws://localhost:3000",
+        storageKey,
         JSON.stringify({
           version: 1,
           updatedAt: Date.now(),
           profiles: {
-            [alicePubkey]: {
-              displayName: "Cached Alice",
-              name: "alice",
+            [bobPubkey]: {
+              displayName: "Cached Bob",
+              name: "bob",
               nip05Handle: null,
+              updatedAt: Date.now(),
             },
           },
         }),
       );
     },
-    { alicePubkey: TEST_IDENTITIES.alice.pubkey },
+    { bobPubkey: TEST_IDENTITIES.bob.pubkey, storageKey: cacheKey },
   );
 
   await page.goto("/");
   await page.getByTestId("channel-general").click();
+  await page.evaluate((pubkey) => {
+    window.__BUZZ_E2E_EMIT_MOCK_MESSAGE__?.({
+      channelName: "general",
+      content: "Cached profile label probe.",
+      pubkey,
+    });
+  }, TEST_IDENTITIES.bob.pubkey);
 
-  const aliceMessage = page
+  const bobMessage = page
     .getByTestId("message-row")
-    .filter({ hasText: "Hey team — checking in." });
-  await expect(aliceMessage.getByTestId("message-author")).toHaveText(
-    "Cached Alice",
+    .filter({ hasText: "Cached profile label probe." });
+  await expect(bobMessage.getByTestId("message-author")).toHaveText(
+    "Cached Bob",
     { timeout: 1_000 },
   );
 });
@@ -2953,6 +2963,9 @@ async function seedHomeInboxMention(
   if (navigate) {
     await page.goto("/");
   }
+  // Mentions and conversation updates belong to Alerts. The Inbox is reserved
+  // for explicit workflow approval requests, while both routes share this panel.
+  await page.getByTestId("open-alerts-view").click();
   await expect(page.getByTestId("home-inbox-list")).toBeVisible();
   await page.waitForFunction(
     () =>
@@ -3005,6 +3018,9 @@ async function seedHomeInboxMention(
 
 test("Inbox All excludes generic channel traffic", async ({ page }) => {
   await page.goto("/");
+  await page.getByTestId("open-alerts-view").click();
+  await page.getByTestId("inbox-filter-trigger").click();
+  await page.getByRole("menuitemradio", { name: "All" }).click();
   await page.waitForFunction(() => {
     const win = window as MockFeedWindow;
     return typeof win.__BUZZ_E2E_PUSH_MOCK_FEED_ITEM__ === "function";
@@ -3067,6 +3083,9 @@ test("Inbox type labels keep the same height with and without a channel chip", a
   const dmChannelId = "f48efb06-0c93-5025-aac9-2e646bb6bfa8";
 
   await page.goto("/");
+  await page.getByTestId("open-alerts-view").click();
+  await page.getByTestId("inbox-filter-trigger").click();
+  await page.getByRole("menuitemradio", { name: "All" }).click();
   await expect(page.getByTestId("home-inbox-list")).toBeVisible();
   await page.waitForFunction(() => {
     const win = window as MockFeedWindow;
@@ -3192,6 +3211,9 @@ test("Inbox All never lists drafts and unread-only hides reminders", async ({
     },
   );
   await page.goto("/");
+  await page.getByTestId("open-alerts-view").click();
+  await page.getByTestId("inbox-filter-trigger").click();
+  await page.getByRole("menuitemradio", { name: "All" }).click();
   await page.waitForFunction(() => {
     const win = window as MockFeedWindow;
     return typeof win.__BUZZ_E2E_PUSH_MOCK_FEED_ITEM__ === "function";
@@ -3271,7 +3293,7 @@ test("Inbox All never lists drafts and unread-only hides reminders", async ({
   await expect(draftRow).toHaveCount(0);
 
   await page.getByTestId("inbox-options-trigger").click();
-  await page.getByRole("switch", { name: "Show unread only" }).click();
+  await page.getByTestId("inbox-unread-only-toggle").click({ force: true });
 
   await expect(messageRow).toBeVisible();
   await expect(reminderRow).toHaveCount(0);
@@ -3350,6 +3372,9 @@ test("Inbox All keeps its filter when opening a due reminder", async ({
   page,
 }) => {
   await page.goto("/");
+  await page.getByTestId("open-alerts-view").click();
+  await page.getByTestId("inbox-filter-trigger").click();
+  await page.getByRole("menuitemradio", { name: "All" }).click();
   await expect(page.getByTestId("home-inbox")).toBeVisible();
 
   const reminderId = "inbox-stable-reminder";
@@ -3400,6 +3425,7 @@ test("Inbox All keeps its filter when opening a due reminder", async ({
 
 test("Inbox reminder rows and detail identify DM context", async ({ page }) => {
   await page.goto("/");
+  await page.getByTestId("open-alerts-view").click();
   await expect(page.getByTestId("home-inbox")).toBeVisible();
 
   const reminderId = "inbox-dm-reminder";
@@ -3565,6 +3591,7 @@ test("Inbox keeps the unread boundary for replies from multiple agents", async (
   page,
 }) => {
   await page.goto("/");
+  await page.getByTestId("open-alerts-view").click();
   await expect(page.getByTestId("home-inbox-list")).toBeVisible();
   await page.waitForFunction(() => {
     const win = window as MockFeedWindow;
@@ -3658,6 +3685,9 @@ test("home inbox groups consecutive DMs and opens the full conversation", async 
   const dmIds = ["inbox-dm-first", "inbox-dm-second", "inbox-dm-third"];
 
   await page.goto("/");
+  await page.getByTestId("open-alerts-view").click();
+  await page.getByTestId("inbox-filter-trigger").click();
+  await page.getByRole("menuitemradio", { name: "All" }).click();
   await expect(page.getByTestId("home-inbox-list")).toBeVisible();
   await page.waitForFunction(() => {
     const win = window as MockFeedWindow;
@@ -3800,7 +3830,7 @@ test("home channel settings keeps agent lifecycle actions scoped to the active c
     "stop_managed_agent",
   );
 
-  await page.getByRole("button", { exact: true, name: "Inbox" }).click();
+  await page.getByTestId("open-alerts-view").click();
   await seedHomeInboxMention(
     page,
     "mock-feed-home-agent-lifecycle",
@@ -4267,36 +4297,24 @@ test("members sidebar retains distinct same-persona managed agents", async ({
   await expect(page.getByText("Pinky", { exact: true })).toHaveCount(2);
 });
 
-test("private-channel members can add people and managed agents without admin", async ({
+test("private-channel members cannot add people or managed agents without admin", async ({
   page,
 }) => {
-  await installMockBridge(page, {
-    managedAgents: [
-      {
-        pubkey: TEST_IDENTITIES.charlie.pubkey,
-        name: "charlie",
-        status: "stopped",
-      },
-    ],
-  });
   await page.goto("/");
   // secret-projects is a private (non-DM) channel where the current user is a
-  // plain member. Active members may add ordinary members and bots; only
-  // elevated-role grants and role changes require owner/admin authority.
+  // plain member. The relay allows only owners/admins to extend private
+  // history, so the UI must not advertise an invite flow that it will reject.
   await openMembersSidebar(page, "secret-projects");
 
-  await expect(page.getByTestId("members-sidebar-add-denied")).toHaveCount(0);
+  await expect(page.getByTestId("members-sidebar-add-denied")).toBeVisible();
   await expect(
     page.getByTestId("channel-management-search-users"),
-  ).toHaveAttribute("placeholder", "Add people and agents");
-
-  await page.getByTestId("channel-management-search-users").fill("char");
-  await page
-    .getByTestId(`channel-user-search-result-${TEST_IDENTITIES.charlie.pubkey}`)
-    .click();
+  ).toHaveAttribute("placeholder", "Search people and agents");
   await expect(
-    page.getByTestId(`sidebar-member-${TEST_IDENTITIES.charlie.pubkey}`),
-  ).toContainText("charlie");
+    page.getByTestId(
+      `channel-user-search-result-${TEST_IDENTITIES.charlie.pubkey}`,
+    ),
+  ).toHaveCount(0);
 });
 
 test("open-channel members can add people and managed agents without admin", async ({

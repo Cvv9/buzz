@@ -153,7 +153,7 @@ test.describe("edit agent dialog", () => {
     await expect(page.getByTestId("agent-respond-to")).toBeVisible();
   });
 
-  test("makes agent editing available from the profile settings menu", async ({
+  test("makes agent editing available from the profile header", async ({
     page,
   }) => {
     await installMockBridge(page, {
@@ -172,8 +172,7 @@ test.describe("edit agent dialog", () => {
     await page
       .getByRole("button", { name: `${AGENT_NAME} agent profile` })
       .click();
-    await page.getByTestId("user-profile-settings-menu-trigger").click();
-    await page.getByTestId("user-profile-agent-edit").click();
+    await page.getByTestId("user-profile-header-edit-agent").click();
 
     await expect(page.getByTestId("edit-agent-dialog")).toBeVisible();
   });
@@ -195,6 +194,9 @@ test.describe("edit agent dialog", () => {
     await page.getByRole("button", { name: /(?:Add|Edit) avatar/ }).click();
     await page.getByPlaceholder("Paste a URL").fill(avatarUrl);
     await page.getByRole("button", { name: "Apply" }).click();
+    await expect(
+      page.getByRole("img", { name: `${AGENT_NAME} avatar` }),
+    ).toHaveAttribute("src", avatarUrl);
     await page.getByTestId("edit-agent-dialog-submit").click();
     await expect(page.getByTestId("edit-agent-dialog")).not.toBeVisible();
 
