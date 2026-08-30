@@ -33,10 +33,10 @@ export type DndUngroupedData = { type: "ungrouped" };
 const sidebarCollisionDetection = (
   args: Parameters<typeof pointerWithin>[0],
 ) => {
-  const pointerCollisions = pointerWithin(args);
-  // Keyboard drags have no pointer coordinates. Fall back to geometry so
-  // sortable sections remain accessible and resolve a drop target correctly.
-  return pointerCollisions.length > 0 ? pointerCollisions : closestCenter(args);
+  // Keyboard drags have no pointer coordinates, so resolve their sortable
+  // target geometrically. Pointer drags retain pointerWithin's empty result:
+  // releasing outside a droppable must cancel rather than choose the nearest.
+  return args.pointerCoordinates ? pointerWithin(args) : closestCenter(args);
 };
 
 export function DraggableChannelRow({

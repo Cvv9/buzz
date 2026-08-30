@@ -30,8 +30,39 @@ async function moveSectionDown(page: Page, source: Locator) {
   await source.focus();
   await source.press("Space");
   await expect(page.getByTestId("sidebar-section-drag-overlay")).toBeVisible();
+  // The first sortable keyboard step reaches this section's own channel-drop
+  // body; the second reaches the following section row.
+  await source.press("ArrowDown");
   await source.press("ArrowDown");
   await source.press("Space");
+}
+
+async function dropChannelOutsideSidebar(
+  page: Page,
+  source: Locator,
+  near: Locator,
+) {
+  const from = await source.boundingBox();
+  const nearBox = await near.boundingBox();
+  const viewport = page.viewportSize();
+  if (!from || !nearBox || !viewport) {
+    throw new Error("section drag targets not laid out");
+  }
+
+  const startX = from.x + from.width / 2;
+  const startY = from.y + from.height / 2;
+  await page.mouse.move(startX, startY);
+  await page.mouse.down();
+  // Cross dnd-kit's 6px activation threshold in separate pointermove events.
+  await page.mouse.move(startX, startY + 3, { steps: 3 });
+  await page.mouse.move(startX, startY + 8, { steps: 5 });
+  await expect(page.getByTestId("sidebar-channel-drag-overlay")).toBeVisible();
+  // Finish beside the second section, but outside every sidebar droppable.
+  // A pointer drop there must cancel rather than selecting a nearest section.
+  await page.mouse.move(viewport.width - 24, nearBox.y + nearBox.height / 2, {
+    steps: 20,
+  });
+  await page.mouse.up();
 }
 
 test.describe("list virtualization", () => {
@@ -174,6 +205,42 @@ test.describe("list virtualization", () => {
     // Both section rows stayed committed in the DOM across the reorder — the
     // content-visibility invariant the divergence rests on (no unmount).
     await expect(headers).toHaveCount(2);
+  });
+
+  test("07 — pointer channel drag outside droppables preserves assignments", async ({
+    page,
+  }) => {
+    await seedChannelSections(page);
+    await installMockBridge(page);
+    await page.goto("/");
+    await page.getByTestId("channel-general").click();
+    await expect(page.getByTestId("chat-title")).toHaveText("general");
+
+    const headers = page.locator('[aria-roledescription="sortable"]');
+    const bottomHeader = headers.filter({ hasText: "Archive" });
+    const randomChannel = page.getByTestId("channel-random");
+    await expect(headers).toHaveCount(2);
+    await expect(randomChannel).toBeVisible();
+    const randomChannelId = await randomChannel.getAttribute("data-channel-id");
+    if (!randomChannelId) throw new Error("#random is missing its channel ID");
+    const randomAssignment = () =>
+      page.evaluate((channelId) => {
+        const key = Object.keys(window.localStorage).find((candidate) =>
+          candidate.startsWith("buzz-channel-sections.v1:"),
+        );
+        if (!key) throw new Error("channel section state was not seeded");
+        const raw = window.localStorage.getItem(key);
+        if (!raw) throw new Error("channel section state is missing");
+        const state = JSON.parse(raw) as {
+          assignments: Record<string, string>;
+        };
+        return state.assignments[channelId] ?? null;
+      }, randomChannelId);
+    expect(await randomAssignment()).toBeNull();
+
+    await dropChannelOutsideSidebar(page, randomChannel, bottomHeader);
+
+    await expect.poll(randomAssignment).toBeNull();
   });
 
   test("08 — cascading older pages never snap the viewport toward newest", async ({
