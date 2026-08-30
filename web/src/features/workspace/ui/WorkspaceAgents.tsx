@@ -17,17 +17,16 @@ import { Input } from "@/shared/ui/input";
 import { cn } from "@/shared/lib/cn";
 import type { WorkspaceChannel, WorkspaceProfile } from "../workspace-api";
 import { groupWorkspaceAgentChannels } from "../workspace-agent-access-policy";
+import type {
+  WorkspaceAgentModelFamily,
+  WorkspaceReasoningEffort,
+} from "../workspace-agent-models";
+import type { HostedAgentUpdate } from "../workspace-hosted-agent-update-policy";
 import {
   agentAccessLabel as accessLabel,
   agentRoleLabel,
 } from "../agent-presentation";
 import { ProfileAvatar } from "./WorkspaceSidebar";
-
-type AgentUpdate = {
-  name: string;
-  avatarUrl: string | null;
-  model: string | null;
-};
 
 type Props = {
   agents: readonly WorkspaceProfile[];
@@ -42,7 +41,7 @@ type Props = {
   ) => Promise<void>;
   onUpdateAgent: (
     agent: WorkspaceProfile,
-    update: AgentUpdate,
+    update: HostedAgentUpdate,
   ) => Promise<void>;
 };
 
@@ -215,6 +214,10 @@ function AgentDetails({
     () => groupWorkspaceAgentChannels(channels, channelSearch),
     [channelSearch, channels],
   );
+  const currentRuntime = agent.runtime?.effective;
+  const currentFamily = agent.modelFamilies?.find(
+    (family) => family.id === currentRuntime?.model,
+  );
   return (
     <div className="mx-auto max-w-2xl">
       <div className="flex items-start gap-4">
@@ -225,15 +228,29 @@ function AgentDetails({
           </h2>
           <p className="mt-1 text-xs text-black/45 dark:text-white/40">
             {accessLabel(agent)}
-            {agent.model ? ` · ${agent.model}` : ""}
+            {currentRuntime
+              ? ` · ${currentFamily?.name ?? currentRuntime.model} · ${effortLabel(currentRuntime.effort)}`
+              : agent.model
+                ? ` · ${agent.model}`
+                : ""}
           </p>
         </div>
-        {canManage ? (
-          <Button size="sm" variant="outline" onClick={onEdit}>
-            <Pencil /> Edit profile
-          </Button>
-        ) : null}
+        <Button
+          disabled={!canManage || busy}
+          size="sm"
+          variant="outline"
+          onClick={onEdit}
+        >
+          <Pencil /> Edit profile
+        </Button>
       </div>
+
+      {agent.runtime ? <AgentRuntimeStatus agent={agent} /> : null}
+      {!canManage ? (
+        <p className="mt-4 rounded-xl border border-black/8 bg-black/2 p-3 text-xs leading-5 text-black/50 dark:border-white/8 dark:bg-white/3 dark:text-white/45">
+          Only the current community owner can change hosted agents.
+        </p>
+      ) : null}
 
       <section className="mt-7 border-t border-black/8 pt-5 dark:border-white/8">
         <h3 className="text-xs font-semibold uppercase tracking-wide text-black/45 dark:text-white/40">
@@ -370,15 +387,46 @@ function AgentEditForm({
   busy: boolean;
   error?: string | null;
   onCancel: () => void;
-  onSave: (update: AgentUpdate) => Promise<void>;
+  onSave: (update: HostedAgentUpdate) => Promise<void>;
 }) {
+  const baselineRuntime = agent.runtime?.pending ?? agent.runtime?.effective;
   const [name, setName] = React.useState(agent.name);
   const [avatarUrl, setAvatarUrl] = React.useState(agent.picture ?? "");
-  const [model, setModel] = React.useState(agent.model ?? "");
+  const [model, setModel] = React.useState(baselineRuntime?.model ?? "");
+  const [effort, setEffort] = React.useState<WorkspaceReasoningEffort | "">(
+    baselineRuntime?.effort ?? "",
+  );
   const [uploadProgress, setUploadProgress] = React.useState<number | null>(
     null,
   );
   const [uploadError, setUploadError] = React.useState<string | null>(null);
+  const selectedFamily = agent.modelFamilies?.find(
+    (family) => family.id === model,
+  );
+  const runtimeManaged = Boolean(agent.runtime);
+  const runtimeVerified = Boolean(
+    runtimeManaged &&
+      agent.runtimeStatusTrusted &&
+      agent.runtimeCatalogDigest &&
+      agent.runtimeControllerPubkey &&
+      agent.modelFamilies?.length,
+  );
+  const nameChanged = name.trim() !== agent.name.trim();
+  const runtimeSelectionChanged = Boolean(
+    runtimeManaged &&
+      baselineRuntime &&
+      (model !== baselineRuntime.model || effort !== baselineRuntime.effort),
+  );
+  const runtimeWriteNeeded = Boolean(
+    runtimeManaged && (nameChanged || runtimeSelectionChanged),
+  );
+  const runtimeSelectionValid = Boolean(
+    selectedFamily &&
+      effort &&
+      selectedFamily.efforts.includes(effort as WorkspaceReasoningEffort),
+  );
+  const canSaveRuntime =
+    !runtimeWriteNeeded || (runtimeVerified && runtimeSelectionValid);
   return (
     <form
       className="mx-auto max-w-xl"
@@ -387,7 +435,10 @@ function AgentEditForm({
         void onSave({
           name,
           avatarUrl: avatarUrl || null,
-          model: model || null,
+          model: runtimeManaged ? model || null : null,
+          effort: runtimeManaged
+            ? (effort as WorkspaceReasoningEffort) || null
+            : null,
         });
       }}
     >
@@ -472,31 +523,81 @@ function AgentEditForm({
             <p className="mt-2 text-xs text-destructive">{uploadError}</p>
           ) : null}
         </div>
-        <label className="block text-sm font-medium" htmlFor="agent-model">
-          Runtime model
+        <div>
+          <label className="block text-sm font-medium" htmlFor="agent-model">
+            Model
+          </label>
           <select
             id="agent-model"
             className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+            disabled={!runtimeVerified}
             value={model}
-            onChange={(event) => setModel(event.target.value)}
+            onChange={(event) => {
+              const nextModel = event.target.value;
+              const nextFamily = agent.modelFamilies?.find(
+                (family) => family.id === nextModel,
+              );
+              setModel(nextModel);
+              if (
+                nextFamily &&
+                (!effort ||
+                  !nextFamily.efforts.includes(
+                    effort as WorkspaceReasoningEffort,
+                  ))
+              ) {
+                setEffort(nextFamily.defaultEffort);
+              }
+            }}
           >
-            <option value="">Runtime default</option>
-            {agent.models?.map((option) => (
-              <option key={option.id} value={option.id}>
-                {option.name || option.id}
+            {!model ? <option value="">Unavailable</option> : null}
+            {agent.modelFamilies?.map((family) => (
+              <option key={family.id} value={family.id}>
+                {family.name}
               </option>
             ))}
-            {model && !agent.models?.some((option) => option.id === model) ? (
+            {model &&
+            !agent.modelFamilies?.some((family) => family.id === model) ? (
               <option value={model}>{model}</option>
             ) : null}
           </select>
-          <span className="mt-2 block text-xs font-normal text-muted-foreground">
-            Options come from this agent&apos;s signed ACP catalog. Saving
-            records the desired model; the hosted runtime applies it only when
-            its operator has enabled runtime control. Provider changes require a
-            separately credentialed hosted deployment.
-          </span>
-        </label>
+          <p className="mt-2 text-xs text-muted-foreground">
+            {selectedFamily?.description ||
+              "Models come from this agent's signed runtime catalog."}
+          </p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium" htmlFor="agent-effort">
+            Reasoning effort
+          </label>
+          <select
+            id="agent-effort"
+            className="mt-2 h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+            disabled={!runtimeVerified || !selectedFamily}
+            value={effort}
+            onChange={(event) =>
+              setEffort(event.target.value as WorkspaceReasoningEffort)
+            }
+          >
+            {!effort ? <option value="">Unavailable</option> : null}
+            {selectedFamily?.efforts.map((option) => (
+              <option key={option} value={option}>
+                {effortLabel(option)}
+              </option>
+            ))}
+          </select>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Model and effort are saved together as this agent&apos;s default for
+            every new task. An active task keeps its current runtime until it
+            finishes.
+          </p>
+        </div>
+        {runtimeManaged && !runtimeVerified ? (
+          <p className="rounded-xl border border-amber-500/25 bg-amber-500/8 p-3 text-xs leading-5 text-amber-800 dark:text-amber-200">
+            Runtime changes are disabled because the controller status or the
+            agent&apos;s signed model catalog cannot be verified. Refresh and
+            try again.
+          </p>
+        ) : null}
       </div>
       {error ? (
         <p className="mt-4 text-xs text-red-600 dark:text-red-400">{error}</p>
@@ -510,11 +611,68 @@ function AgentEditForm({
         >
           Cancel
         </Button>
-        <Button disabled={busy || !name.trim()} type="submit">
+        <Button
+          disabled={busy || !name.trim() || !canSaveRuntime}
+          type="submit"
+        >
           <Save /> {busy ? "Saving…" : "Save changes"}
         </Button>
       </div>
     </form>
+  );
+}
+
+function effortLabel(effort: WorkspaceReasoningEffort): string {
+  return (
+    {
+      low: "Low",
+      medium: "Medium",
+      high: "High",
+      xhigh: "Extra high",
+      max: "Max",
+      ultra: "Ultra",
+    } satisfies Record<WorkspaceReasoningEffort, string>
+  )[effort];
+}
+
+function runtimeFamily(
+  agent: WorkspaceProfile,
+  model: string,
+): WorkspaceAgentModelFamily | undefined {
+  return agent.modelFamilies?.find((family) => family.id === model);
+}
+
+function AgentRuntimeStatus({ agent }: { agent: WorkspaceProfile }) {
+  const runtime = agent.runtime;
+  if (!runtime) return null;
+  const selection = runtime.pending ?? runtime.effective;
+  const family = runtimeFamily(agent, selection.model);
+  const message =
+    runtime.state === "pending_busy"
+      ? "Queued — applies after current work finishes"
+      : runtime.state === "applying"
+        ? "Applying to new sessions"
+        : runtime.state === "applied"
+          ? "Applied"
+          : runtime.state === "failed"
+            ? (runtime.error?.message ??
+              "The runtime change failed. Try again.")
+            : "Current";
+  return (
+    <div
+      className={cn(
+        "mt-4 rounded-xl border p-3 text-xs leading-5",
+        runtime.state === "failed"
+          ? "border-red-500/25 bg-red-500/8 text-red-700 dark:text-red-300"
+          : "border-black/8 bg-black/2 text-black/55 dark:border-white/8 dark:bg-white/3 dark:text-white/50",
+      )}
+      data-testid="agent-runtime-status"
+    >
+      <span className="font-semibold">{message}</span>
+      <span className="block">
+        {family?.name ?? selection.model} · {effortLabel(selection.effort)}
+      </span>
+    </div>
   );
 }
 

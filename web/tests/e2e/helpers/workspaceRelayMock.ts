@@ -1,5 +1,24 @@
 import type { Page } from "@playwright/test";
 
+type RuntimeMock = {
+  agentPubkey: string;
+  controllerPubkey: string;
+  catalogDigest: string;
+  revision?: number;
+  model?: string;
+  effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+  state?: "current" | "pending_busy" | "applying" | "applied" | "failed";
+  requestedModel?: string | null;
+  requestedEffort?:
+    | "low"
+    | "medium"
+    | "high"
+    | "xhigh"
+    | "max"
+    | "ultra"
+    | null;
+};
+
 export async function installWorkspaceRelayMock(
   page: Page,
   viewerPubkey: string,
@@ -20,8 +39,35 @@ export async function installWorkspaceRelayMock(
       createdAt?: number;
     }>;
     workflowChannelId?: string;
+    communityRole?: "owner" | "admin" | "member";
+    runtime?: RuntimeMock;
   } = {},
 ) {
+  if (options.runtime) {
+    const runtime = options.runtime;
+    await page.route("**/*", async (route) => {
+      const request = route.request();
+      if (
+        request.headers().accept?.includes("application/nostr+json") &&
+        new URL(request.url()).pathname === "/"
+      ) {
+        await route.fulfill({
+          contentType: "application/nostr+json",
+          body: JSON.stringify({
+            name: "Buzz E2E",
+            buzz_hosted_agent_runtime: {
+              version: 1,
+              controller_pubkey: runtime.controllerPubkey,
+              request_kind: 24201,
+              status_kind: 30181,
+            },
+          }),
+        });
+        return;
+      }
+      await route.fallback();
+    });
+  }
   await page.addInitScript(
     ({
       pubkey,
@@ -29,6 +75,8 @@ export async function installWorkspaceRelayMock(
       hostedAgentConfig,
       searchEvents,
       workflowChannelId,
+      communityRole,
+      runtime,
     }) => {
       const event = (
         kind: number,
@@ -48,6 +96,9 @@ export async function installWorkspaceRelayMock(
       });
       const agentEvents = Array.from({ length: 18 }, (_, index) => {
         const agentPubkey = (index + 1).toString(16).padStart(64, "0");
+        const isRuntimeAgent = runtime?.agentPubkey === agentPubkey;
+        const runtimeModel = runtime?.model ?? "gpt-5.6-sol";
+        const runtimeEffort = runtime?.effort ?? "high";
         return event(
           10100,
           agentPubkey,
@@ -64,10 +115,93 @@ export async function installWorkspaceRelayMock(
                 ? ["Market Intelligence research", "Public web sources"]
                 : [],
             access_tier: index < 6 ? "personal" : "shared",
+            ...(isRuntimeAgent
+              ? {
+                  catalog_digest: runtime.catalogDigest,
+                  model_families: [
+                    {
+                      id: "gpt-5.6-sol",
+                      name: "GPT-5.6-Sol",
+                      description: "Frontier model",
+                      default_effort: "medium",
+                      efforts: ["low", "medium", "high", "xhigh", "max"],
+                    },
+                    {
+                      id: "gpt-5.6-terra",
+                      name: "GPT-5.6-Terra",
+                      description: "Balanced model",
+                      default_effort: "medium",
+                      efforts: ["low", "medium", "high", "xhigh"],
+                    },
+                    {
+                      id: "gpt-3.5-turbo-16k",
+                      name: "GPT-3.5-Turbo-16k",
+                      description: "Legacy model",
+                      default_effort: "medium",
+                      efforts: ["medium"],
+                    },
+                  ],
+                  runtime: {
+                    schema: "buzz.agent-runtime.v1",
+                    controller_pubkey: runtime.controllerPubkey,
+                    revision: runtime.revision ?? 4,
+                    model: runtimeModel,
+                    effort: runtimeEffort,
+                    effective_name: `Workspace Agent ${index + 1}`,
+                    catalog_digest: runtime.catalogDigest,
+                  },
+                }
+              : {}),
           }),
           (index + 10).toString(16),
         );
       });
+      const runtimeStatusEvents = runtime
+        ? [
+            event(
+              30181,
+              runtime.controllerPubkey,
+              [["d", runtime.agentPubkey]],
+              JSON.stringify({
+                schema: "buzz.hosted-agent-runtime-status.v1",
+                agent_pubkey: runtime.agentPubkey,
+                request_id: "550e8400-e29b-41d4-a716-446655440000",
+                revision: runtime.revision ?? 4,
+                state: runtime.state ?? "applied",
+                effective: {
+                  model: runtime.model ?? "gpt-5.6-sol",
+                  effort: runtime.effort ?? "high",
+                  runtime_name: "Workspace Agent 7",
+                },
+                requested:
+                  runtime.state === "pending_busy" ||
+                  runtime.state === "applying" ||
+                  runtime.state === "failed"
+                    ? {
+                        model:
+                          runtime.requestedModel ??
+                          runtime.model ??
+                          "gpt-5.6-sol",
+                        effort:
+                          runtime.requestedEffort ?? runtime.effort ?? "high",
+                        runtime_name: "Workspace Agent 7",
+                      }
+                    : null,
+                catalog_digest: runtime.catalogDigest,
+                error:
+                  runtime.state === "failed"
+                    ? {
+                        code: "adapter_rejected",
+                        message:
+                          "The agent could not apply this model and effort combination.",
+                      }
+                    : null,
+              }),
+              "runtime-status",
+              100,
+            ),
+          ]
+        : [];
       const hostedConfigEvents = hostedAgentConfig
         ? [
             event(
@@ -246,16 +380,19 @@ export async function installWorkspaceRelayMock(
             const published = envelope[1] as ReturnType<typeof event>;
             publishedEvents.push(published);
             persistPublishedEvents(publishedEvents);
-            window.setTimeout(
-              () =>
-                this.emit(
-                  "message",
-                  new MessageEvent("message", {
-                    data: JSON.stringify(["OK", published.id, true, ""]),
-                  }),
-                ),
-              0,
-            );
+            window.setTimeout(() => {
+              this.emit(
+                "message",
+                new MessageEvent("message", {
+                  data: JSON.stringify(["OK", published.id, true, ""]),
+                }),
+              );
+              for (const socket of sockets) {
+                if (socket.readyState === MockWebSocket.OPEN) {
+                  socket.emitRelayEvent(published);
+                }
+              }
+            }, 0);
             return;
           }
           if (envelope[0] !== "REQ") return;
@@ -355,8 +492,18 @@ export async function installWorkspaceRelayMock(
                   ]
                 : []),
             ];
+          } else if (kinds.length === 1 && kinds.includes(30181)) {
+            events = [
+              ...runtimeStatusEvents,
+              ...knownEvents().filter((candidate) => candidate.kind === 30181),
+            ];
           } else if (kinds.includes(30180)) {
-            events = hostedConfigEvents;
+            events = [
+              ...hostedConfigEvents,
+              ...knownEvents().filter((candidate) =>
+                [30177, 30180].includes(candidate.kind),
+              ),
+            ];
           } else if (kinds.includes(10100) || kinds.includes(30177)) {
             events = agentEvents;
           } else if (kinds.includes(13534)) {
@@ -364,7 +511,7 @@ export async function installWorkspaceRelayMock(
               event(
                 13534,
                 "f".repeat(64),
-                [["member", pubkey, "owner"]],
+                [["member", pubkey, communityRole]],
                 "",
                 "89",
               ),
@@ -692,6 +839,8 @@ export async function installWorkspaceRelayMock(
       hostedAgentConfig: options.hostedAgentConfig ?? null,
       searchEvents: options.searchEvents ?? [],
       workflowChannelId: options.workflowChannelId ?? null,
+      communityRole: options.communityRole ?? "owner",
+      runtime: options.runtime ?? null,
     },
   );
 }

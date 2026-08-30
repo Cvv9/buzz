@@ -193,7 +193,7 @@ test("mentioning an eligible hosted agent adds it before the message", async ({
   ).toBeVisible();
 });
 
-test("the web agent page explains resources and lets an admin edit profile and channel access", async ({
+test("the web agent page explains resources and lets the owner edit profile and channel access", async ({
   page,
 }) => {
   const secretKey = generateSecretKey();
@@ -225,7 +225,7 @@ test("the web agent page explains resources and lets an admin edit profile and c
   await page.getByRole("button", { name: "Edit profile" }).click();
   await page.getByLabel("Name").fill("Opportunity Scout");
   await page.getByRole("button", { name: "Save changes" }).click();
-  await page.getByLabel("general access for Workspace Agent 7").click();
+  await page.getByLabel("general access for Opportunity Scout").click();
 
   await expect
     .poll(() =>
@@ -257,7 +257,7 @@ test("the web agent page explains resources and lets an admin edit profile and c
   });
 });
 
-test("admin-edited hosted agent identity is shared across the web roster and mentions", async ({
+test("owner-edited hosted agent identity is shared across the web roster and mentions", async ({
   page,
 }) => {
   const secretKey = generateSecretKey();

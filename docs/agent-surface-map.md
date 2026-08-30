@@ -100,26 +100,34 @@ Primary files:
 3. `list_relay_agents` and web `listAgents` select the newest authorized head
    and merge it onto kind `10100`.
 4. The relay-agent query is invalidated/refetched.
-5. The web editor intentionally exposes name, picture, base model, and a
-   separate supported reasoning-effort choice.
+5. Only the exact current community owner can edit a hosted agent in the web
+   client. The editor intentionally exposes name, picture, one model-family
+   selector, and a separate supported reasoning-effort selector. Model and
+   effort are one per-agent default; they are never flattened into duplicate
+   model-per-effort rows.
    It cannot edit a hosted agent's role or summary: the relay rejects any extra
    `30180` JSON key, and kind `10100` remains runtime-authored. Correct that
    source and let the signed directory refresh both clients.
-6. A runtime change is encrypted to the pinned controller as kind `24201`.
+6. A pure model/effort change emits only encrypted kind `24201`, never a public
+   kind `30180`. A name change publishes kind `30180` first and binds its
+   accepted event id into the encrypted runtime reconcile request; an
+   avatar-only edit needs no runtime reconcile. Both writes are preflighted
+   before either side effect begins.
+7. A runtime change is encrypted to the pinned controller as kind `24201`.
    The controller persists and sends an exact binding over controller-authored
    kind `24200`. `buzz-acp` stops new claims, lets every active turn finish,
    probes and commits model/effort/name together, merges a self-authored kind
    `10100` acknowledgment, and then resumes the ordinary queue. Direct owner
    observer `switch_model` returns `managed_by_controller` on managed runners.
-7. Startup remains gated until matching signed controller status plus agent
+8. Startup remains gated until matching signed controller status plus agent
    acknowledgment prove the current revision, or the controller replays a
    pending revision. Lazy runners wake for a trusted controller frame.
-8. Rosters, profiles, search, mentions, messages, and Inbox resolve presentation
+9. Rosters, profiles, search, mentions, messages, and Inbox resolve presentation
    by pubkey while runtime cards project signed effective plus trusted pending state.
 
 Migration: historic `30179` documents are intentionally not read or migrated,
 because their NIP-33 coordinate overlaps the encrypted private managed-agent
-aggregate. An authorized owner/admin must republish the secret-free hosted
+aggregate. The exact current community owner must republish the secret-free hosted
 presentation as a new `30180` event.
 
 Primary files:
@@ -460,7 +468,7 @@ mention delivery must therefore update and test both clients explicitly.
 | `['user-profile', pubkey]` | Kind `0` profile | Profile or managed presentation update. |
 | `['users-batch-entry', pubkey]` and `['users-batch', ...]` | Timeline, member, Inbox profile projection | Evict entry before invalidating aggregate queries after name/avatar changes. |
 | Channel members/details | Membership and member presentation | Add/remove role changes and managed identity edits. |
-| Web `['workspace-agents', viewerPubkey]` | Merged browser agent directory | Immediate invalidation on live kind `10100`, `30180`, namespaced `30177`, or `13534`, plus local hosted config publication and identity/community change. |
+| Web `['workspace-agents', viewerPubkey]` | Merged browser agent directory plus trusted controller runtime state | Immediate invalidation on live kind `10100`, `30180`, `30181`, namespaced `30177`, or `13534`, plus local hosted presentation/runtime publication and identity/community change. |
 | Web `['workspace-channels', viewerPubkey]` | Membership projection | Immediate invalidation on live relay kind `39000`/`39002`, addressed `44100`/`44101`, or `13534`, plus local channel create/update/archive/delete/member writes. |
 | Web/desktop channel detail and list queries | Relay kind `39000` channel metadata, including `catalog_section` | Channel metadata, catalog section, archive/visibility, and membership mutations. |
 | Web `['workflow-channel', channel]` and `['workflow-detail', id]` | Strictly projected kind `30620` workflow definition heads | Live kind `30620` scoped by `h` or `d`, plus local definition replacement/delete. Keep timestamp then lowest-id replacement order. |
