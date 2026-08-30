@@ -150,6 +150,10 @@ async fn main() -> anyhow::Result<()> {
         metrics_port = config.metrics_port,
         max_frame_bytes = config.max_frame_bytes,
         audit_enabled = config.audit_enabled,
+        hosted_agent_runtime_controller = config
+            .hosted_agent_runtime_controller_pubkey
+            .as_deref()
+            .unwrap_or("disabled"),
         "Config loaded"
     );
 
