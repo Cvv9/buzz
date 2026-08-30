@@ -468,6 +468,7 @@ test("cancelling explicit Inbox deletion preserves the message and selection", a
 }) => {
   await installMockBridge(page);
   await page.goto("/");
+  await page.getByTestId("open-alerts-view").click();
   await expect(page.getByTestId("home-inbox-list")).toBeVisible();
   const { detail, rootRow } = await seedEmptyDeleteThread(page);
   const selectedReplyRow = detail.locator(
@@ -502,6 +503,7 @@ test("explicit Inbox deletion targets the chosen non-selected message", async ({
 }) => {
   await installMockBridge(page);
   await page.goto("/");
+  await page.getByTestId("open-alerts-view").click();
   await expect(page.getByTestId("home-inbox-list")).toBeVisible();
   const { detail, rootRow } = await seedEmptyDeleteThread(page);
   const selectedReplyRow = detail.locator(
