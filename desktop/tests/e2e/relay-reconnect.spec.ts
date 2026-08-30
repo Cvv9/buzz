@@ -186,8 +186,10 @@ test("failed initial relay dial retries automatically", async ({ page }) => {
               __BUZZ_E2E_GET_RELAY_CONNECTION_STATE__?: () => string;
             }
           ).__BUZZ_E2E_GET_RELAY_CONNECTION_STATE__;
-          if (!getState) throw new Error("Relay state seam is not installed.");
-          return getState();
+          // The app installs the bridge during its async bootstrap. Returning
+          // undefined lets expect.poll wait for that setup instead of turning
+          // a healthy automatic reconnect into a first-attempt race.
+          return getState?.();
         }),
       { timeout: 10_000 },
     )

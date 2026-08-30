@@ -965,7 +965,7 @@ test("inline video hover reveals a timeline without a second play control", asyn
     .toBe(true);
 });
 
-test("video replies in threads open the review comments view", async ({
+test("video replies in threads open the review comments view from Alerts", async ({
   page,
 }) => {
   await installVideoReviewHarness(page);
@@ -1103,7 +1103,7 @@ test("video replies in threads open the review comments view", async ({
   await page
     .getByTestId("video-review-backdrop")
     .click({ position: { x: 4, y: 4 } });
-  await page.getByRole("button", { name: "Inbox", exact: true }).click();
+  await page.getByRole("button", { name: "Alerts", exact: true }).click();
   const inboxRow = page.getByTestId(`home-inbox-item-${reviewComment.id}`);
   await expect(inboxRow).toBeVisible();
   const inboxPreviewTimecode = inboxRow.getByTestId(
@@ -1132,7 +1132,7 @@ test("video replies in threads open the review comments view", async ({
   await expect(page.getByTestId("video-review-dialog")).toBeVisible();
 });
 
-test("Inbox preserves bracketed timestamps without video evidence", async ({
+test("Alerts preserve bracketed timestamps without video evidence", async ({
   page,
 }) => {
   await installVideoReviewHarness(page);
@@ -1153,7 +1153,7 @@ test("Inbox preserves bracketed timestamps without video evidence", async ({
   )) as MockFeedMessage;
   await pushMockFeedItems(page, [reply]);
 
-  await page.getByRole("button", { name: "Inbox", exact: true }).click();
+  await page.getByRole("button", { name: "Alerts", exact: true }).click();
   const inboxRow = page.getByTestId(`home-inbox-item-${reply.id}`);
   await expect(inboxRow).toContainText("[12:30] Meeting starts");
   await expect(
@@ -1161,7 +1161,7 @@ test("Inbox preserves bracketed timestamps without video evidence", async ({
   ).toHaveCount(0);
 });
 
-test("Inbox recognizes reference-style video ancestors with custom alt text", async ({
+test("Alerts recognize reference-style video ancestors with custom alt text", async ({
   page,
 }) => {
   await installVideoReviewHarness(page);
@@ -1190,7 +1190,7 @@ test("Inbox recognizes reference-style video ancestors with custom alt text", as
   )) as MockFeedMessage;
   await pushMockFeedItems(page, [video, comment]);
 
-  await page.getByRole("button", { name: "Inbox", exact: true }).click();
+  await page.getByRole("button", { name: "Alerts", exact: true }).click();
   const inboxRow = page.getByTestId(`home-inbox-item-${comment.id}`);
   await expect(
     inboxRow.getByTestId("video-review-comment-timecode"),
