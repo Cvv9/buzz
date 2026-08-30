@@ -147,7 +147,6 @@ pub fn run() {
                     if webview.label() != "main" {
                         return;
                     }
-
                     // Linux/WebKitGTK needs media-stream settings and a
                     // permission-request handler for getUserMedia; no-op
                     // on macOS/Windows.
@@ -726,6 +725,7 @@ pub fn run() {
             get_forum_posts,
             get_forum_thread,
             get_thread_replies,
+            get_channel_reconnect_repair,
             get_channel_window,
             get_channel_messages_before,
             edit_message,
@@ -767,6 +767,7 @@ pub fn run() {
             get_relay_self,
             resolve_oa_owner,
             list_relay_agents,
+            revalidate_relay_agents,
             list_managed_agents,
             list_managed_agent_runtimes,
             start_managed_agent_runtime,
