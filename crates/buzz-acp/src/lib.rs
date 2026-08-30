@@ -10,6 +10,7 @@ mod pool_lifecycle;
 mod queue;
 mod relay;
 mod runtime_catalog;
+mod runtime_defaults;
 mod setup_mode;
 mod usage;
 
@@ -1674,11 +1675,13 @@ fn idle_pool_sleep_due(
     turn_in_flight: bool,
     prompt_tasks_in_flight: bool,
     work_queued: bool,
+    runtime_change_pending: bool,
     wake_or_respawn_in_flight: bool,
 ) -> bool {
     pool_ready
         && !work_queued
         && !prompt_tasks_in_flight
+        && !runtime_change_pending
         && !wake_or_respawn_in_flight
         && inactivity_expired(last_activity, now, bound, turn_in_flight)
 }
@@ -1746,7 +1749,7 @@ mod idle_pool_sleep_tests {
     fn sleeps_when_ready_idle_and_quiet() {
         let (last, now, bound) = ready_after_bound();
         assert!(idle_pool_sleep_due(
-            true, last, now, bound, false, false, false, false
+            true, last, now, bound, false, false, false, false, false
         ));
     }
 
@@ -1761,6 +1764,7 @@ mod idle_pool_sleep_tests {
             false,
             false,
             false,
+            false,
             false
         ));
     }
@@ -1770,7 +1774,7 @@ mod idle_pool_sleep_tests {
         // A still-sleeping (or waking) pool must not "re-sleep".
         let (last, now, bound) = ready_after_bound();
         assert!(!idle_pool_sleep_due(
-            false, last, now, bound, false, false, false, false
+            false, last, now, bound, false, false, false, false, false
         ));
     }
 
@@ -1778,7 +1782,7 @@ mod idle_pool_sleep_tests {
     fn active_turn_defers_sleep() {
         let (last, now, bound) = ready_after_bound();
         assert!(!idle_pool_sleep_due(
-            true, last, now, bound, true, false, false, false
+            true, last, now, bound, true, false, false, false, false
         ));
     }
 
@@ -1786,7 +1790,7 @@ mod idle_pool_sleep_tests {
     fn in_flight_prompt_task_defers_sleep() {
         let (last, now, bound) = ready_after_bound();
         assert!(!idle_pool_sleep_due(
-            true, last, now, bound, false, true, false, false
+            true, last, now, bound, false, true, false, false, false
         ));
     }
 
@@ -1796,7 +1800,15 @@ mod idle_pool_sleep_tests {
         // teardown so it is never stranded — the loop dispatches it instead.
         let (last, now, bound) = ready_after_bound();
         assert!(!idle_pool_sleep_due(
-            true, last, now, bound, false, false, true, false
+            true, last, now, bound, false, false, true, false, false
+        ));
+    }
+
+    #[test]
+    fn pending_runtime_change_defers_sleep() {
+        let (last, now, bound) = ready_after_bound();
+        assert!(!idle_pool_sleep_due(
+            true, last, now, bound, false, false, false, true, false
         ));
     }
 
@@ -1804,7 +1816,7 @@ mod idle_pool_sleep_tests {
     fn wake_or_respawn_in_flight_defers_sleep() {
         let (last, now, bound) = ready_after_bound();
         assert!(!idle_pool_sleep_due(
-            true, last, now, bound, false, false, false, true
+            true, last, now, bound, false, false, false, false, true
         ));
     }
 
@@ -1819,6 +1831,7 @@ mod idle_pool_sleep_tests {
             recent,
             now,
             Duration::from_secs(60),
+            false,
             false,
             false,
             false,
@@ -1856,6 +1869,7 @@ mod idle_pool_sleep_tests {
             false,
             false,
             false,
+            false,
             any_respawn_in_flight(&busy),
         ));
 
@@ -1869,6 +1883,7 @@ mod idle_pool_sleep_tests {
             last,
             now,
             bound,
+            false,
             false,
             false,
             false,
@@ -3089,6 +3104,7 @@ async fn tokio_main() -> Result<()> {
                         queue.has_in_flight() || heartbeat_in_flight,
                         !pool.join_set.is_empty(),
                         queue.has_undispatched_work(),
+                        !pool.runtime_dispatch_allowed(),
                         !wake_tasks.is_empty()
                             || any_respawn_in_flight(&crash_history),
                     ) {
@@ -3096,6 +3112,7 @@ async fn tokio_main() -> Result<()> {
                             idle_pool_sleep_seconds = config.idle_pool_sleep_secs,
                             "idle pool sleep bound reached — tearing pool back to lazy state"
                         );
+                        let runtime_defaults = pool.runtime_defaults_snapshot();
                         shutdown_agent_pool(&mut pool).await;
                         // Return to the exact pre-wake lazy state: empty slots,
                         // Listening lifecycle. The top-of-loop wake path re-wakes
@@ -3103,6 +3120,7 @@ async fn tokio_main() -> Result<()> {
                         pool = AgentPool::from_slots(
                             (0..config.agents).map(|_| None).collect(),
                         );
+                        pool.restore_runtime_defaults(runtime_defaults);
                         pool_ready = false;
                         pool_lifecycle = PoolLifecycle::listening();
                         last_activity = tokio::time::Instant::now();
@@ -3423,9 +3441,12 @@ async fn tokio_main() -> Result<()> {
                 }
                 match completion {
                     Ok(()) => {
-                        pool = pool_lifecycle
+                        let runtime_defaults = pool.runtime_defaults_snapshot();
+                        let mut awakened_pool = pool_lifecycle
                             .take_ready()
                             .expect("successful wake stores a ready pool");
+                        awakened_pool.restore_runtime_defaults(runtime_defaults);
+                        pool = awakened_pool;
                         pool_ready = true;
                         emit_runtime_lifecycle(
                             observer.as_ref(),
@@ -3857,6 +3878,13 @@ fn dispatch_pending(
     last_activity: &mut tokio::time::Instant,
 ) -> Vec<(Uuid, ThreadTags)> {
     let mut dispatched_channels = Vec::new();
+    if !pool.runtime_dispatch_allowed() {
+        tracing::debug!(
+            queue_depth = queue.pending_channels(),
+            "dispatch_suspended_for_runtime_defaults"
+        );
+        return dispatched_channels;
+    }
     loop {
         let batch = match queue.flush_next() {
             Some(b) => b,
@@ -4021,6 +4049,7 @@ fn handle_prompt_result(
         .unwrap_or_default();
     pool.task_map_mut()
         .retain(|_, meta| meta.agent_index != agent_index);
+    pool.note_active_turns_changed();
     debug_assert_eq!(before, pool.task_map().len() + 1);
     if let PromptSource::Channel(channel_id) = &result.source {
         // The task may have invalidated this session before returning. Never
@@ -4405,6 +4434,7 @@ fn recover_panicked_agent(
         tracing::error!("panic for unknown task {task_id:?} — bug");
         return;
     };
+    pool.note_active_turns_changed();
     let i = meta.agent_index;
 
     // Requeue BEFORE mark_complete (same rationale as handle_prompt_result).

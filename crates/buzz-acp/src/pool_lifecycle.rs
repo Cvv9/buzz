@@ -309,4 +309,33 @@ mod tests {
             _ => panic!("expected Failed"),
         }
     }
+
+    #[test]
+    fn lifecycle_transfers_runtime_aware_pool_payload_without_resetting_revision() {
+        #[derive(Debug, PartialEq, Eq)]
+        struct RuntimeAwarePool {
+            effective_revision: u64,
+            dispatch_allowed: bool,
+        }
+        let now = Instant::now();
+        let mut lifecycle = PoolLifecycle::listening();
+        assert_eq!(lifecycle.start_wake_if_due(true, now), Some(1));
+        lifecycle
+            .complete_wake(
+                1,
+                Ok(RuntimeAwarePool {
+                    effective_revision: 12,
+                    dispatch_allowed: true,
+                }),
+                now,
+            )
+            .expect("wake");
+        assert_eq!(
+            lifecycle.take_ready(),
+            Some(RuntimeAwarePool {
+                effective_revision: 12,
+                dispatch_allowed: true,
+            })
+        );
+    }
 }

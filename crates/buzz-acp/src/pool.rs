@@ -41,6 +41,10 @@ use crate::queue::{
     PromptProfile, PromptProfileLookup, ThreadTags,
 };
 use crate::relay::{ChannelInfo, RestClient};
+use crate::runtime_defaults::{
+    PendingRuntimeRevision, RuntimeApplyFailure, RuntimeDefaults, RuntimeDefaultsState,
+    RuntimeRevisionDisposition, StaleRuntimeApplyResult,
+};
 
 /// Window within which agent activity before a hard-cap death qualifies
 /// the turn as "recently active" (eligible for requeue instead of dead-letter).
@@ -259,6 +263,17 @@ impl OwnedAgent {
     }
 }
 
+fn install_runtime_revision(
+    state: &mut SessionState,
+    desired_model: &mut Option<String>,
+    model_overridden: &mut bool,
+    revision: &PendingRuntimeRevision,
+) {
+    *desired_model = Some(revision.exact_selection_id().to_owned());
+    *model_overridden = true;
+    state.invalidate_all();
+}
+
 /// Pool of agents with take-and-return ownership semantics.
 ///
 /// Agents are either idle (sitting in `agents[i]`) or checked out
@@ -270,6 +285,7 @@ pub struct AgentPool {
     result_rx: mpsc::UnboundedReceiver<PromptResult>,
     pub join_set: JoinSet<()>,
     task_map: HashMap<tokio::task::Id, TaskMeta>,
+    runtime_defaults: Box<RuntimeDefaults>,
 }
 
 /// Result returned by a completed prompt task.
@@ -726,6 +742,7 @@ impl AgentPool {
             result_rx,
             join_set: JoinSet::new(),
             task_map: HashMap::new(),
+            runtime_defaults: Box::new(RuntimeDefaults::new(None)),
         }
     }
 
@@ -736,6 +753,9 @@ impl AgentPool {
     ///
     /// Returns `None` if all agents are checked out.
     pub fn try_claim(&mut self, channel_id: Option<Uuid>) -> Option<OwnedAgent> {
+        if !self.runtime_defaults.dispatch_allowed() {
+            return None;
+        }
         // Pass 1: prefer agent with existing session for this channel.
         if let Some(cid) = channel_id {
             let idx = self.agents.iter().position(|slot| {
@@ -755,6 +775,17 @@ impl AgentPool {
 
     /// Return an agent to its slot after a task completes.
     pub fn return_agent(&mut self, agent: OwnedAgent) {
+        let mut agent = agent;
+        if let Some(effective) = self.runtime_defaults.effective() {
+            if agent.desired_model.as_deref() != Some(effective.exact_selection_id()) {
+                install_runtime_revision(
+                    &mut agent.state,
+                    &mut agent.desired_model,
+                    &mut agent.model_overridden,
+                    effective,
+                );
+            }
+        }
         let idx = agent.index;
         if self.agents[idx].is_some() {
             // This is a bug: two tasks returned the same agent index. Log it
@@ -767,6 +798,135 @@ impl AgentPool {
             );
         }
         self.agents[idx] = Some(agent);
+    }
+
+    /// Begin or supersede an agent-global runtime revision without signalling
+    /// any active turn. New claims stop immediately; checked-out agents return
+    /// through their normal prompt-result path.
+    #[allow(dead_code)] // Controller transport is wired in the next runtime-control slice.
+    pub fn request_runtime_defaults(
+        &mut self,
+        revision: PendingRuntimeRevision,
+    ) -> RuntimeRevisionDisposition {
+        self.runtime_defaults.request(revision, self.task_map.len())
+    }
+
+    /// Notify the runtime gate after a task-map removal. Returns `true` only
+    /// when the last active turn moved a quiescing revision to `Applying`.
+    pub fn note_active_turns_changed(&mut self) -> bool {
+        self.runtime_defaults
+            .active_turns_changed(self.task_map.len())
+    }
+
+    /// Whether queued channel work and heartbeats may claim an agent.
+    pub fn runtime_dispatch_allowed(&self) -> bool {
+        self.runtime_defaults.dispatch_allowed()
+    }
+
+    /// Preserve effective runtime state across lazy-pool teardown/wake.
+    pub(crate) fn runtime_defaults_snapshot(&self) -> RuntimeDefaults {
+        self.runtime_defaults.as_ref().clone()
+    }
+
+    /// Restore agent-global defaults onto a newly spawned pool before its first
+    /// claim. Lazy wake must not fall back to process-start configuration.
+    pub(crate) fn restore_runtime_defaults(&mut self, defaults: RuntimeDefaults) {
+        *self.runtime_defaults = defaults;
+        if let Some(effective) = self.runtime_defaults.effective() {
+            for agent in self.agents.iter_mut().flatten() {
+                install_runtime_revision(
+                    &mut agent.state,
+                    &mut agent.desired_model,
+                    &mut agent.model_overridden,
+                    effective,
+                );
+            }
+        }
+    }
+
+    /// Current reconciliation state, used by the controller transport.
+    #[allow(dead_code)] // Controller transport is wired in the next runtime-control slice.
+    pub fn runtime_defaults_state(&self) -> RuntimeDefaultsState {
+        self.runtime_defaults.state()
+    }
+
+    /// Complete the matching revision after its fresh-session probe succeeds.
+    /// Model and effort are represented by one exact adapter ID, so every idle
+    /// process changes atomically and every old channel session is invalidated.
+    #[allow(dead_code)] // Controller transport is wired in the next runtime-control slice.
+    pub fn commit_runtime_defaults(
+        &mut self,
+        revision: u64,
+    ) -> Result<(), StaleRuntimeApplyResult> {
+        let pending = self
+            .runtime_defaults
+            .pending()
+            .filter(|pending| {
+                pending.revision == revision
+                    && self.runtime_defaults.state() == RuntimeDefaultsState::Applying
+            })
+            .cloned()
+            .ok_or(StaleRuntimeApplyResult)?;
+        for agent in self.agents.iter_mut().flatten() {
+            install_runtime_revision(
+                &mut agent.state,
+                &mut agent.desired_model,
+                &mut agent.model_overridden,
+                &pending,
+            );
+        }
+        self.runtime_defaults.mark_applied(revision)
+    }
+
+    /// Roll back a failed probe. Owned agents are untouched until commit, so
+    /// the prior defaults and live sessions remain usable.
+    #[allow(dead_code)] // Controller transport is wired in the next runtime-control slice.
+    pub fn fail_runtime_defaults(
+        &mut self,
+        revision: u64,
+    ) -> Result<&'static str, StaleRuntimeApplyResult> {
+        self.runtime_defaults.mark_failed(revision)
+    }
+
+    /// Clone the exact pending revision for an asynchronous probe.
+    #[allow(dead_code)] // Controller transport is wired in the next runtime-control slice.
+    pub fn pending_runtime_apply(&self) -> Option<PendingRuntimeRevision> {
+        (self.runtime_defaults.state() == RuntimeDefaultsState::Applying)
+            .then(|| self.runtime_defaults.pending().cloned())
+            .flatten()
+    }
+
+    /// Probe the exact pending binding on one disposable fresh session, then
+    /// atomically commit it to every idle process. No existing channel session
+    /// is invalidated until both `session/new` and the exact ACP switch method
+    /// succeed. Any failure preserves prior defaults and resumes dispatch.
+    #[allow(dead_code)] // Controller transport is wired in the next runtime-control slice.
+    pub async fn apply_pending_runtime_defaults(
+        &mut self,
+        cwd: &str,
+    ) -> Result<u64, RuntimeApplyFailure> {
+        let pending = self
+            .pending_runtime_apply()
+            .ok_or_else(RuntimeApplyFailure::failed)?;
+        let probe_result = match self.agents.iter_mut().flatten().next() {
+            Some(agent) => probe_runtime_revision(agent, cwd, &pending).await,
+            None => Err(AcpError::Protocol(
+                "no idle agent available for runtime probe".into(),
+            )),
+        };
+        if let Err(error) = probe_result {
+            tracing::warn!(
+                target: "pool::runtime_defaults",
+                revision = pending.revision,
+                error = %error,
+                "runtime defaults probe failed; retaining prior effective defaults"
+            );
+            let _ = self.fail_runtime_defaults(pending.revision);
+            return Err(RuntimeApplyFailure::failed());
+        }
+        self.commit_runtime_defaults(pending.revision)
+            .map_err(|_| RuntimeApplyFailure::failed())?;
+        Ok(pending.revision)
     }
 
     /// Whether any agent is currently idle (sitting in its slot).
@@ -973,6 +1133,42 @@ impl AgentPool {
         agent.model_overridden = true;
         agent.state.invalidate_channel(&channel_id);
         IdleSwitchResult::Switched
+    }
+}
+
+async fn probe_runtime_revision(
+    agent: &mut OwnedAgent,
+    cwd: &str,
+    pending: &PendingRuntimeRevision,
+) -> Result<(), AcpError> {
+    let probe = agent
+        .acp
+        .session_new_full(cwd, Vec::new(), None, None)
+        .await?;
+    let result = timeout(MODEL_SWITCH_TIMEOUT, async {
+        match &pending.method {
+            buzz_core::hosted_agent_runtime::RuntimeSelectionMethod::ConfigOption {
+                config_id,
+                option_value,
+            } => {
+                agent
+                    .acp
+                    .session_set_config_option(&probe.session_id, config_id, option_value)
+                    .await
+            }
+            buzz_core::hosted_agent_runtime::RuntimeSelectionMethod::SetModel { model_id } => {
+                agent
+                    .acp
+                    .session_set_model(&probe.session_id, model_id)
+                    .await
+            }
+        }
+    })
+    .await;
+    match result {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(error)) => Err(error),
+        Err(_) => Err(AcpError::Timeout(MODEL_SWITCH_TIMEOUT)),
     }
 }
 
@@ -6585,6 +6781,30 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
     }
 
     #[test]
+    fn committed_runtime_revision_invalidates_every_session_and_changes_later_defaults() {
+        use buzz_core::hosted_agent_runtime::ReasoningEffort;
+
+        let (mut state, _first_channel, _second_channel) = make_state();
+        let mut desired_model = Some("gpt-5.6-terra[medium]".to_string());
+        let mut model_overridden = false;
+        let revision = runtime_revision(22, "gpt-5.6-sol", ReasoningEffort::High);
+
+        install_runtime_revision(
+            &mut state,
+            &mut desired_model,
+            &mut model_overridden,
+            &revision,
+        );
+
+        assert!(state.sessions.is_empty());
+        assert!(state.heartbeat_session.is_none());
+        assert!(state.turn_counts.is_empty());
+        assert!(state.deliveries.is_empty());
+        assert_eq!(desired_model.as_deref(), Some("gpt-5.6-sol[high]"));
+        assert!(model_overridden);
+    }
+
+    #[test]
     fn test_invalidate_channel_returns_true_when_session_existed() {
         let (mut s, ch_a, ch_b) = make_state();
         assert!(s.invalidate_channel(&ch_a));
@@ -8297,5 +8517,125 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             "one fetch_channel_info sequence (initial attempt + single retry)"
         );
         server.abort();
+    }
+
+    fn runtime_revision(
+        revision: u64,
+        model: &str,
+        effort: buzz_core::hosted_agent_runtime::ReasoningEffort,
+    ) -> PendingRuntimeRevision {
+        PendingRuntimeRevision {
+            revision,
+            selection: serde_json::from_value(json!({
+                "model": model,
+                "effort": effort,
+                "runtime_name": "Market Intelligence"
+            }))
+            .expect("runtime selection"),
+            method: buzz_core::hosted_agent_runtime::RuntimeSelectionMethod::SetModel {
+                model_id: format!(
+                    "{model}[{}]",
+                    serde_json::to_value(effort)
+                        .expect("effort")
+                        .as_str()
+                        .expect("effort string")
+                ),
+            },
+            catalog_digest: serde_json::from_value(json!("b".repeat(64))).expect("digest"),
+        }
+    }
+
+    fn insert_fake_active_turn(
+        pool: &mut AgentPool,
+        agent_index: usize,
+    ) -> (
+        tokio::task::Id,
+        tokio::sync::oneshot::Receiver<ControlSignal>,
+    ) {
+        let abort_handle = pool.join_set.spawn(std::future::pending::<()>());
+        let task_id = abort_handle.id();
+        let (control_tx, control_rx) = tokio::sync::oneshot::channel();
+        pool.task_map.insert(
+            task_id,
+            TaskMeta {
+                agent_index,
+                channel_id: Some(Uuid::new_v4()),
+                turn_id: Uuid::new_v4().to_string(),
+                recoverable_batch: None,
+                control_tx: Some(control_tx),
+                steer_tx: None,
+                successful_steer_deliveries: HashSet::new(),
+            },
+        );
+        (task_id, control_rx)
+    }
+
+    #[tokio::test]
+    async fn runtime_revision_waits_for_last_turn_without_sending_cancellation() {
+        use buzz_core::hosted_agent_runtime::ReasoningEffort;
+        use tokio::sync::oneshot::error::TryRecvError;
+
+        let mut pool = AgentPool::from_slots(Vec::new());
+        let (first_id, mut first_control) = insert_fake_active_turn(&mut pool, 0);
+        let (second_id, mut second_control) = insert_fake_active_turn(&mut pool, 1);
+
+        assert_eq!(
+            pool.request_runtime_defaults(runtime_revision(
+                2,
+                "gpt-5.6-sol",
+                ReasoningEffort::High
+            )),
+            RuntimeRevisionDisposition::Quiescing
+        );
+        assert_eq!(
+            pool.runtime_defaults_state(),
+            RuntimeDefaultsState::Quiescing
+        );
+        assert_eq!(first_control.try_recv(), Err(TryRecvError::Empty));
+        assert_eq!(second_control.try_recv(), Err(TryRecvError::Empty));
+        assert!(pool.try_claim(None).is_none());
+
+        pool.task_map.remove(&first_id);
+        assert!(!pool.note_active_turns_changed());
+        assert_eq!(
+            pool.runtime_defaults_state(),
+            RuntimeDefaultsState::Quiescing
+        );
+        pool.task_map.remove(&second_id);
+        assert!(pool.note_active_turns_changed());
+        assert_eq!(
+            pool.runtime_defaults_state(),
+            RuntimeDefaultsState::Applying
+        );
+        assert_eq!(pool.pending_runtime_apply().expect("pending").revision, 2);
+
+        pool.commit_runtime_defaults(2).expect("commit");
+        assert!(pool.runtime_dispatch_allowed());
+        assert_eq!(pool.runtime_defaults_state(), RuntimeDefaultsState::Current);
+    }
+
+    #[tokio::test]
+    async fn runtime_quiescing_does_not_reject_new_queue_events() {
+        use buzz_core::hosted_agent_runtime::ReasoningEffort;
+
+        let mut pool = AgentPool::from_slots(Vec::new());
+        let (_task_id, _control) = insert_fake_active_turn(&mut pool, 0);
+        pool.request_runtime_defaults(runtime_revision(7, "gpt-5.6-terra", ReasoningEffort::Xhigh));
+
+        let channel_id = Uuid::new_v4();
+        let event = EventBuilder::new(Kind::Custom(9), "queued during runtime change")
+            .sign_with_keys(&Keys::generate())
+            .expect("event");
+        let mut queue = crate::queue::EventQueue::new(DedupMode::Queue);
+        assert!(queue.push(crate::queue::QueuedEvent {
+            channel_id,
+            event,
+            received_at: std::time::Instant::now(),
+            prompt_tag: "runtime-gate-test".into(),
+        }));
+
+        assert!(!pool.runtime_dispatch_allowed());
+        assert_eq!(queue.pending_channels(), 1);
+        assert_eq!(queue.pending_events(), 1);
     }
 }
