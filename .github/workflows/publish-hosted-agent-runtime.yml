@@ -1,0 +1,101 @@
+name: Publish hosted agent runtime
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Relay version to publish (for example, 0.2.14)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: write
+  attestations: write
+  id-token: write
+
+concurrency:
+  group: hosted-agent-runtime-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_NAME: ghcr.io/cvv9/buzz-agent
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Verify versioned source
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+          actual="$(sed -n 's/^version = "\(.*\)"/\1/p' crates/buzz-relay/Cargo.toml | head -n1)"
+          test "$actual" = "$VERSION"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+        with:
+          buildkitd-config-inline: |
+            [worker.oci]
+              max-parallelism = 2
+
+      - name: Log in to GHCR
+        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ github.token }}
+
+      - name: Build and publish hosted agent runtime
+        id: build
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: ./Dockerfile
+          target: agent-runtime
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:${{ inputs.version }}
+          provenance: mode=max
+          sbom: true
+          cache-from: type=gha,scope=hosted-agent-runtime-amd64
+          cache-to: type=gha,scope=hosted-agent-runtime-amd64,mode=max
+
+      - name: Smoke test published runtime
+        env:
+          IMAGE: ${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+        run: |
+          set -euo pipefail
+          docker pull "$IMAGE"
+          docker run --rm --entrypoint sh "$IMAGE" -ec '
+            node --version
+            git --version
+            buzz --help >/dev/null
+            buzz-acp --help >/dev/null
+            command -v codex-acp >/dev/null
+            ! command -v npm
+            ! command -v npx
+            test "$(id -u node)" = 1000
+            test "$(id -g node)" = 1000
+          '
+
+      - name: Attest hosted agent runtime provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-name: ${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Publish immutable deployment pin
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          printf 'BUZZ_AGENT_IMAGE=%s:%s@%s\n' "$IMAGE_NAME" "$VERSION" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"
