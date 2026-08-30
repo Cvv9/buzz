@@ -31,12 +31,12 @@ historical event.
 | Data | Event/storage | Writer | Precedence and purpose |
 | --- | --- | --- | --- |
 | Human compatibility profile | kind `0` | Profile owner | Human profile source. For hosted agents this is fallback presentation only. |
-| Hosted agent directory | kind `10100` (`KIND_AGENT_PROFILE`) | Agent | Base hosted identity, owner, access tier, audience, response policy, channels, status, capabilities, runtime-declared resources, desired/default model, and signed runtime model catalog. |
+| Hosted agent directory | kind `10100` (`KIND_AGENT_PROFILE`) | Agent | Base hosted identity, owner, access tier, audience, response policy, channels, status, capabilities, runtime-declared resources, desired/default model, signed canonical `model_families`, and a legacy flat `models` compatibility projection. |
 | Persona definition | kind `30175` (`KIND_PERSONA`) | Owner | Durable persona name, avatar, behavior, provider, model, runtime, and sharing definition for managed agents. |
 | Team definition | kind `30176` (`KIND_TEAM`) | Owner | Owner-private grouping of persona ids. |
 | Managed-agent projection | kind `30177` (`KIND_MANAGED_AGENT`) | Owner | Public, secret-free managed-agent projection keyed by agent pubkey. Also supports the namespaced compatibility form `hosted-agent:<pubkey>` on older relays. |
 | Team catalog | kind `30178` (`KIND_TEAM_CATALOG`) | Owner | Shareable team projection with embedded public persona projections. |
-| Hosted admin override | kind `30180` (`KIND_HOSTED_AGENT_CONFIG`) | Community owner/admin or declared agent owner | Public, secret-free hosted name, avatar, and desired model. Runtime-authored kind `10100` remains the source for a description and aliases. Its exact v1 schema accepts only `schema`, `agent_pubkey`, `name`, `avatar_url`, and `model`; a browser must never add a role, alias, or summary field to this event. Newest authorized `(created_at, event_id)` head wins over kind `10100` and kind `0`. Kind `30179` is exclusively the encrypted, author-only managed-agent aggregate. |
+| Hosted admin override | kind `30180` (`KIND_HOSTED_AGENT_CONFIG`) | Exact current community owner | Public, secret-free hosted name, avatar, and desired model. Runtime-authored kind `10100` remains the source for a description and aliases. Its exact v1 schema accepts only `schema`, `agent_pubkey`, `name`, `avatar_url`, and `model`; a browser must never add a role, alias, or summary field to this event. Newest authorized `(created_at, event_id)` head wins over kind `10100` and kind `0`. Kind `30179` is exclusively the encrypted, author-only managed-agent aggregate. |
 | Channel membership | NIP-29 membership events; channel state uses `h` tags, membership addressables use `d` tags | Channel owner/admin | Determines whether an agent is already in a channel. It does not determine whether a shared agent is discoverable before its first invitation. |
 | Channel catalog section | Relay `channels.catalog_section`, emitted as kind `39000` `catalog_section` tag | Channel owner/admin or community owner/admin via kind `9007`/`9002` | Shared web/desktop organization. It is not a local sidebar preference. An empty value explicitly clears the section. |
 | Agent channel-add admission | Community-scoped `users.agent_owner_pubkey` plus `users.channel_add_policy` | Relay-authenticated agent or root operator | Owner mapping is immutable. `buzz-admin set-agent-owner` atomically ensures both principals, binds the owner, and sets `owner_only`; it never opens an `anyone` window. |
@@ -52,7 +52,7 @@ historical event.
 | --- | --- |
 | Hosted name/avatar | Authorized kind `30180` override, then kind `10100`, then kind `0`. Desktop projection: `getHostedAgentPresentation` / `overlayHostedAgentProfiles`. Web projection: `applyHostedAgentConfigs`. Only the namespaced `30177` `d=hosted-agent:<pubkey>` form is a compatibility read; `30179` is never read as hosted configuration. |
 | Managed name/avatar | Managed record plus its persona definition; kind `0` is republished for compatibility. Cache invalidation must follow successful edits. |
-| Hosted model options | Signed `models` catalog from kind `10100`; never a frontend provider/model table. |
+| Hosted model options | Signed canonical `model_families` from kind `10100`; never a frontend provider/model table. The flat `models` array is a one-row-per-family compatibility projection only. Exact ACP stable/unstable aliases and switch bindings stay private to the runtime controller. |
 | Hosted selected model | Authorized kind `30180` desired model. A live save also sends observer `switch_model` to known agent channels. |
 | Hosted resources | Signed kind `10100` `resources` list published by the runtime. It is descriptive metadata only; kind `30180` and browser UI cannot grant external credentials. Buzz channel access is enforced separately through NIP-29 membership. |
 | Hosted role/summary | The first sentence of signed kind `10100` `about`, then a signed `aliases` entry as a presentation fallback. Kind `30180` deliberately cannot override either field. Correct a stale or incorrect role by republishing the hosted runtime directory entry; do not add a browser-only override. |
@@ -124,6 +124,14 @@ Primary files:
 - `web/src/features/workspace/workspace-api.ts`
 - `web/src/features/workspace/workspace-agent-models.ts`
 - `web/src/features/workspace/ui/WorkspaceAgents.tsx`
+
+The hosted runtime probes stable ACP `configOptions` and unstable
+`availableModels` once per fresh session. `buzz-acp::runtime_catalog` collapses
+identical display aliases into one base family, separates recognized reasoning
+efforts, prefers stable exact switch bindings, and computes the catalog digest.
+`deploy/compose/agent-entrypoint.sh` publishes only the canonical public
+families and flat compatibility projection; it must never reconstruct or
+publish exact adapter bindings itself.
 
 ### Edit a managed agent/persona
 

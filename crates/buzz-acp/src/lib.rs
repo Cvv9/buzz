@@ -9,6 +9,7 @@ mod pool;
 mod pool_lifecycle;
 mod queue;
 mod relay;
+mod runtime_catalog;
 mod setup_mode;
 mod usage;
 
@@ -5026,7 +5027,9 @@ async fn run_authenticate(args: AuthenticateArgs) -> Result<()> {
 /// Flow: spawn → initialize → session/new → print models → shutdown.
 /// No relay connection, no MCP servers, no subscriptions. ~2-5s total.
 async fn run_models(args: ModelsArgs) -> Result<()> {
-    use acp::{extract_model_config_options, extract_model_state};
+    use acp::{
+        extract_model_config_options, extract_model_state, normalize_session_runtime_catalog,
+    };
 
     let agent_args = config::normalize_agent_args(&args.agent.agent_command, args.agent.agent_args);
     let cwd = std::env::current_dir()
@@ -5085,6 +5088,14 @@ async fn run_models(args: ModelsArgs) -> Result<()> {
     // Extract model info from session/new response.
     let config_options = extract_model_config_options(&session_resp.raw);
     let model_state = extract_model_state(&session_resp.raw);
+    let canonical = match normalize_session_runtime_catalog(&session_resp.raw) {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            client.shutdown().await;
+            eprintln!("error: invalid adapter model catalog: {error}");
+            std::process::exit(1);
+        }
+    };
 
     if args.json {
         // Structured JSON output — consumed by Phase 3 `get_agent_models`.
@@ -5100,6 +5111,7 @@ async fn run_models(args: ModelsArgs) -> Result<()> {
                 "currentModelId": ms.get("currentModelId"),
                 "availableModels": ms.get("availableModels"),
             })),
+            "canonical": canonical,
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {

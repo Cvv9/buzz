@@ -1,6 +1,41 @@
 #!/bin/sh
 set -eu
 
+extract_profile_model_catalog() {
+  field="${1:-all}"
+  node -e '
+    const field = process.argv[1];
+    let input = "";
+    process.stdin.on("data", chunk => { input += chunk; });
+    process.stdin.on("end", () => {
+      try {
+        const payload = JSON.parse(input);
+        const canonical = payload?.canonical;
+        const models = Array.isArray(canonical?.compatibility_models)
+          ? canonical.compatibility_models
+              .filter(model => typeof model?.id === "string" && typeof model?.name === "string")
+              .map(model => ({ id: model.id, name: model.name }))
+          : [];
+        const modelFamilies = Array.isArray(canonical?.catalog?.model_families)
+          ? canonical.catalog.model_families
+          : [];
+        const result = { models, model_families: modelFamilies };
+        process.stdout.write(JSON.stringify(field === "all" ? result : result[field] ?? []));
+      } catch {
+        process.stdout.write(field === "all" ? "{\"models\":[],\"model_families\":[]}" : "[]");
+      }
+    });
+  ' "${field}"
+}
+
+# Test hook: exercise the production extractor without starting an agent or
+# touching identity state. The normal startup path below calls the same
+# function, so fixtures cannot accidentally validate a different parser.
+if [ "${BUZZ_AGENT_ENTRYPOINT_MODELS_ONLY:-false}" = "true" ]; then
+  extract_profile_model_catalog
+  exit 0
+fi
+
 : "${BUZZ_ACP_DISPLAY_NAME:=VarVik Guide}"
 : "${BUZZ_ACP_PROFILE_ABOUT:=Hosted AI collaborator for the VarVik Studios community}"
 : "${BUZZ_ACP_PROFILE_AUDIENCE:=community}"
@@ -95,45 +130,20 @@ if [ ! -s "${BUZZ_AGENT_KEY_FILE}" ]; then
 fi
 export VARVIK_AGENT_PUBKEY BUZZ_PRIVATE_KEY
 
-# Ask the configured ACP adapter for its model catalog before publishing the
-# hosted directory entry. This keeps Desktop's per-agent picker capability-
-# driven: Claude, Codex, and future adapters each advertise their own options
-# instead of the UI maintaining a stale provider table.
-if [ -z "${BUZZ_ACP_PROFILE_MODELS_JSON:-}" ]; then
+# Ask the configured ACP adapter for its single canonical model catalog before
+# publishing the hosted directory entry. Exact stable/unstable ACP aliases are
+# controller-private bindings and must never leak into the public profile.
+if [ -z "${BUZZ_ACP_PROFILE_MODELS_JSON:-}" ] ||
+  [ -z "${BUZZ_ACP_PROFILE_MODEL_FAMILIES_JSON:-}" ]; then
   raw_models="$(buzz-acp models --json 2>/dev/null || true)"
-  BUZZ_ACP_PROFILE_MODELS_JSON="$(printf '%s' "${raw_models}" | node -e '
-    let input = "";
-    process.stdin.on("data", chunk => { input += chunk; });
-    process.stdin.on("end", () => {
-      try {
-        const payload = JSON.parse(input);
-        const found = new Map();
-        for (const config of payload?.stable?.configOptions ?? []) {
-          for (const option of config?.options ?? []) {
-            if (typeof option?.value === "string") {
-              found.set(option.value, {
-                id: option.value,
-                name: typeof option.displayName === "string" ? option.displayName : null,
-              });
-            }
-          }
-        }
-        for (const option of payload?.unstable?.availableModels ?? []) {
-          if (typeof option?.modelId === "string" && !found.has(option.modelId)) {
-            found.set(option.modelId, {
-              id: option.modelId,
-              name: typeof option.name === "string" ? option.name : null,
-            });
-          }
-        }
-        process.stdout.write(JSON.stringify([...found.values()]));
-      } catch {
-        process.stdout.write("[]");
-      }
-    });
-  ')"
+  if [ -z "${BUZZ_ACP_PROFILE_MODELS_JSON:-}" ]; then
+    BUZZ_ACP_PROFILE_MODELS_JSON="$(printf '%s' "${raw_models}" | extract_profile_model_catalog models)"
+  fi
+  if [ -z "${BUZZ_ACP_PROFILE_MODEL_FAMILIES_JSON:-}" ]; then
+    BUZZ_ACP_PROFILE_MODEL_FAMILIES_JSON="$(printf '%s' "${raw_models}" | extract_profile_model_catalog model_families)"
+  fi
 fi
-export BUZZ_ACP_PROFILE_MODELS_JSON
+export BUZZ_ACP_PROFILE_MODELS_JSON BUZZ_ACP_PROFILE_MODEL_FAMILIES_JSON
 
 # Local single-host bundles may let the agent perform its own idempotent member
 # bootstrap. Managed deployments pre-register public keys with the relay and
@@ -245,6 +255,7 @@ if [ -n "${BUZZ_ACP_PROFILE_ALIASES:-}" ]; then
   set -- "$@" --aliases "${BUZZ_ACP_PROFILE_ALIASES}"
 fi
 set -- "$@" --models-json "${BUZZ_ACP_PROFILE_MODELS_JSON:-[]}"
+set -- "$@" --model-families-json "${BUZZ_ACP_PROFILE_MODEL_FAMILIES_JSON:-[]}"
 if [ -n "${BUZZ_ACP_MODEL:-}" ]; then
   set -- "$@" --model "${BUZZ_ACP_MODEL}"
 fi

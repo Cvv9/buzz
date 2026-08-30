@@ -2214,6 +2214,22 @@ pub fn extract_model_state(result: &serde_json::Value) -> Option<serde_json::Val
     result.get("models").cloned()
 }
 
+/// Normalize every ACP model-catalog surface from one fresh session response.
+///
+/// Stable `configOptions` take precedence over unstable `availableModels` for
+/// exact switch bindings. Public callers receive duplicate-free model
+/// families; adapter-specific IDs remain in the private binding map.
+pub fn normalize_session_runtime_catalog(
+    result: &serde_json::Value,
+) -> Result<
+    crate::runtime_catalog::NormalizedRuntimeCatalog,
+    crate::runtime_catalog::RuntimeCatalogError,
+> {
+    let stable = extract_model_config_options(result);
+    let unstable = extract_model_state(result);
+    crate::runtime_catalog::normalize_runtime_catalog(&stable, unstable.as_ref())
+}
+
 /// Match a desired model ID against a fresh `session/new` response.
 ///
 /// Returns the correct ACP method to call, or `None` if no match.
