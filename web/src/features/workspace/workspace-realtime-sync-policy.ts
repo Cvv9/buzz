@@ -15,6 +15,7 @@ const CHANNEL_MEMBERS = 39002;
 const AGENT_PROFILE = 10100;
 const MANAGED_AGENT_COMPAT = 30177;
 const HOSTED_AGENT_CONFIG = 30180;
+const HOSTED_AGENT_RUNTIME_STATUS = 30181;
 const COMMUNITY_MEMBERS = 13534;
 const MEMBER_ADDED = 44100;
 const MEMBER_REMOVED = 44101;
@@ -38,6 +39,7 @@ export function workspaceInvalidationTargets(
     case AGENT_PROFILE:
     case MANAGED_AGENT_COMPAT:
     case HOSTED_AGENT_CONFIG:
+    case HOSTED_AGENT_RUNTIME_STATUS:
       return ["agents"];
     case COMMUNITY_MEMBERS:
       return ["channels", "agents"];
