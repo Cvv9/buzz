@@ -16,6 +16,67 @@ just test               # unit + integration (starts Docker if needed)
 cargo test -p buzz-test-client -- --ignored
 ```
 
+### Hosted-agent runtime boundary
+
+`e2e_hosted_agent_runtime` exercises the real relay plus the durable runtime
+controller. It proves owner-only requests, controller-only delivery, encrypted
+commands and receipts, busy-turn queuing without cancellation, strict signed
+agent acknowledgments, live status propagation, NIP-33 status replacement,
+replay and cross-community rejection, fixed-code rollback, and recovery after
+separate controller and runner restarts.
+
+Run it only against an isolated database and Redis. The relay and test must use
+the same ephemeral controller key. On Windows, start the infrastructure first:
+
+```powershell
+docker compose up -d postgres redis minio minio-init
+docker exec buzz-postgres createdb -U buzz buzz_runtime_e2e
+
+$generated = ./target/debug/buzz-admin.exe generate-key
+$controllerSecret = ($generated | Select-String 'Secret key:').ToString().Split()[-1]
+$controllerPublic = ($generated | Select-String 'Public key:').ToString().Split()[-1]
+```
+
+Build the relay and, in a dedicated PowerShell terminal, start it on isolated
+ports with migrations enabled:
+
+```powershell
+./scripts/with-toolchain.ps1 cargo --% build -p buzz-relay -p buzz-admin
+
+$env:DATABASE_URL = 'postgres://buzz:buzz_dev@127.0.0.1:5432/buzz_runtime_e2e'
+$env:REDIS_URL = 'redis://127.0.0.1:6379'
+$env:BUZZ_BIND_ADDR = '127.0.0.1:3030'
+$env:RELAY_URL = 'ws://127.0.0.1:3030'
+$env:BUZZ_HEALTH_PORT = '8088'
+$env:BUZZ_METRICS_PORT = '9202'
+$env:BUZZ_REQUIRE_AUTH_TOKEN = 'false'
+$env:BUZZ_AUTO_MIGRATE = 'true'
+$env:BUZZ_HOSTED_AGENT_RUNTIME_CONTROLLER_PUBKEY = $controllerPublic
+./target/debug/buzz-relay.exe
+```
+
+Keep that relay running. In the original terminal, use the matching private key
+and run only the ignored runtime boundary:
+
+```powershell
+$env:DATABASE_URL = 'postgres://buzz:buzz_dev@127.0.0.1:5432/buzz_runtime_e2e'
+$env:RELAY_URL = 'ws://127.0.0.1:3030'
+$env:BUZZ_TEST_RUNTIME_CONTROLLER_PRIVATE_KEY = $controllerSecret
+./scripts/with-toolchain.ps1 cargo --% test -p buzz-test-client --test e2e_hosted_agent_runtime -- --ignored --nocapture
+```
+
+Expected evidence:
+
+```text
+running 1 test
+test owner_runtime_change_is_private_busy_safe_and_restart_durable ... ok
+test result: ok. 1 passed; 0 failed
+```
+
+The fixture creates random owner, admin, member, agent, and cross-community
+identities. It never prints the controller private key or writes it into relay
+state. Stop the dedicated relay when the run finishes.
+
 ---
 
 ## Live Local Relay

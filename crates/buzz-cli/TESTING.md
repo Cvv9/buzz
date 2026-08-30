@@ -104,6 +104,29 @@ cargo clippy -p buzz-cli -- -D warnings
 # Expected: zero warnings
 ```
 
+### 5.1 Hosted-agent model and effort reconciliation
+
+Hosted-agent runtime defaults are intentionally not a direct CLI mutation.
+The web owner UI signs an encrypted kind `24201` request to the pinned runtime
+controller, and the agent proves the applied model, effort, and runtime name in
+its self-authored kind `10100` profile. The CLI continues to read the same
+relay truth; it must not introduce a second controller path or treat legacy
+kind `30180.model` presentation metadata as effective runtime state.
+
+Use the relay-backed boundary test in the root
+[`TESTING.md`](../../TESTING.md#hosted-agent-runtime-boundary) whenever changing
+agent discovery, profiles, model catalogs, runtime status, or encrypted
+observer transport:
+
+```powershell
+./scripts/with-toolchain.ps1 cargo --% test -p buzz-test-client --test e2e_hosted_agent_runtime -- --ignored --nocapture
+```
+
+The test includes admin/member denial, replay, cross-community targeting, stale
+catalog, acknowledgment mismatch, adapter rollback, live second-client status,
+and controller/runner restart persistence. A passing CLI smoke test alone does
+not cover those boundaries.
+
 ---
 
 ## 6. Live Testing — Command by Command
