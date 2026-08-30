@@ -2690,6 +2690,7 @@ async fn tokio_main() -> Result<()> {
         None
     };
     let mut heartbeat_in_flight = false;
+    let mut heartbeat_schedule = HeartbeatScheduleState::default();
     let mut pending_runtime_control_events = VecDeque::<nostr::Event>::new();
     let mut startup_runtime_reconcile_attempted = false;
 
@@ -2887,6 +2888,29 @@ async fn tokio_main() -> Result<()> {
                 }
             }
         }
+        // A scheduled heartbeat is work, not a best-effort notification. Keep
+        // it pending across a sleeping pool, runtime reconciliation, queued
+        // channel events, and busy agents. This matters most for daily report
+        // agents: dropping one tick would otherwise defer the report by a full
+        // day. Channel work keeps priority, then the heartbeat claims the next
+        // idle runtime-reconciled agent.
+        if heartbeat_schedule.should_wake_lazy_pool() && pool_ready {
+            if queue.has_flushable_work() {
+                for (channel_id, thread_tags) in
+                    dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity)
+                {
+                    typing_channels.insert(channel_id, thread_tags);
+                }
+            }
+            if heartbeat_schedule.take_if_dispatchable(
+                pool_ready,
+                pool.runtime_dispatch_allowed(),
+                queue.has_flushable_work(),
+                pool.any_idle(),
+            ) {
+                dispatch_heartbeat(&mut pool, &ctx, &mut heartbeat_in_flight);
+            }
+        }
         // Whether buffered work is waiting on a lazy pool. Also gates the
         // retry-deadline sleep arm below: a `Failed` lifecycle keeps its
         // (possibly past) `retry_at` until the next wake, so sleeping on it
@@ -2894,8 +2918,9 @@ async fn tokio_main() -> Result<()> {
         // busy spin — whenever the queued work drained after a failed wake.
         let mut lazy_wake_work_pending = false;
         if config.lazy_pool && !pool_ready {
-            lazy_wake_work_pending =
-                queue.has_flushable_work() || !pending_runtime_control_events.is_empty();
+            lazy_wake_work_pending = queue.has_flushable_work()
+                || !pending_runtime_control_events.is_empty()
+                || heartbeat_schedule.should_wake_lazy_pool();
             if let Some(attempt) = pool_lifecycle
                 .start_wake_if_due(lazy_wake_work_pending, tokio::time::Instant::now())
             {
@@ -3622,20 +3647,12 @@ async fn tokio_main() -> Result<()> {
                     }
                 } => {
                     let _ = result_rx;
-                    if !pool_ready {
-                        tracing::debug!("heartbeat_skipped_pool_not_ready");
-                    } else if queue.has_flushable_work() {
-                        tracing::debug!("heartbeat_skipped_events");
-                        for (channel_id, thread_tags) in
-                            dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity)
-                        {
-                            typing_channels.insert(channel_id, thread_tags);
-                        }
-                    } else if pool.any_idle() {
-                        dispatch_heartbeat(&mut pool, &ctx, &mut heartbeat_in_flight);
-                    } else {
-                        tracing::debug!("heartbeat_skipped_busy");
-                    }
+                    heartbeat_schedule.note_tick(heartbeat_in_flight);
+                    tracing::debug!(
+                        pool_ready,
+                        heartbeat_in_flight,
+                        "heartbeat_due_recorded"
+                    );
                     None
                 }
                 _ = async {
@@ -5040,6 +5057,50 @@ fn drain_ready_join_results(
     LoopAction::Continue
 }
 
+/// Tracks one scheduled heartbeat until it is actually dispatched.
+///
+/// Tokio interval ticks are edge-triggered. Treating the tick itself as the
+/// work item loses scheduled reports whenever the lazy pool is asleep or all
+/// agents are occupied. This small level-triggered state keeps one due run
+/// pending without accumulating duplicate runs while another heartbeat is
+/// already in flight.
+#[derive(Debug, Default)]
+struct HeartbeatScheduleState {
+    pending: bool,
+}
+
+impl HeartbeatScheduleState {
+    fn note_tick(&mut self, heartbeat_in_flight: bool) {
+        if !heartbeat_in_flight {
+            self.pending = true;
+        }
+    }
+
+    fn should_wake_lazy_pool(&self) -> bool {
+        self.pending
+    }
+
+    fn take_if_dispatchable(
+        &mut self,
+        pool_ready: bool,
+        runtime_dispatch_allowed: bool,
+        queue_has_flushable_work: bool,
+        pool_has_idle_agent: bool,
+    ) -> bool {
+        if self.pending
+            && pool_ready
+            && runtime_dispatch_allowed
+            && !queue_has_flushable_work
+            && pool_has_idle_agent
+        {
+            self.pending = false;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 fn dispatch_heartbeat(
     pool: &mut AgentPool,
     ctx: &Arc<PromptContext>,
@@ -5801,6 +5862,43 @@ mod heartbeat_base_prompt_tests {
         let prompt = "[System: Heartbeat]\nrun feed get";
         let composed = pool::prepend_standing_for_legacy(2, &heartbeat_standing(), prompt);
         assert_eq!(composed, prompt);
+    }
+}
+
+#[cfg(test)]
+mod heartbeat_scheduling_tests {
+    use super::*;
+
+    #[test]
+    fn due_heartbeat_survives_a_sleeping_pool_until_it_can_dispatch() {
+        let mut schedule = HeartbeatScheduleState::default();
+        schedule.note_tick(false);
+
+        assert!(schedule.should_wake_lazy_pool());
+        assert!(!schedule.take_if_dispatchable(false, true, false, true));
+        assert!(schedule.should_wake_lazy_pool());
+
+        assert!(schedule.take_if_dispatchable(true, true, false, true));
+        assert!(!schedule.should_wake_lazy_pool());
+    }
+
+    #[test]
+    fn due_heartbeat_waits_for_runtime_gate_events_and_an_idle_agent() {
+        let mut schedule = HeartbeatScheduleState::default();
+        schedule.note_tick(false);
+
+        assert!(!schedule.take_if_dispatchable(true, false, false, true));
+        assert!(!schedule.take_if_dispatchable(true, true, true, true));
+        assert!(!schedule.take_if_dispatchable(true, true, false, false));
+        assert!(schedule.should_wake_lazy_pool());
+    }
+
+    #[test]
+    fn tick_during_a_heartbeat_does_not_queue_a_duplicate_run() {
+        let mut schedule = HeartbeatScheduleState::default();
+        schedule.note_tick(true);
+
+        assert!(!schedule.should_wake_lazy_pool());
     }
 }
 

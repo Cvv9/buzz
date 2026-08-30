@@ -86,6 +86,7 @@ RUN cargo build --release --locked -p buzz-relay --bin buzz-relay \
                                    -p buzz-admin --bin buzz-admin \
                                    -p buzz-pair-relay --bin buzz-pair-relay \
                                    -p buzz-acp --bin buzz-acp \
+                                   -p buzz-runtime-controller --bin buzz-runtime-controller \
                                    -p buzz-cli --bin buzz
 
 # Derive the normal release binaries from the same optimized ELF files as the
@@ -95,6 +96,7 @@ RUN strip target/release/buzz-relay \
     && strip target/release/buzz-admin \
     && strip target/release/buzz-pair-relay \
     && strip target/release/buzz-acp \
+    && strip target/release/buzz-runtime-controller \
     && strip target/release/buzz
 
 # ─── Stage 4: web bundle (pnpm + vite) ──────────────────────────────────────
@@ -228,3 +230,5 @@ FROM runtime-base AS runtime
 COPY --from=stripped-binaries /build/target/release/buzz-relay /usr/local/bin/buzz-relay
 COPY --from=stripped-binaries /build/target/release/buzz-admin /usr/local/bin/buzz-admin
 COPY --from=stripped-binaries /build/target/release/buzz-pair-relay /usr/local/bin/buzz-pair-relay
+COPY --from=stripped-binaries /build/target/release/buzz-runtime-controller /usr/local/bin/buzz-runtime-controller
+COPY --chmod=0755 deploy/compose/runtime-controller-entrypoint.sh /usr/local/bin/runtime-controller-entrypoint

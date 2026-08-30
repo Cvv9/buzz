@@ -19,10 +19,12 @@ extract_profile_model_catalog() {
         const modelFamilies = Array.isArray(canonical?.catalog?.model_families)
           ? canonical.catalog.model_families
           : [];
-        const result = { models, model_families: modelFamilies };
-        process.stdout.write(JSON.stringify(field === "all" ? result : result[field] ?? []));
+        const catalogDigest = typeof canonical?.digest === "string" ? canonical.digest : null;
+        const result = { models, model_families: modelFamilies, catalog_digest: catalogDigest };
+        const fallback = field === "catalog_digest" ? null : [];
+        process.stdout.write(JSON.stringify(field === "all" ? result : result[field] ?? fallback));
       } catch {
-        process.stdout.write(field === "all" ? "{\"models\":[],\"model_families\":[]}" : "[]");
+        process.stdout.write(field === "all" ? "{\"models\":[],\"model_families\":[],\"catalog_digest\":null}" : (field === "catalog_digest" ? "null" : "[]"));
       }
     });
   ' "${field}"
@@ -134,7 +136,8 @@ export VARVIK_AGENT_PUBKEY BUZZ_PRIVATE_KEY
 # publishing the hosted directory entry. Exact stable/unstable ACP aliases are
 # controller-private bindings and must never leak into the public profile.
 if [ -z "${BUZZ_ACP_PROFILE_MODELS_JSON:-}" ] ||
-  [ -z "${BUZZ_ACP_PROFILE_MODEL_FAMILIES_JSON:-}" ]; then
+  [ -z "${BUZZ_ACP_PROFILE_MODEL_FAMILIES_JSON:-}" ] ||
+  [ -z "${BUZZ_ACP_PROFILE_CATALOG_DIGEST:-}" ]; then
   raw_models="$(buzz-acp models --json 2>/dev/null || true)"
   if [ -z "${BUZZ_ACP_PROFILE_MODELS_JSON:-}" ]; then
     BUZZ_ACP_PROFILE_MODELS_JSON="$(printf '%s' "${raw_models}" | extract_profile_model_catalog models)"
@@ -142,8 +145,11 @@ if [ -z "${BUZZ_ACP_PROFILE_MODELS_JSON:-}" ] ||
   if [ -z "${BUZZ_ACP_PROFILE_MODEL_FAMILIES_JSON:-}" ]; then
     BUZZ_ACP_PROFILE_MODEL_FAMILIES_JSON="$(printf '%s' "${raw_models}" | extract_profile_model_catalog model_families)"
   fi
+  if [ -z "${BUZZ_ACP_PROFILE_CATALOG_DIGEST:-}" ]; then
+    BUZZ_ACP_PROFILE_CATALOG_DIGEST="$(printf '%s' "${raw_models}" | extract_profile_model_catalog catalog_digest | tr -d '"')"
+  fi
 fi
-export BUZZ_ACP_PROFILE_MODELS_JSON BUZZ_ACP_PROFILE_MODEL_FAMILIES_JSON
+export BUZZ_ACP_PROFILE_MODELS_JSON BUZZ_ACP_PROFILE_MODEL_FAMILIES_JSON BUZZ_ACP_PROFILE_CATALOG_DIGEST
 
 # Local single-host bundles may let the agent perform its own idempotent member
 # bootstrap. Managed deployments pre-register public keys with the relay and
@@ -256,6 +262,9 @@ if [ -n "${BUZZ_ACP_PROFILE_ALIASES:-}" ]; then
 fi
 set -- "$@" --models-json "${BUZZ_ACP_PROFILE_MODELS_JSON:-[]}"
 set -- "$@" --model-families-json "${BUZZ_ACP_PROFILE_MODEL_FAMILIES_JSON:-[]}"
+if [ -n "${BUZZ_ACP_PROFILE_CATALOG_DIGEST:-}" ] && [ "${BUZZ_ACP_PROFILE_CATALOG_DIGEST}" != "null" ]; then
+  set -- "$@" --catalog-digest "${BUZZ_ACP_PROFILE_CATALOG_DIGEST}"
+fi
 if [ -n "${BUZZ_ACP_MODEL:-}" ]; then
   set -- "$@" --model "${BUZZ_ACP_MODEL}"
 fi

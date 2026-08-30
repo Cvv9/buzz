@@ -1,4 +1,6 @@
-use buzz_core::hosted_agent_runtime::{AgentRuntimeAcknowledgment, ModelFamily, RuntimeModelId};
+use buzz_core::hosted_agent_runtime::{
+    AgentRuntimeAcknowledgment, CatalogDigest, ModelFamily, RuntimeModelId,
+};
 use buzz_core::kind::{KIND_AGENT_PROFILE, KIND_IA_ARCHIVED_LIST};
 use buzz_sdk::builders::{
     build_agent_profile_with_runtime, build_archive_identity_request,
@@ -16,12 +18,14 @@ use crate::{AgentsCmd, RespondToArg};
 struct ParsedPublishProfileRuntimeFields {
     models: serde_json::Value,
     model_families: Option<Vec<ModelFamily>>,
+    catalog_digest: Option<CatalogDigest>,
     runtime: Option<AgentRuntimeAcknowledgment>,
 }
 
 fn parse_publish_profile_runtime_fields(
     models_json: Option<&str>,
     model_families_json: Option<&str>,
+    catalog_digest: Option<&str>,
     runtime_json: Option<&str>,
 ) -> Result<ParsedPublishProfileRuntimeFields, CliError> {
     let models = models_json
@@ -51,10 +55,19 @@ fn parse_publish_profile_runtime_fields(
                 "--runtime-json must be a strict JSON object: {error}"
             ))
         })?;
+    let catalog_digest = catalog_digest
+        .map(|value| serde_json::from_value(serde_json::Value::String(value.to_owned())))
+        .transpose()
+        .map_err(|error| {
+            CliError::Usage(format!(
+                "--catalog-digest must be 64 lowercase hexadecimal characters: {error}"
+            ))
+        })?;
 
     Ok(ParsedPublishProfileRuntimeFields {
         models,
         model_families,
+        catalog_digest,
         runtime,
     })
 }
@@ -111,6 +124,7 @@ pub async fn dispatch(command: AgentsCmd, client: &BuzzClient) -> Result<(), Cli
             channel_add_policy,
             models_json,
             model_families_json,
+            catalog_digest,
             runtime_json,
             model,
         } => {
@@ -195,6 +209,7 @@ pub async fn dispatch(command: AgentsCmd, client: &BuzzClient) -> Result<(), Cli
             let runtime_fields = parse_publish_profile_runtime_fields(
                 models_json.as_deref(),
                 model_families_json.as_deref(),
+                catalog_digest.as_deref(),
                 runtime_json.as_deref(),
             )?;
             let model = parse_runtime_model_id(model.as_deref())?;
@@ -209,6 +224,9 @@ pub async fn dispatch(command: AgentsCmd, client: &BuzzClient) -> Result<(), Cli
             existing.insert("owner_pubkey".into(), json!(owner_pubkey));
             existing.insert("access_tier".into(), json!(access_tier));
             existing.insert("channel_add_policy".into(), json!(channel_add_policy));
+            if let Some(catalog_digest) = runtime_fields.catalog_digest.as_ref() {
+                existing.insert("catalog_digest".into(), json!(catalog_digest));
+            }
             let builder = build_agent_profile_with_runtime(
                 &existing,
                 display_name,
@@ -788,6 +806,8 @@ mod tests {
             "[]",
             "--model-families-json",
             &families,
+            "--catalog-digest",
+            &"c".repeat(64),
             "--runtime-json",
             &runtime,
         ])
@@ -804,9 +824,13 @@ mod tests {
             "c".repeat(64)
         );
 
-        let parsed =
-            parse_publish_profile_runtime_fields(Some(flat_models), Some(families), Some(&runtime))
-                .expect("strict runtime fields");
+        let parsed = parse_publish_profile_runtime_fields(
+            Some(flat_models),
+            Some(families),
+            Some(&"c".repeat(64)),
+            Some(&runtime),
+        )
+        .expect("strict runtime fields");
         assert_eq!(
             parsed.models,
             serde_json::from_str::<serde_json::Value>(flat_models).expect("flat models")
@@ -815,9 +839,14 @@ mod tests {
         assert_eq!(model_families.len(), 1);
         assert_eq!(model_families[0].id.as_str(), "gpt-5.6-sol");
         assert_eq!(parsed.runtime.expect("runtime").revision.get(), 4);
+        assert_eq!(
+            parsed.catalog_digest.expect("catalog digest").as_str(),
+            "c".repeat(64)
+        );
 
-        assert!(parse_publish_profile_runtime_fields(None, Some("{}"), None).is_err());
-        assert!(parse_publish_profile_runtime_fields(None, None, Some("[]")).is_err());
+        assert!(parse_publish_profile_runtime_fields(None, Some("{}"), None, None).is_err());
+        assert!(parse_publish_profile_runtime_fields(None, None, None, Some("[]")).is_err());
+        assert!(parse_publish_profile_runtime_fields(None, None, Some("UPPER"), None).is_err());
 
         let runtime_with_unknown = format!(
             r#"{{"schema":"buzz.agent-runtime.v1","controller_pubkey":"{}","revision":4,"model":"gpt-5.6-sol","effort":"high","effective_name":"Market Intelligence","catalog_digest":"{}","unexpected":true}}"#,
@@ -827,6 +856,7 @@ mod tests {
         assert!(parse_publish_profile_runtime_fields(
             None,
             Some(families),
+            None,
             Some(&runtime_with_unknown)
         )
         .is_err());

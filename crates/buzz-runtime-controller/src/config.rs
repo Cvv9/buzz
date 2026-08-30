@@ -43,6 +43,7 @@ impl fmt::Debug for AgentServiceMapping {
 pub struct ControllerConfig {
     relay_url: String,
     controller_private_key: Zeroizing<String>,
+    controller_pubkey: RuntimePubkey,
     owner_pubkey: RuntimePubkey,
     state_path: PathBuf,
     audit_path: PathBuf,
@@ -55,6 +56,7 @@ pub struct ControllerConfig {
 struct ControllerConfigWire {
     relay_url: String,
     controller_private_key: String,
+    controller_pubkey: RuntimePubkey,
     owner_pubkey: RuntimePubkey,
     state_path: PathBuf,
     audit_path: PathBuf,
@@ -73,6 +75,9 @@ pub enum ConfigError {
     /// Controller secret key is malformed.
     #[error("controller_private_key is invalid")]
     ControllerKey,
+    /// Configured public pin does not belong to the controller secret.
+    #[error("controller private key does not match controller_pubkey")]
+    ControllerIdentity,
     /// A state or audit path is relative or both paths alias one another.
     #[error("state_path and audit_path must be distinct absolute paths")]
     Paths,
@@ -101,7 +106,11 @@ impl ControllerConfig {
         if !matches!(parsed_url.scheme(), "ws" | "wss") || parsed_url.host_str().is_none() {
             return Err(ConfigError::RelayUrl);
         }
-        Keys::parse(wire.controller_private_key.trim()).map_err(|_| ConfigError::ControllerKey)?;
+        let controller_keys = Keys::parse(wire.controller_private_key.trim())
+            .map_err(|_| ConfigError::ControllerKey)?;
+        if controller_keys.public_key().to_hex() != wire.controller_pubkey.as_str() {
+            return Err(ConfigError::ControllerIdentity);
+        }
         if !absolute_distinct(&wire.state_path, &wire.audit_path) {
             return Err(ConfigError::Paths);
         }
@@ -136,6 +145,7 @@ impl ControllerConfig {
         Ok(Self {
             relay_url: wire.relay_url,
             controller_private_key: Zeroizing::new(wire.controller_private_key),
+            controller_pubkey: wire.controller_pubkey,
             owner_pubkey: wire.owner_pubkey,
             state_path: wire.state_path,
             audit_path: wire.audit_path,
@@ -154,9 +164,10 @@ impl ControllerConfig {
         Keys::parse(self.controller_private_key.trim()).map_err(|_| ConfigError::ControllerKey)
     }
 
-    /// Controller public key derived from the configured secret.
+    /// Controller public key validated against the configured secret.
     pub fn controller_pubkey(&self) -> Result<PublicKey, ConfigError> {
-        Ok(self.controller_keys()?.public_key())
+        PublicKey::parse(self.controller_pubkey.as_str())
+            .map_err(|_| ConfigError::ControllerIdentity)
     }
 
     /// Fixed current community owner.
@@ -196,6 +207,7 @@ impl fmt::Debug for ControllerConfig {
             .debug_struct("ControllerConfig")
             .field("relay_url", &self.relay_url)
             .field("controller_private_key", &"[redacted]")
+            .field("controller_pubkey", &self.controller_pubkey.as_str())
             .field("owner_pubkey", &self.owner_pubkey.as_str())
             .field("state_path", &self.state_path)
             .field("audit_path", &self.audit_path)
@@ -231,6 +243,7 @@ mod tests {
         json!({
             "relay_url": "wss://buzz.example.test",
             "controller_private_key": controller.secret_key().to_secret_hex(),
+            "controller_pubkey": controller.public_key().to_hex(),
             "owner_pubkey": "a".repeat(64),
             "state_path": if cfg!(windows) { r"C:\buzz\runtime-state.json" } else { "/var/lib/buzz/runtime-state.json" },
             "audit_path": if cfg!(windows) { r"C:\buzz\runtime-audit.jsonl" } else { "/var/lib/buzz/runtime-audit.jsonl" },
@@ -304,6 +317,13 @@ mod tests {
         assert!(matches!(
             ControllerConfig::from_json(&service.to_string()),
             Err(ConfigError::Service)
+        ));
+
+        let mut mismatched = valid_config();
+        mismatched["controller_pubkey"] = json!("d".repeat(64));
+        assert!(matches!(
+            ControllerConfig::from_json(&mismatched.to_string()),
+            Err(ConfigError::ControllerIdentity)
         ));
     }
 }

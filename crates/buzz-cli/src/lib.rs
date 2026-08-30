@@ -298,6 +298,9 @@ pub enum AgentsCmd {
         /// JSON array of normalized base model families and supported efforts
         #[arg(long)]
         model_families_json: Option<String>,
+        /// Signed digest of the normalized public catalog and private bindings
+        #[arg(long)]
+        catalog_digest: Option<String>,
         /// Strict JSON runtime acknowledgment previously applied by the controller
         #[arg(long)]
         runtime_json: Option<String>,

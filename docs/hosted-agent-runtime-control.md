@@ -1,154 +1,198 @@
 # Hosted-agent runtime control
 
-## Current production boundary
+Buzz's browser workspace, including an installed browser PWA, is the only
+runtime-settings control surface. The desktop client may display compatibility
+state but does not own a second mutation path.
 
-The browser can edit a hosted agent's public presentation through kind
-`30180`.  That event deliberately has the exact, secret-free shape:
+Each hosted agent has one atomic default made of:
+
+- base model family;
+- reasoning effort supported by that family; and
+- runtime-facing name.
+
+That default applies to every future task for that agent. Tasks, channels,
+workflows, and individual messages cannot override it. When work is active, a
+new revision remains `pending_busy`; the runner accepts more queued messages but
+does not start them, does not cancel an active turn, and does not change the
+active session. It emits `applying` only after every active turn finishes and
+publishes `applied` only after a fresh-session probe and an exact signed agent
+acknowledgment.
+
+## Trust and data boundaries
+
+The community owner signs and NIP-44 encrypts kind `24201` to the controller
+pubkey advertised by relay NIP-11. The controller repeats the owner, target,
+freshness, request UUID, expiration, catalog digest, and allowlist checks before
+persisting anything. It then sends an encrypted kind `24200` control frame to
+the exact agent. Public kind `30181` contains only strict status vocabulary;
+private service names, ACP binding IDs, host paths, commands, prompts, adapter
+output, and secret values are forbidden.
+
+Agent and controller services deliberately do not use Compose `env_file`; doing
+so would inject every relay/database/object-store secret from `.env` into those
+containers. Compose substitution passes only each service's explicit allowlist.
+
+The agent's signed kind `10100.runtime` acknowledgment plus the pinned
+controller's kind `30181` are runtime truth. Kind `30180.model` is legacy
+presentation data and is never treated as effective runtime.
+
+## Compose configuration
+
+Set these values in `deploy/compose/.env` before starting either hosted-agent
+profile:
+
+```dotenv
+BUZZ_RUNTIME_CONTROLLER_PRIVATE_KEY=<dedicated 64-character secret hex>
+BUZZ_HOSTED_AGENT_RUNTIME_CONTROLLER_PUBKEY=<matching lowercase public hex>
+BUZZ_RUNTIME_CONTROLLER_AGENTS_JSON=<one-line strict JSON array>
+```
+
+The private key is injected only into `runtime-controller`. The relay and agent
+containers receive only `BUZZ_HOSTED_AGENT_RUNTIME_CONTROLLER_PUBKEY`. Agent
+containers never receive the controller private key, relay private key, or a
+Docker socket.
+
+Generate a dedicated controller identity with `buzz-admin generate-key`. Do not
+reuse the relay, owner, or any agent identity. The controller validates that the
+configured public pin belongs to its private key before connecting.
+
+Every mapped agent identity must already be a relay member. Add it from the
+trusted relay/operator environment before starting the agent profile. Managed
+runners set `BUZZ_ACP_SKIP_MEMBER_BOOTSTRAP=true` and therefore never receive or
+use `BUZZ_RELAY_PRIVATE_KEY`.
+
+`BUZZ_RUNTIME_CONTROLLER_AGENTS_JSON` is a fixed allowlist. Each entry has this
+shape:
 
 ```json
 {
-  "schema": "buzz.hosted-agent-config.v1",
-  "agent_pubkey": "<agent pubkey>",
-  "name": "<display name>",
-  "avatar_url": "<url or null>",
-  "model": "<desired model or null>"
+  "agent_pubkey": "<lowercase 64-character agent pubkey>",
+  "service": "agent-market-intelligence",
+  "catalog": {
+    "model_families": [
+      {
+        "id": "gpt-5.6-terra",
+        "name": "GPT-5.6-Terra",
+        "description": "Balanced agentic coding model.",
+        "default_effort": "medium",
+        "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]
+      }
+    ],
+    "bindings": [
+      {
+        "model": "gpt-5.6-terra",
+        "effort": "medium",
+        "method": {
+          "type": "set_model",
+          "model_id": "gpt-5.6-terra[medium]"
+        }
+      }
+    ]
+  },
+  "initial_runtime": {
+    "model": "gpt-5.6-terra",
+    "effort": "medium",
+    "runtime_name": "Market Intelligence"
+  }
 }
 ```
 
-It must **not** be extended to include a provider, command, credential
-reference, runtime image, environment value, or lifecycle instruction.  It is
-replicated publicly and is authorized for either a community administrator or
-the declared agent owner.  It is therefore not a secure deployment-control
-plane.
+Use each runner's `buzz-acp models --json` output as the source of
+`canonical.catalog` and its persisted identity file as the source of
+`agent_pubkey`. Do not infer binding IDs from labels. Repeated labels such as
+`GPT-3.5-Turbo-16k` can represent aliases; Buzz publishes one normalized family
+row while retaining the exact selected binding only in this private mapping.
+The signed agent profile publishes `model_families` and `catalog_digest`, never
+the binding list.
 
-The currently deployed VarVik hosted fleet is Codex-only:
+## Start and health
 
-- `applications/business/buzz-agents.compose.yml` fixes
-  `BUZZ_ACP_AGENT_COMMAND=codex-acp` and mounts only Codex credentials.
-- the `agent-runtime` Docker target installs only `codex-acp`.
-- `deploy/compose/agent-entrypoint.sh` copies only the Codex auth state into
-  the running agent's home directory.
-- shared agents do not currently set `BUZZ_ACP_AGENT_OWNER` or
-  `BUZZ_ACP_RELAY_OBSERVER`; no browser-originated live control can be
-  authenticated for them.
-
-`buzz-acp` does support both `codex-acp` and `claude-agent-acp`, and it can
-apply a `switch_model` observer control to a current adapter session.  That
-control is intentionally in-memory, per channel, and is lost after a harness
-restart.  It cannot replace an adapter or safely make a model preference
-durable.
-
-## Required security invariants
-
-1. A browser must never choose an executable path, Docker image, environment
-   variable, credential file, or arbitrary model string.
-2. A provider's process must never receive another provider's credential
-   mount.  Installing both adapters and mounting both account states in one
-   promptable agent container is not an acceptable shortcut.
-3. Runtime changes are allowed only for the immutable declared owner of that
-   agent, not merely for a community administrator who may edit its public
-   presentation.
-4. The execution host, not the relay or browser, owns service names, allowed
-   providers, credential mounts, restarts, and durable override storage.
-5. The UI shows a model only after the controller has proved that provider and
-   model are available.  A front-end provider/model table is not authoritative.
-6. A change is acknowledged only after the replacement runner publishes its
-   signed kind `10100` profile with the expected runtime and catalog.
-
-## Smallest safe architecture
-
-Add a small, host-resident **hosted-agent runtime controller**.  It is a
-separate privileged deployment component, never part of a promptable agent
-container and never granted a Docker socket through the relay.
-
-```mermaid
-sequenceDiagram
-  participant Owner as "Declared agent owner"
-  participant Web as "Buzz Web/Desktop"
-  participant Relay as "Buzz relay"
-  participant Controller as "Host runtime controller"
-  participant Runner as "Codex or Claude agent service"
-
-  Owner->>Web: "Choose provider + model"
-  Web->>Relay: "Encrypted runtime request"
-  Relay->>Relay: "Verify owner binding and target"
-  Relay->>Controller: "Authorized request"
-  Controller->>Controller: "Validate allowlist/catalog; persist private override"
-  Controller->>Runner: "Recreate only mapped provider service"
-  Runner->>Relay: "Signed 10100 runtime/profile catalog"
-  Relay->>Web: "Live directory update"
+```bash
+cd deploy/compose
+./run.sh start-agents
+# or
+./run.sh start-personal-agents
 ```
 
-The request should be a new encrypted, short-lived runtime-control event, not
-kind `30180` and not a broad HTTP endpoint.  The relay validates all of these
-before fan-out:
+Compose waits for the relay and the controller's independent readiness endpoint.
+`run.sh` also verifies that every enabled runner container is still running.
+The controller becomes ready only after authentication, complete agent-profile
+replay, subscriptions, state recovery, and pending-revision replay.
 
-- exactly one `p=<controller pubkey>` and one `agent=<agent pubkey>` tag;
-- a NIP-44 payload, fresh timestamp, and a random request id;
-- sender is the immutable owner recorded for the target agent;
-- agent belongs to the controller's configured community.
+On a fresh controller volume, every allowlisted agent receives bootstrap
+revision 1. This deliberate reconciliation produces the first exact signed
+acknowledgment and opens the runner's startup dispatch gate. Scheduled reports
+must not run before that boundary.
 
-The controller decrypts the request and applies this bounded payload:
+Personal assistants use the runner's daily heartbeat schedule configured by
+`BUZZ_ACP_BRIEF_UTC_HOUR` and `BUZZ_ACP_BRIEF_UTC_MINUTE`. Shared portfolio or
+weekly reports are Buzz workflow schedules, not implicit agent heartbeats; test
+and monitor those workflow definitions separately.
 
-```json
-{
-  "version": 1,
-  "request_id": "uuid",
-  "agent_pubkey": "<agent pubkey>",
-  "provider": "codex | claude",
-  "model": "one controller-advertised model id"
-}
-```
+## Status interpretation
 
-It maps the agent pubkey to a fixed service pair and provider-specific Compose
-profile.  It writes the selected provider/model to a root-only state file,
-stops the previous provider service, starts the mapped replacement, and waits
-for the expected signed `10100` profile.  A timeout rolls the service back and
-emits a redacted failure receipt.  The controller also publishes the signed,
-non-secret provider/model availability catalog consumed by web and desktop.
+| State | Meaning | Operator action |
+|---|---|---|
+| `current` | No requested revision differs from effective | None |
+| `pending_busy` | Durable; active work is draining or the runner is offline | Wait; investigate if it exceeds the alert window |
+| `applying` | Runner reached idle and is probing a fresh session | Wait briefly |
+| `applied` | Exact agent acknowledgment matches revision, selection, name, controller, and digest | None |
+| `failed` | Prior effective runtime remains active | Use the fixed error code; refresh/retry or inspect private runner logs |
 
-Each provider-specific service has its own immutable credential/config mounts
-and uses the same agent key only while its counterpart is stopped.  This
-preserves message identity without placing two providers' credentials in the
-same agent process.
+Alert on controller readiness failure, a runner container not running,
+`pending_busy` longer than the maximum active-turn duration, `applying` longer
+than the adapter probe timeout, repeated fixed failure codes, or a missing daily
+report after its configured UTC window. Never copy raw adapter output into a
+public status or audit event.
 
-## Delivery slices
+## Canary rollout
 
-1. **Truthful model UI now:** retain the existing live kind `10100` model
-   dropdown, label it as a current-adapter selection, and only offer a live
-   switch after the target has an owner binding and relay observer enabled.
-   If the adapter has no active session, show that the change applies on the
-   next session and does not survive restart.  Do not claim that the `30180`
-   field changes the runner.
-2. **Controller foundation:** add the new relay event envelope/authorization,
-   controller key, root-only override store, service mapping, audit receipts,
-   and controller integration tests.
-3. **Codex provider lane:** move each current service to the controller's
-   Codex profile, enable the required owner bindings, and verify a restart plus
-   kind `10100` catalog acknowledgment.
-4. **Claude provider lane:** install the Claude ACP adapter in its isolated
-   image/profile; provision and validate a permitted server-side Claude
-   authentication method; add its catalog health check; then enable it per
-   agent.
-5. **Browser/Desktop selector:** consume only controller-signed availability,
-   submit the encrypted request, render pending/applied/rolled-back receipts,
-   and never expose credential fields.
+`./run.sh upgrade-runtime` deploys compatibility in this order:
 
-Before enabling the Claude lane, verify that the selected Claude subscription
-or API agreement permits unattended hosted use for this deployment.  A local
-interactive subscription login is not, by itself, a deployment credential
-contract.
+1. relay;
+2. runtime controller;
+3. `agent-market-intelligence` canary;
+4. remaining enabled agent fleet.
 
-## Required tests
+The command intentionally stops after step 3 unless
+`BUZZ_RUNTIME_CANARY_APPROVED=true` is set. Before approving, start a blocked
+canary task, save a different model and effort in the browser, verify the task
+finishes without a cancellation or duplicate terminal result, and verify the
+status sequence and next queued task. Restart the controller and runner
+separately and confirm the selection survives. Restore the canary's original
+runtime before fleet rollout.
 
-- Relay rejects malformed, stale, replayed, non-owner, wrong-controller, and
-  cross-community requests.
-- Controller rejects unknown agent/provider/model mappings without starting a
-  process.
-- A provider switch stops the old service before the new service starts and
-  never mounts the other provider's credential path.
-- A missing or mismatched `10100` runtime acknowledgment rolls back.
-- The web selector hides unavailable providers and never publishes runtime
-  data in kind `30180`.
-- Current-adapter `switch_model` remains covered separately and is marked
-  non-durable until the controller owns persistence.
+## State recovery and rollback
+
+Controller state and redacted JSONL audit live in the
+`buzz-runtime-controller-state` volume. Files are written with mode `0600`; the
+directory is mode `0700`. State writes use a sibling temp file, file fsync,
+atomic rename, and directory fsync where supported. Recovery reads only the
+complete canonical state file and ignores a partial temp file.
+
+Back up the controller volume with the same maintenance window as relay data.
+To restore, stop the controller, restore the last complete state and audit files
+with root-only permissions, and restart it. Pending/applying revisions are
+replayed idempotently. Do not edit revision numbers or request UUID indexes by
+hand.
+
+For software rollback, keep the controller state volume, redeploy the previous
+relay/controller/runner images, and restore the canary's original runtime in the
+browser. Never delete state merely to clear a failed status; that discards
+idempotency and revision history.
+
+## Controller key rotation
+
+1. Stop accepting runtime edits and wait for no pending/applying revisions.
+2. Back up the controller volume and audit log.
+3. Generate a dedicated replacement keypair.
+4. Deploy relay compatibility with the new public pin and a new empty controller
+   state volume, then deploy the new controller.
+5. Roll one runner with the new public pin. Its bootstrap revision establishes a
+   new acknowledgment bound to the replacement controller.
+6. Complete canary acceptance, roll all runners, then resume browser edits.
+7. Retain the old audit/state backup according to audit policy and destroy the
+   old private key only after rollback is no longer required.
+
+Never run old and new controllers against the same public pin or reuse the old
+state file under a different controller identity.

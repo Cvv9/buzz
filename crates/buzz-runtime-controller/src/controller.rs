@@ -1,5 +1,6 @@
 //! Pure durable reconciliation and the relay transport adapter.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -440,7 +441,7 @@ fn exact_method(
 }
 
 /// Run the authenticated relay reconciliation loop until the connection fails.
-pub async fn run_relay_loop(controller: &mut Controller) -> Result<()> {
+pub async fn run_relay_loop(controller: &mut Controller, ready: &AtomicBool) -> Result<()> {
     let keys = controller
         .config()
         .controller_keys()
@@ -510,7 +511,6 @@ pub async fn run_relay_loop(controller: &mut Controller) -> Result<()> {
             "authors": [keys.public_key().to_hex()]
         }]))
         .await?;
-
     let mut replayed = false;
     loop {
         match connection.next_event(Duration::from_secs(45)).await {
@@ -577,6 +577,7 @@ pub async fn run_relay_loop(controller: &mut Controller) -> Result<()> {
                         controller.pending_effects(),
                     )
                     .await?;
+                    ready.store(true, Ordering::Release);
                 }
             }
             Ok(RelayMessage::Closed { message, .. }) => {
@@ -826,6 +827,7 @@ mod tests {
         let raw = json!({
             "relay_url":"ws://127.0.0.1:3000",
             "controller_private_key":controller_keys.secret_key().to_secret_hex(),
+            "controller_pubkey":controller_keys.public_key().to_hex(),
             "owner_pubkey":owner,
             "state_path":directory.join("state.json"),
             "audit_path":directory.join("audit.jsonl"),

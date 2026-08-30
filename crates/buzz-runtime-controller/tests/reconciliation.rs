@@ -23,6 +23,7 @@ impl Harness {
         let config_json = json!({
             "relay_url":"ws://127.0.0.1:3000",
             "controller_private_key":controller.secret_key().to_secret_hex(),
+            "controller_pubkey":controller.public_key().to_hex(),
             "owner_pubkey":owner,
             "state_path":directory.path().join("state.json"),
             "audit_path":directory.path().join("audit.jsonl"),
