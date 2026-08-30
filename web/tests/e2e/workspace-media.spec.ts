@@ -17,6 +17,12 @@ test("workspace composer uploads imeta attachments and renders protected media",
   const sha256 = createHash("sha256").update(png).digest("hex");
   const url = `http://127.0.0.1:4173/media/${sha256}.png`;
   let uploadAuthorized = false;
+  const mediaRequests: Array<{
+    authorization?: string;
+    referer?: string;
+    resourceType: string;
+    secFetchDest?: string;
+  }> = [];
   await installWorkspaceRelayMock(page, viewerPubkey);
   await page.route("**/upload", async (route) => {
     const request = route.request();
@@ -35,7 +41,14 @@ test("workspace composer uploads imeta attachments and renders protected media",
     });
   });
   await page.route(`**/media/${sha256}.png`, async (route) => {
-    expect(route.request().headers().authorization).toMatch(/^Nostr /);
+    const request = route.request();
+    const headers = request.headers();
+    mediaRequests.push({
+      authorization: headers.authorization,
+      referer: headers.referer,
+      resourceType: request.resourceType(),
+      secFetchDest: headers["sec-fetch-dest"],
+    });
     await route.fulfill({ contentType: "image/png", body: png });
   });
 
@@ -127,6 +140,14 @@ test("workspace composer uploads imeta attachments and renders protected media",
   );
   const preview = page.getByRole("button", { name: "Open plan.png" }).last();
   await expect(preview).toBeVisible();
+  await expect
+    .poll(() =>
+      mediaRequests.some((request) =>
+        request.authorization?.startsWith("Nostr "),
+      ),
+    )
+    .toBe(true);
+  expect(mediaRequests.filter((request) => !request.authorization)).toEqual([]);
   await preview.click();
   const dialog = page.getByRole("dialog", { name: "Preview plan.png" });
   await expect(dialog).toHaveAttribute("aria-modal", "true");

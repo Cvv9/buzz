@@ -42,7 +42,7 @@ export function getHostedAgentPresentation(
  * acknowledgment. The old flat model field is display-only fallback data.
  */
 export function getHostedAgentRuntimePresentation(
-  agent: Pick<RelayAgent, "model" | "modelFamilies" | "runtime">,
+  agent: Pick<RelayAgent, "model" | "models" | "modelFamilies" | "runtime">,
 ): {
   effort: AgentReasoningEffort | null;
   managedOnWeb: boolean;
@@ -54,6 +54,7 @@ export function getHostedAgentRuntimePresentation(
   const modelId = firstNonBlank(runtime?.model, agent.model);
   const modelName =
     agent.modelFamilies?.find((family) => family.id === modelId)?.name ??
+    agent.models?.find((model) => model.id === modelId)?.name ??
     modelId;
   return {
     effort: runtime?.effort ?? null,

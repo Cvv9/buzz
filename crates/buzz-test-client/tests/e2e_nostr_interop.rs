@@ -1687,15 +1687,24 @@ async fn test_nipdv_search_rejects_third_party() {
         .subscribe(&sid, vec![filter])
         .await
         .expect("subscribe");
-    let events = client_b
-        .collect_until_eose(&sid, Duration::from_secs(10))
-        .await
-        .expect("collect until EOSE");
-    assert!(
-        events.is_empty(),
-        "B must not receive A's snapshot via search, got {} event(s)",
-        events.len()
-    );
+    loop {
+        match client_b
+            .recv_event(Duration::from_secs(10))
+            .await
+            .expect("receive search result or subscription terminal message")
+        {
+            RelayMessage::Event {
+                subscription_id, ..
+            } if subscription_id == sid => {
+                panic!("B must not receive A's snapshot via search")
+            }
+            RelayMessage::Eose { subscription_id } if subscription_id == sid => break,
+            RelayMessage::Closed {
+                subscription_id, ..
+            } if subscription_id == sid => break,
+            _ => continue,
+        }
+    }
 }
 
 /// POST /query with `top_level: true` and its extension flags — the channel
