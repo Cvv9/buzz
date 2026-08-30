@@ -17,6 +17,9 @@ use buzz_db::EventQuery;
 use crate::handlers::side_effects::{
     publish_nipia_archival_list, publish_nipia_archived, publish_nipia_unarchived,
 };
+use crate::hosted_agent_policy::{
+    hosted_agent_action_authorized, is_current_hosted_agent, HostedAgentAction,
+};
 use crate::state::AppState;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +58,22 @@ pub async fn handle_identity_archive_event(
     let target_hex = extract_single_p_tag_hex(event)
         .ok_or_else(|| "missing or invalid p tag".to_string())?
         .to_ascii_lowercase();
+
+    let target_bytes = hex::decode(&target_hex).map_err(|_| "invalid target pubkey".to_string())?;
+    if is_current_hosted_agent(&state.db, tenant.community(), &target_bytes)
+        .await
+        .map_err(|error| format!("database error: {error}"))?
+    {
+        let role = state
+            .db
+            .get_relay_member(tenant.community(), &actor_hex)
+            .await
+            .map_err(|error| format!("database error: {error}"))?
+            .map(|member| member.role);
+        if !hosted_agent_action_authorized(HostedAgentAction::ArchiveDelete, role.as_deref()) {
+            return Err("hosted-agent archive/delete requires the community owner".into());
+        }
+    }
 
     let replaced_by = extract_optional_replaced_by(event, &target_hex)?;
     if kind == KIND_IA_UNARCHIVE_REQUEST && replaced_by.is_some() {

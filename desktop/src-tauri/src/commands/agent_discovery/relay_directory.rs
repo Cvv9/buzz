@@ -159,13 +159,9 @@ fn apply_hosted_config_overlays(
                 .filter(|value| !value.is_empty())
                 .map(str::to_string);
         }
-        if let Some(model) = config.get("model") {
-            agent.model = model
-                .as_str()
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string);
-        }
+        // `model` on this owner-authored presentation document is retained
+        // only for mixed-version compatibility. Effective runtime truth comes
+        // from the exact agent-signed kind:10100 `runtime` acknowledgment.
     }
 }
 
@@ -368,6 +364,7 @@ pub async fn revalidate_relay_agents(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nostr::{EventBuilder, Keys, Kind, Tag};
 
     #[test]
     fn owner_only_directory_keeps_only_verified_same_owner_coordinates() {
@@ -442,6 +439,61 @@ mod tests {
             );
             assert_eq!(filter["limit"], 2);
         }
+    }
+
+    #[test]
+    fn hosted_config_model_never_overlays_signed_effective_runtime() {
+        let owner = Keys::generate();
+        let agent_keys = Keys::generate();
+        let agent_pubkey = agent_keys.public_key().to_hex();
+        let directory = EventBuilder::new(
+            Kind::Custom(10100),
+            serde_json::json!({
+                "name": "Scout",
+                "model": "gpt-5.6-terra",
+                "runtime": {
+                    "schema": "buzz.agent-runtime.v1",
+                    "controller_pubkey": "b".repeat(64),
+                    "revision": 7,
+                    "model": "gpt-5.6-terra",
+                    "effort": "high",
+                    "effective_name": "Scout",
+                    "catalog_digest": "c".repeat(64)
+                }
+            })
+            .to_string(),
+        )
+        .sign_with_keys(&agent_keys)
+        .expect("sign directory");
+        let mut agents =
+            crate::nostr_convert::relay_agents_from_directory_events(&[directory], &[], &[]);
+        agents[0].owner_pubkey = Some(owner.public_key().to_hex());
+        let config = EventBuilder::new(
+            Kind::Custom(buzz_core_pkg::kind::KIND_HOSTED_AGENT_CONFIG as u16),
+            serde_json::json!({
+                "schema": "buzz.hosted-agent-config.v1",
+                "agent_pubkey": agent_pubkey,
+                "name": "Scout renamed",
+                "avatar_url": null,
+                "model": "gpt-3.5-turbo-16k"
+            })
+            .to_string(),
+        )
+        .tags([Tag::parse(["d", &agent_pubkey]).expect("d tag")])
+        .sign_with_keys(&owner)
+        .expect("sign config");
+
+        apply_hosted_config_overlays(&mut agents, vec![config], &[]);
+
+        assert_eq!(agents[0].name, "Scout renamed");
+        assert_eq!(agents[0].model.as_deref(), Some("gpt-5.6-terra"));
+        assert_eq!(
+            agents[0]
+                .runtime
+                .as_ref()
+                .map(|runtime| runtime.model.as_str()),
+            Some("gpt-5.6-terra")
+        );
     }
 
     #[test]

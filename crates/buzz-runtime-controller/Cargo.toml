@@ -1,0 +1,28 @@
+[package]
+name = "buzz-runtime-controller"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Durable owner-controlled hosted-agent runtime reconciler"
+
+[dependencies]
+anyhow = { workspace = true }
+buzz-core = { workspace = true }
+buzz-sdk = { workspace = true }
+buzz-ws-client = { workspace = true }
+chrono = { workspace = true }
+nostr = { workspace = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+url = { workspace = true }
+zeroize = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

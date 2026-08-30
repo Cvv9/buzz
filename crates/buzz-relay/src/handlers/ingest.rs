@@ -19,14 +19,14 @@ use buzz_core::kind::{
     KIND_FORUM_POST, KIND_FORUM_VOTE, KIND_GIFT_WRAP, KIND_GIT_ISSUE, KIND_GIT_PATCH,
     KIND_GIT_PR_UPDATE, KIND_GIT_PULL_REQUEST, KIND_GIT_REPO_ANNOUNCEMENT, KIND_GIT_REPO_STATE,
     KIND_GIT_STATUS_CLOSED, KIND_GIT_STATUS_DRAFT, KIND_GIT_STATUS_MERGED, KIND_GIT_STATUS_OPEN,
-    KIND_HOSTED_AGENT_CONFIG, KIND_HUDDLE_ENDED, KIND_HUDDLE_GUIDELINES,
-    KIND_HUDDLE_PARTICIPANT_JOINED, KIND_HUDDLE_PARTICIPANT_LEFT, KIND_HUDDLE_STARTED,
-    KIND_IA_ARCHIVE_REQUEST, KIND_IA_UNARCHIVE_REQUEST, KIND_LONG_FORM, KIND_MANAGED_AGENT,
-    KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION, KIND_MODERATION_BAN,
-    KIND_MODERATION_RESOLVE_REPORT, KIND_MODERATION_TIMEOUT, KIND_MODERATION_UNBAN,
-    KIND_MODERATION_UNTIMEOUT, KIND_MUTE_LIST, KIND_NIP29_CREATE_GROUP, KIND_NIP29_DELETE_EVENT,
-    KIND_NIP29_DELETE_GROUP, KIND_NIP29_EDIT_METADATA, KIND_NIP29_JOIN_REQUEST,
-    KIND_NIP29_LEAVE_REQUEST, KIND_NIP29_PUT_USER, KIND_NIP29_REMOVE_USER,
+    KIND_HOSTED_AGENT_CONFIG, KIND_HOSTED_AGENT_RUNTIME_STATUS, KIND_HUDDLE_ENDED,
+    KIND_HUDDLE_GUIDELINES, KIND_HUDDLE_PARTICIPANT_JOINED, KIND_HUDDLE_PARTICIPANT_LEFT,
+    KIND_HUDDLE_STARTED, KIND_IA_ARCHIVE_REQUEST, KIND_IA_UNARCHIVE_REQUEST, KIND_LONG_FORM,
+    KIND_MANAGED_AGENT, KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION,
+    KIND_MODERATION_BAN, KIND_MODERATION_RESOLVE_REPORT, KIND_MODERATION_TIMEOUT,
+    KIND_MODERATION_UNBAN, KIND_MODERATION_UNTIMEOUT, KIND_MUTE_LIST, KIND_NIP29_CREATE_GROUP,
+    KIND_NIP29_DELETE_EVENT, KIND_NIP29_DELETE_GROUP, KIND_NIP29_EDIT_METADATA,
+    KIND_NIP29_JOIN_REQUEST, KIND_NIP29_LEAVE_REQUEST, KIND_NIP29_PUT_USER, KIND_NIP29_REMOVE_USER,
     KIND_NIP43_LEAVE_REQUEST, KIND_NIP65_RELAY_LIST_METADATA, KIND_PERSONA, KIND_PIN_LIST,
     KIND_PRESENCE_UPDATE, KIND_PRIVATE_MANAGED_AGENT, KIND_PRODUCT_FEEDBACK, KIND_PROFILE,
     KIND_PROJECT, KIND_REACTION, KIND_READ_STATE, KIND_REPORT, KIND_STREAM_MESSAGE,
@@ -39,7 +39,6 @@ use buzz_core::kind::{
 use buzz_core::tenant::TenantContext;
 use buzz_core::verification::verify_event;
 use buzz_core::CommunityId;
-use buzz_db::EventQuery;
 use nostr::Event;
 
 use crate::state::AppState;
@@ -350,6 +349,7 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
         KIND_CONTACT_LIST | KIND_READ_STATE | KIND_USER_STATUS | KIND_AGENT_ENGRAM
         | KIND_EVENT_REMINDER | KIND_PERSONA | KIND_TEAM | KIND_MANAGED_AGENT
         | KIND_HOSTED_AGENT_CONFIG
+        | KIND_HOSTED_AGENT_RUNTIME_STATUS
         | KIND_PRIVATE_MANAGED_AGENT | KIND_TEAM_CATALOG | super::push_lease::KIND_PUSH_LEASE => {
             Ok(Scope::UsersWrite)
         }
@@ -565,6 +565,7 @@ pub(crate) fn is_global_only_kind(kind: u32) -> bool {
             | KIND_MANAGED_AGENT
             | KIND_PRIVATE_MANAGED_AGENT
             | KIND_HOSTED_AGENT_CONFIG
+            | KIND_HOSTED_AGENT_RUNTIME_STATUS
             | KIND_TEAM_CATALOG
             // NIP-34: git events use `a` tags (repo reference), not `h` tags (channel scope).
             // Parameterized replaceable kinds are keyed by (pubkey, kind, d_tag).
@@ -1391,16 +1392,50 @@ fn validate_hosted_agent_config_envelope(event: &Event) -> Result<String, String
     Ok(target.to_string())
 }
 
-/// Check that a hosted-config writer is either a community administrator or
-/// the immutable owner declared by the target agent's NIP-OA relationship.
+/// Validate the pinned controller's public, secret-free runtime status.
+fn validate_hosted_agent_runtime_status_envelope(
+    event: &Event,
+    configured_controller_pubkey: Option<&str>,
+) -> Result<String, String> {
+    const LABEL: &str = "hosted-agent runtime status";
+    let controller = configured_controller_pubkey
+        .ok_or_else(|| "restricted: hosted runtime control is disabled".to_string())?;
+    if event.pubkey.to_hex() != controller {
+        return Err(format!(
+            "restricted: {LABEL} must be authored by the pinned controller"
+        ));
+    }
+
+    let d_tag = single_bounded_d_tag(event, LABEL)?;
+    let tags_are_exact = event.tags.len() == 1
+        && event.tags.iter().next().is_some_and(|tag| {
+            let parts = tag.as_slice();
+            parts.len() == 2 && parts[0] == "d" && parts[1] == d_tag
+        });
+    if !tags_are_exact {
+        return Err(format!(
+            "{LABEL} tags must be exactly [[\"d\", agent_pubkey]]"
+        ));
+    }
+
+    let status: buzz_core::hosted_agent_runtime::HostedAgentRuntimeStatus =
+        serde_json::from_str(&event.content)
+            .map_err(|error| format!("{LABEL} content is invalid: {error}"))?;
+    if status.agent_pubkey.as_str() != d_tag {
+        return Err(format!("{LABEL} agent_pubkey must equal the `d` tag"));
+    }
+
+    Ok(d_tag.to_owned())
+}
+
+/// Check that a hosted-config writer is the exact current community owner.
 async fn validate_hosted_agent_config_authorization(
     tenant: &TenantContext,
     state: &Arc<AppState>,
     event: &Event,
-    target_pubkey: &str,
 ) -> Result<(), IngestError> {
     let actor_hex = event.pubkey.to_hex();
-    let is_community_admin = state
+    let role = state
         .db
         .get_relay_member(tenant.community(), &actor_hex)
         .await
@@ -1409,77 +1444,21 @@ async fn validate_hosted_agent_config_authorization(
                 "error: db error checking hosted-agent config role: {error}"
             ))
         })?
-        .is_some_and(|member| member.role == "owner" || member.role == "admin");
-    let target_bytes = hex::decode(target_pubkey).map_err(|_| {
-        IngestError::Rejected("invalid: hosted-agent config target must be lowercase hex".into())
-    })?;
-    let is_owner = state
-        .db
-        .is_agent_owner(tenant.community(), &target_bytes, &event.pubkey.to_bytes())
-        .await
-        .map_err(|error| {
-            IngestError::Internal(format!(
-                "error: db error checking hosted-agent config ownership: {error}"
-            ))
-        })?;
-    if is_community_admin || is_owner {
-        return Ok(());
-    }
-
-    // Prefer NIP-OA's immutable ownership. For hosted agents that predate that
-    // attestation, accept only the target agent's self-authored kind:10100
-    // declaration; an unknown or malformed directory head still fails closed.
-    let mut profile_query = EventQuery::for_community(tenant.community());
-    profile_query.kinds = Some(vec![KIND_AGENT_PROFILE as i32]);
-    profile_query.pubkey = Some(target_bytes);
-    profile_query.global_only = true;
-    profile_query.limit = Some(1);
-    let declared_owner = state
-        .db
-        .query_events(&profile_query)
-        .await
-        .map_err(|error| {
-            IngestError::Internal(format!(
-                "error: db error reading hosted-agent profile: {error}"
-            ))
-        })?
-        .into_iter()
-        .next()
-        .and_then(|profile| serde_json::from_str::<serde_json::Value>(&profile.event.content).ok())
-        .and_then(|content| {
-            content
-                .get("owner_pubkey")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-        });
-    if hosted_agent_config_authorized(
-        is_community_admin,
-        is_owner,
-        declared_owner.as_deref(),
-        &actor_hex,
-    ) {
+        .map(|member| member.role);
+    if hosted_agent_config_authorized(role.as_deref()) {
         return Ok(());
     }
 
     Err(IngestError::AuthFailed(
-        "restricted: hosted-agent config requires a community admin or declared agent owner".into(),
+        "restricted: hosted-agent config requires the community owner".into(),
     ))
 }
 
-/// Pure authorization decision for the public hosted presentation overlay.
-///
-/// The caller resolves the three trusted facts from the community role table,
-/// immutable NIP-OA owner mapping, and self-authored directory head before
-/// invoking this helper.
-fn hosted_agent_config_authorized(
-    is_community_admin: bool,
-    is_nip_oa_owner: bool,
-    declared_owner: Option<&str>,
-    actor_pubkey: &str,
-) -> bool {
-    is_community_admin
-        || is_nip_oa_owner
-        || declared_owner.is_some_and(|owner| owner.eq_ignore_ascii_case(actor_pubkey))
+fn hosted_agent_config_authorized(current_community_role: Option<&str>) -> bool {
+    crate::hosted_agent_policy::hosted_agent_action_authorized(
+        crate::hosted_agent_policy::HostedAgentAction::PresentationUpdate,
+        current_community_role,
+    )
 }
 
 /// Maximum number of member `a` tags on a kind:30621 project.
@@ -2744,9 +2723,26 @@ async fn ingest_event_inner(
     }
 
     if kind_u32 == KIND_HOSTED_AGENT_CONFIG {
-        let target_pubkey = validate_hosted_agent_config_envelope(&event)
+        validate_hosted_agent_config_envelope(&event)
             .map_err(|e| IngestError::Rejected(format!("invalid: {e}")))?;
-        validate_hosted_agent_config_authorization(tenant, state, &event, &target_pubkey).await?;
+        validate_hosted_agent_config_authorization(tenant, state, &event).await?;
+    }
+
+    if kind_u32 == KIND_HOSTED_AGENT_RUNTIME_STATUS {
+        validate_hosted_agent_runtime_status_envelope(
+            &event,
+            state
+                .config
+                .hosted_agent_runtime_controller_pubkey
+                .as_deref(),
+        )
+        .map_err(|error| {
+            if error.starts_with("restricted:") {
+                IngestError::AuthFailed(error)
+            } else {
+                IngestError::Rejected(format!("invalid: {error}"))
+            }
+        })?;
     }
 
     if kind_u32 == KIND_PROJECT {
@@ -3265,7 +3261,7 @@ mod tests {
         KIND_MANAGED_AGENT, KIND_PERSONA, KIND_PRESENCE_UPDATE, KIND_STREAM_MESSAGE,
         KIND_STREAM_MESSAGE_DIFF, KIND_TEAM, KIND_USER_STATUS,
     };
-    use nostr::{EventBuilder, Kind};
+    use nostr::{EventBuilder, Kind, Tag};
 
     #[test]
     fn reaction_validation_accepts_wrapped_max_shortcode() {
@@ -4797,21 +4793,128 @@ mod tests {
     }
 
     #[test]
-    fn hosted_agent_config_authorization_allows_only_admin_or_owner_sources() {
-        let actor = "a".repeat(64);
-        assert!(hosted_agent_config_authorized(
-            false,
-            false,
-            Some(&actor),
-            &actor
+    fn hosted_agent_config_authorization_rejects_non_community_owner_sources() {
+        assert!(hosted_agent_config_authorized(Some("owner")));
+        for role in [Some("admin"), Some("member"), Some("agent"), None] {
+            assert!(!hosted_agent_config_authorized(role));
+        }
+    }
+
+    fn runtime_status_content(agent: &str) -> serde_json::Value {
+        serde_json::json!({
+            "schema": "buzz.hosted-agent-runtime-status.v1",
+            "agent_pubkey": agent,
+            "request_id": "550e8400-e29b-41d4-a716-446655440000",
+            "revision": 12,
+            "state": "pending_busy",
+            "effective": {
+                "model": "gpt-5.6-terra",
+                "effort": "medium",
+                "runtime_name": "Market Intelligence"
+            },
+            "requested": {
+                "model": "gpt-5.6-sol",
+                "effort": "high",
+                "runtime_name": "Market Intelligence"
+            },
+            "catalog_digest": "c".repeat(64),
+            "error": null
+        })
+    }
+
+    fn make_runtime_status(
+        controller: &nostr::Keys,
+        d_tag: &str,
+        content: &serde_json::Value,
+        extra_tags: &[&[&str]],
+    ) -> Event {
+        let mut tags = vec![Tag::parse(["d", d_tag]).expect("d")];
+        tags.extend(
+            extra_tags
+                .iter()
+                .map(|tag| Tag::parse(tag.iter().copied()).expect("extra tag")),
+        );
+        EventBuilder::new(
+            Kind::Custom(KIND_HOSTED_AGENT_RUNTIME_STATUS as u16),
+            content.to_string(),
+        )
+        .tags(tags)
+        .sign_with_keys(controller)
+        .expect("sign status")
+    }
+
+    #[test]
+    fn hosted_runtime_status_accepts_only_exact_controller_authored_projection() {
+        let controller = nostr::Keys::generate();
+        let agent = nostr::Keys::generate().public_key().to_hex();
+        let content = runtime_status_content(&agent);
+        let event = make_runtime_status(&controller, &agent, &content, &[]);
+
+        assert_eq!(
+            validate_hosted_agent_runtime_status_envelope(
+                &event,
+                Some(&controller.public_key().to_hex())
+            ),
+            Ok(agent.clone())
+        );
+        assert!(validate_hosted_agent_runtime_status_envelope(
+            &event,
+            Some(&nostr::Keys::generate().public_key().to_hex())
+        )
+        .unwrap_err()
+        .starts_with("restricted:"));
+        assert!(validate_hosted_agent_runtime_status_envelope(&event, None)
+            .unwrap_err()
+            .starts_with("restricted:"));
+
+        let other = nostr::Keys::generate().public_key().to_hex();
+        assert!(validate_hosted_agent_runtime_status_envelope(
+            &make_runtime_status(&controller, &other, &content, &[]),
+            Some(&controller.public_key().to_hex())
+        )
+        .unwrap_err()
+        .contains("must equal"));
+        assert!(validate_hosted_agent_runtime_status_envelope(
+            &make_runtime_status(&controller, &agent, &content, &[&["h", "leak"]]),
+            Some(&controller.public_key().to_hex())
+        )
+        .unwrap_err()
+        .contains("tags must be exactly"));
+    }
+
+    #[test]
+    fn hosted_runtime_status_rejects_secrets_commands_prompts_and_unknown_fields() {
+        let controller = nostr::Keys::generate();
+        let agent = nostr::Keys::generate().public_key().to_hex();
+        for forbidden in ["host_path", "service_name", "prompt", "command", "unknown"] {
+            let mut content = runtime_status_content(&agent);
+            content[forbidden] = serde_json::json!("must not be public");
+            let event = make_runtime_status(&controller, &agent, &content, &[]);
+            assert!(
+                validate_hosted_agent_runtime_status_envelope(
+                    &event,
+                    Some(&controller.public_key().to_hex())
+                )
+                .is_err(),
+                "forbidden field {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn hosted_runtime_status_is_global_parameterized_replaceable_user_state() {
+        assert!(is_global_only_kind(KIND_HOSTED_AGENT_RUNTIME_STATUS));
+        assert!(is_parameterized_replaceable(
+            KIND_HOSTED_AGENT_RUNTIME_STATUS
         ));
-        assert!(hosted_agent_config_authorized(false, true, None, &actor));
-        assert!(hosted_agent_config_authorized(true, false, None, &actor));
-        assert!(!hosted_agent_config_authorized(
-            false,
-            false,
-            Some(&"b".repeat(64)),
-            &actor
+        let event = make_event_with_tags(
+            KIND_HOSTED_AGENT_RUNTIME_STATUS,
+            "{}",
+            &[&["d", &"a".repeat(64)]],
+        );
+        assert!(matches!(
+            required_scope_for_kind(KIND_HOSTED_AGENT_RUNTIME_STATUS, &event),
+            Ok(Scope::UsersWrite)
         ));
     }
 

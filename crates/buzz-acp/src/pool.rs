@@ -41,6 +41,12 @@ use crate::queue::{
     PromptProfile, PromptProfileLookup, ThreadTags,
 };
 use crate::relay::{ChannelInfo, RestClient};
+use crate::runtime_catalog::{normalize_runtime_catalog, NormalizedRuntimeCatalog};
+use crate::runtime_defaults::{
+    PendingRuntimeRevision, RuntimeApplyFailure, RuntimeDefaults, RuntimeDefaultsState,
+    RuntimeRevisionDisposition, StaleRuntimeApplyResult,
+};
+use crate::runtime_identity::RuntimeIdentity;
 
 /// Window within which agent activity before a hard-cap death qualifies
 /// the turn as "recently active" (eligible for requeue instead of dead-letter).
@@ -88,6 +94,24 @@ pub struct AgentModelCapabilities {
     pub config_options_raw: Vec<serde_json::Value>,
     /// Unstable: SessionModelState from session/new.
     pub available_models_raw: Option<serde_json::Value>,
+}
+
+fn normalize_agent_runtime_catalog(
+    capabilities: &AgentModelCapabilities,
+) -> Option<NormalizedRuntimeCatalog> {
+    match normalize_runtime_catalog(
+        &capabilities.config_options_raw,
+        capabilities.available_models_raw.as_ref(),
+    ) {
+        Ok(catalog) => Some(catalog),
+        Err(error) => {
+            tracing::warn!(
+                target: "pool::runtime_defaults",
+                "adapter runtime catalog rejected: {error}"
+            );
+            None
+        }
+    }
 }
 
 /// Successful deliveries associated with one live channel session.
@@ -259,6 +283,17 @@ impl OwnedAgent {
     }
 }
 
+fn install_runtime_revision(
+    state: &mut SessionState,
+    desired_model: &mut Option<String>,
+    model_overridden: &mut bool,
+    revision: &PendingRuntimeRevision,
+) {
+    *desired_model = Some(revision.exact_selection_id().to_owned());
+    *model_overridden = true;
+    state.invalidate_all();
+}
+
 /// Pool of agents with take-and-return ownership semantics.
 ///
 /// Agents are either idle (sitting in `agents[i]`) or checked out
@@ -270,6 +305,9 @@ pub struct AgentPool {
     result_rx: mpsc::UnboundedReceiver<PromptResult>,
     pub join_set: JoinSet<()>,
     task_map: HashMap<tokio::task::Id, TaskMeta>,
+    runtime_defaults: Box<RuntimeDefaults>,
+    runtime_catalog: Option<NormalizedRuntimeCatalog>,
+    runtime_reconciled: bool,
 }
 
 /// Result returned by a completed prompt task.
@@ -564,9 +602,9 @@ pub struct PromptContext {
     pub turn_liveness_interval: Duration,
     pub dedup_mode: DedupMode,
     pub system_prompt: Option<String>,
-    /// Sanitized title for each new ACP session, sent as `_meta.sessionTitle`
-    /// on `session/new`. Never part of the prompt.
-    pub session_title: Option<String>,
+    /// Mutable runtime-facing name read for each fresh ACP session. This value
+    /// never replaces or mutates the Nostr signing identity.
+    pub runtime_identity: RuntimeIdentity,
     pub team_instructions: Option<String>,
     pub heartbeat_prompt: Option<String>,
     /// Base prompt content, or `None` if `--no-base-prompt` was passed.
@@ -720,12 +758,20 @@ impl AgentPool {
     /// the index invariant.
     pub fn from_slots(slots: Vec<Option<OwnedAgent>>) -> Self {
         let (result_tx, result_rx) = mpsc::unbounded_channel();
+        let runtime_catalog = slots
+            .iter()
+            .flatten()
+            .filter_map(|agent| agent.model_capabilities.as_ref())
+            .find_map(normalize_agent_runtime_catalog);
         Self {
             agents: slots,
             result_tx,
             result_rx,
             join_set: JoinSet::new(),
             task_map: HashMap::new(),
+            runtime_defaults: Box::new(RuntimeDefaults::new(None)),
+            runtime_catalog,
+            runtime_reconciled: true,
         }
     }
 
@@ -736,6 +782,9 @@ impl AgentPool {
     ///
     /// Returns `None` if all agents are checked out.
     pub fn try_claim(&mut self, channel_id: Option<Uuid>) -> Option<OwnedAgent> {
+        if !self.runtime_reconciled || !self.runtime_defaults.dispatch_allowed() {
+            return None;
+        }
         // Pass 1: prefer agent with existing session for this channel.
         if let Some(cid) = channel_id {
             let idx = self.agents.iter().position(|slot| {
@@ -755,6 +804,23 @@ impl AgentPool {
 
     /// Return an agent to its slot after a task completes.
     pub fn return_agent(&mut self, agent: OwnedAgent) {
+        let mut agent = agent;
+        if self.runtime_catalog.is_none() {
+            self.runtime_catalog = agent
+                .model_capabilities
+                .as_ref()
+                .and_then(normalize_agent_runtime_catalog);
+        }
+        if let Some(effective) = self.runtime_defaults.effective() {
+            if agent.desired_model.as_deref() != Some(effective.exact_selection_id()) {
+                install_runtime_revision(
+                    &mut agent.state,
+                    &mut agent.desired_model,
+                    &mut agent.model_overridden,
+                    effective,
+                );
+            }
+        }
         let idx = agent.index;
         if self.agents[idx].is_some() {
             // This is a bug: two tasks returned the same agent index. Log it
@@ -767,6 +833,193 @@ impl AgentPool {
             );
         }
         self.agents[idx] = Some(agent);
+    }
+
+    /// Begin or supersede an agent-global runtime revision without signalling
+    /// any active turn. New claims stop immediately; checked-out agents return
+    /// through their normal prompt-result path.
+    #[allow(dead_code)] // Controller transport is wired in the next runtime-control slice.
+    pub fn request_runtime_defaults(
+        &mut self,
+        revision: PendingRuntimeRevision,
+    ) -> RuntimeRevisionDisposition {
+        self.runtime_defaults.request(revision, self.task_map.len())
+    }
+
+    /// Notify the runtime gate after a task-map removal. Returns `true` only
+    /// when the last active turn moved a quiescing revision to `Applying`.
+    pub fn note_active_turns_changed(&mut self) -> bool {
+        self.runtime_defaults
+            .active_turns_changed(self.task_map.len())
+    }
+
+    /// Whether queued channel work and heartbeats may claim an agent.
+    pub fn runtime_dispatch_allowed(&self) -> bool {
+        self.runtime_reconciled && self.runtime_defaults.dispatch_allowed()
+    }
+
+    /// Hold queued work while a configured controller proves the current
+    /// durable revision or replays a pending one.
+    pub fn require_runtime_reconciliation(&mut self) {
+        self.runtime_reconciled = false;
+    }
+
+    /// Release the startup gate after a trusted controller command/status.
+    pub fn mark_runtime_reconciled(&mut self) {
+        self.runtime_reconciled = true;
+    }
+
+    /// Whether the startup/controller reconciliation gate has opened.
+    pub fn runtime_is_reconciled(&self) -> bool {
+        self.runtime_reconciled
+    }
+
+    /// Preserve effective runtime state across lazy-pool teardown/wake.
+    pub(crate) fn runtime_defaults_snapshot(&self) -> RuntimeDefaults {
+        self.runtime_defaults.as_ref().clone()
+    }
+
+    /// Restore agent-global defaults onto a newly spawned pool before its first
+    /// claim. Lazy wake must not fall back to process-start configuration.
+    pub(crate) fn restore_runtime_defaults(&mut self, defaults: RuntimeDefaults) {
+        *self.runtime_defaults = defaults;
+        if let Some(effective) = self.runtime_defaults.effective() {
+            for agent in self.agents.iter_mut().flatten() {
+                install_runtime_revision(
+                    &mut agent.state,
+                    &mut agent.desired_model,
+                    &mut agent.model_overridden,
+                    effective,
+                );
+            }
+        }
+    }
+
+    /// Current reconciliation state, used by the controller transport.
+    #[allow(dead_code)] // Controller transport is wired in the next runtime-control slice.
+    pub fn runtime_defaults_state(&self) -> RuntimeDefaultsState {
+        self.runtime_defaults.state()
+    }
+
+    /// Return the normalized local catalog used to validate controller bindings.
+    pub fn runtime_catalog(&self) -> Option<NormalizedRuntimeCatalog> {
+        self.runtime_catalog.clone()
+    }
+
+    /// Probe one idle adapter before dispatch starts so controller revisions can
+    /// be validated even when the agent has not handled its first task yet.
+    pub async fn ensure_runtime_catalog(
+        &mut self,
+        cwd: &str,
+    ) -> anyhow::Result<NormalizedRuntimeCatalog> {
+        if let Some(catalog) = self.runtime_catalog.clone() {
+            return Ok(catalog);
+        }
+        let agent =
+            self.agents.iter_mut().flatten().next().ok_or_else(|| {
+                anyhow::anyhow!("no idle agent available for runtime catalog probe")
+            })?;
+        let response = agent
+            .acp
+            .session_new_full(cwd, Vec::new(), None, None)
+            .await
+            .map_err(|error| anyhow::anyhow!("runtime catalog probe failed: {error}"))?;
+        let capabilities = AgentModelCapabilities {
+            config_options_raw: extract_model_config_options(&response.raw),
+            available_models_raw: extract_model_state(&response.raw),
+        };
+        let catalog = normalize_runtime_catalog(
+            &capabilities.config_options_raw,
+            capabilities.available_models_raw.as_ref(),
+        )
+        .map_err(|error| anyhow::anyhow!("runtime catalog normalization failed: {error}"))?;
+        agent.model_capabilities = Some(capabilities);
+        self.runtime_catalog = Some(catalog.clone());
+        Ok(catalog)
+    }
+
+    /// Exact prior effective revision, retained when a new probe rolls back.
+    pub fn effective_runtime_revision(&self) -> Option<PendingRuntimeRevision> {
+        self.runtime_defaults.effective().cloned()
+    }
+
+    /// Complete the matching revision after its fresh-session probe succeeds.
+    /// Model and effort are represented by one exact adapter ID, so every idle
+    /// process changes atomically and every old channel session is invalidated.
+    #[allow(dead_code)] // Controller transport is wired in the next runtime-control slice.
+    pub fn commit_runtime_defaults(
+        &mut self,
+        revision: u64,
+    ) -> Result<(), StaleRuntimeApplyResult> {
+        let pending = self
+            .runtime_defaults
+            .pending()
+            .filter(|pending| {
+                pending.revision == revision
+                    && self.runtime_defaults.state() == RuntimeDefaultsState::Applying
+            })
+            .cloned()
+            .ok_or(StaleRuntimeApplyResult)?;
+        for agent in self.agents.iter_mut().flatten() {
+            install_runtime_revision(
+                &mut agent.state,
+                &mut agent.desired_model,
+                &mut agent.model_overridden,
+                &pending,
+            );
+        }
+        self.runtime_defaults.mark_applied(revision)
+    }
+
+    /// Roll back a failed probe. Owned agents are untouched until commit, so
+    /// the prior defaults and live sessions remain usable.
+    #[allow(dead_code)] // Controller transport is wired in the next runtime-control slice.
+    pub fn fail_runtime_defaults(
+        &mut self,
+        revision: u64,
+    ) -> Result<&'static str, StaleRuntimeApplyResult> {
+        self.runtime_defaults.mark_failed(revision)
+    }
+
+    /// Clone the exact pending revision for an asynchronous probe.
+    #[allow(dead_code)] // Controller transport is wired in the next runtime-control slice.
+    pub fn pending_runtime_apply(&self) -> Option<PendingRuntimeRevision> {
+        (self.runtime_defaults.state() == RuntimeDefaultsState::Applying)
+            .then(|| self.runtime_defaults.pending().cloned())
+            .flatten()
+    }
+
+    /// Probe the exact pending binding on one disposable fresh session, then
+    /// atomically commit it to every idle process. No existing channel session
+    /// is invalidated until both `session/new` and the exact ACP switch method
+    /// succeed. Any failure preserves prior defaults and resumes dispatch.
+    #[allow(dead_code)] // Controller transport is wired in the next runtime-control slice.
+    pub async fn apply_pending_runtime_defaults(
+        &mut self,
+        cwd: &str,
+    ) -> Result<u64, RuntimeApplyFailure> {
+        let pending = self
+            .pending_runtime_apply()
+            .ok_or_else(RuntimeApplyFailure::failed)?;
+        let probe_result = match self.agents.iter_mut().flatten().next() {
+            Some(agent) => probe_runtime_revision(agent, cwd, &pending).await,
+            None => Err(AcpError::Protocol(
+                "no idle agent available for runtime probe".into(),
+            )),
+        };
+        if let Err(error) = probe_result {
+            tracing::warn!(
+                target: "pool::runtime_defaults",
+                revision = pending.revision,
+                error = %error,
+                "runtime defaults probe failed; retaining prior effective defaults"
+            );
+            let _ = self.fail_runtime_defaults(pending.revision);
+            return Err(RuntimeApplyFailure::failed());
+        }
+        self.commit_runtime_defaults(pending.revision)
+            .map_err(|_| RuntimeApplyFailure::failed())?;
+        Ok(pending.revision)
     }
 
     /// Whether any agent is currently idle (sitting in its slot).
@@ -976,6 +1229,42 @@ impl AgentPool {
     }
 }
 
+async fn probe_runtime_revision(
+    agent: &mut OwnedAgent,
+    cwd: &str,
+    pending: &PendingRuntimeRevision,
+) -> Result<(), AcpError> {
+    let probe = agent
+        .acp
+        .session_new_full(cwd, Vec::new(), None, None)
+        .await?;
+    let result = timeout(MODEL_SWITCH_TIMEOUT, async {
+        match &pending.method {
+            buzz_core::hosted_agent_runtime::RuntimeSelectionMethod::ConfigOption {
+                config_id,
+                option_value,
+            } => {
+                agent
+                    .acp
+                    .session_set_config_option(&probe.session_id, config_id, option_value)
+                    .await
+            }
+            buzz_core::hosted_agent_runtime::RuntimeSelectionMethod::SetModel { model_id } => {
+                agent
+                    .acp
+                    .session_set_model(&probe.session_id, model_id)
+                    .await
+            }
+        }
+    })
+    .await;
+    match result {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(error)) => Err(error),
+        Err(_) => Err(AcpError::Timeout(MODEL_SWITCH_TIMEOUT)),
+    }
+}
+
 /// Outcome of [`AgentPool::switch_idle_agent_model`].
 #[derive(Debug, PartialEq, Eq)]
 pub enum IdleSwitchResult {
@@ -1069,6 +1358,13 @@ struct NewSessionChannelContext<'a> {
     channel_type: Option<&'a str>,
 }
 
+fn runtime_session_title(identity: &RuntimeIdentity, channel_name: Option<&str>) -> Option<String> {
+    identity
+        .name()
+        .as_deref()
+        .map(|agent_name| compose_session_title(agent_name, channel_name))
+}
+
 async fn create_session_and_apply_model(
     agent: &mut OwnedAgent,
     ctx: &PromptContext,
@@ -1082,11 +1378,19 @@ async fn create_session_and_apply_model(
     // its own `[Agent Memory — core]` header, and canvas carries its own
     // `[Channel Canvas]` header; both are appended with a blank-line separator.
     let is_goose = agent.agent_name == "goose";
+    let runtime_name = ctx.runtime_identity.name();
     let combined_system_prompt = with_canvas(
         with_huddle_instructions(
             with_core(
                 with_team(
-                    framed_system_prompt(&ctx.cwd, ctx.base_prompt, ctx.system_prompt.as_deref()),
+                    with_runtime_identity(
+                        framed_system_prompt(
+                            &ctx.cwd,
+                            ctx.base_prompt,
+                            ctx.system_prompt.as_deref(),
+                        ),
+                        runtime_name.as_deref(),
+                    ),
                     ctx.team_instructions.as_deref(),
                 ),
                 agent_core,
@@ -1096,15 +1400,12 @@ async fn create_session_and_apply_model(
         channel.canvas,
     );
 
-    let session_title = ctx
-        .session_title
-        .as_deref()
-        .map(|agent_name| compose_session_title(agent_name, channel.name));
+    let session_title = runtime_session_title(&ctx.runtime_identity, channel.name);
     let mcp_servers = mcp_servers_with_git_origin(
         &ctx.mcp_servers,
         channel.id,
         channel.channel_type,
-        ctx.session_title.as_deref(),
+        runtime_name.as_deref(),
     );
 
     let resp = agent
@@ -1487,6 +1788,37 @@ fn with_team(prompt: Option<String>, instructions: Option<&str>) -> Option<Strin
         }
         (None, Some(instructions)) => Some(format!("[Team Instructions]\n{instructions}")),
         (Some(prompt), None) => Some(prompt),
+        (None, None) => None,
+    }
+}
+
+fn with_runtime_identity(prompt: Option<String>, name: Option<&str>) -> Option<String> {
+    let identity = name.map(str::trim).filter(|value| !value.is_empty());
+    match (prompt, identity) {
+        (Some(prompt), Some(name)) => Some(format!(
+            "{prompt}\n\n[Runtime Identity]\nYour runtime-facing name in Buzz is {name}."
+        )),
+        (None, Some(name)) => Some(format!(
+            "[Runtime Identity]\nYour runtime-facing name in Buzz is {name}."
+        )),
+        (Some(prompt), None) => Some(prompt),
+        (None, None) => None,
+    }
+}
+
+fn legacy_system_prompt_with_runtime(
+    system_prompt: Option<&str>,
+    name: Option<&str>,
+) -> Option<String> {
+    let identity = name.map(str::trim).filter(|value| !value.is_empty());
+    match (system_prompt, identity) {
+        (Some(prompt), Some(name)) => Some(format!(
+            "{prompt}\n\nRuntime identity: Your runtime-facing name in Buzz is {name}."
+        )),
+        (None, Some(name)) => Some(format!(
+            "Runtime identity: Your runtime-facing name in Buzz is {name}."
+        )),
+        (Some(prompt), None) => Some(prompt.to_owned()),
         (None, None) => None,
     }
 }
@@ -1938,9 +2270,14 @@ pub async fn run_prompt_task(
     // `is_new_session` comes from the session registry, which is cleared
     // whenever a session is invalidated — so the replacement session re-delivers
     // rather than leaving the agent unbriefed.
+    let runtime_identity_name = ctx.runtime_identity.name();
+    let legacy_system_prompt = legacy_system_prompt_with_runtime(
+        ctx.system_prompt.as_deref(),
+        runtime_identity_name.as_deref(),
+    );
     let standing = crate::queue::StandingContext {
         base_prompt: ctx.base_prompt,
-        system_prompt: ctx.system_prompt.as_deref(),
+        system_prompt: legacy_system_prompt.as_deref(),
         team_instructions: ctx.team_instructions.as_deref(),
         agent_core: agent_core.as_deref(),
         huddle_instructions: huddle_instructions.as_deref(),
@@ -6585,6 +6922,30 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
     }
 
     #[test]
+    fn committed_runtime_revision_invalidates_every_session_and_changes_later_defaults() {
+        use buzz_core::hosted_agent_runtime::ReasoningEffort;
+
+        let (mut state, _first_channel, _second_channel) = make_state();
+        let mut desired_model = Some("gpt-5.6-terra[medium]".to_string());
+        let mut model_overridden = false;
+        let revision = runtime_revision(22, "gpt-5.6-sol", ReasoningEffort::High);
+
+        install_runtime_revision(
+            &mut state,
+            &mut desired_model,
+            &mut model_overridden,
+            &revision,
+        );
+
+        assert!(state.sessions.is_empty());
+        assert!(state.heartbeat_session.is_none());
+        assert!(state.turn_counts.is_empty());
+        assert!(state.deliveries.is_empty());
+        assert_eq!(desired_model.as_deref(), Some("gpt-5.6-sol[high]"));
+        assert!(model_overridden);
+    }
+
+    #[test]
     fn test_invalidate_channel_returns_true_when_session_existed() {
         let (mut s, ch_a, ch_b) = make_state();
         assert!(s.invalidate_channel(&ch_a));
@@ -7732,7 +8093,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             turn_liveness_interval: Duration::ZERO,
             dedup_mode: DedupMode::Drop,
             system_prompt: None,
-            session_title: None,
+            runtime_identity: RuntimeIdentity::new(None),
             team_instructions: None,
             heartbeat_prompt: None,
             base_prompt: None,
@@ -8257,6 +8618,29 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
         server.abort();
     }
 
+    #[test]
+    fn runtime_name_update_changes_every_later_session_title() {
+        let identity = RuntimeIdentity::new(Some("Market Intelligence".into()));
+        assert_eq!(
+            runtime_session_title(&identity, Some("research")).as_deref(),
+            Some("Market Intelligence · #research")
+        );
+        let updated =
+            serde_json::from_str("\"Competitive Intelligence\"").expect("valid runtime name");
+        identity.apply(&updated);
+        assert_eq!(
+            runtime_session_title(&identity, Some("research")).as_deref(),
+            Some("Competitive Intelligence · #research")
+        );
+        let modern =
+            with_runtime_identity(Some("[Base]\ncontext".into()), identity.name().as_deref())
+                .expect("modern prompt context");
+        let legacy = legacy_system_prompt_with_runtime(None, identity.name().as_deref())
+            .expect("legacy prompt context");
+        assert!(modern.contains("runtime-facing name in Buzz is Competitive Intelligence"));
+        assert!(legacy.contains("runtime-facing name in Buzz is Competitive Intelligence"));
+    }
+
     /// The `"unknown"` placeholder `fetch_channel_info` substitutes for a
     /// metadata event with no `name` tag is not a channel name: qualifying with
     /// it would title every unnamed channel `Agent · #unknown`.
@@ -8297,5 +8681,125 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             "one fetch_channel_info sequence (initial attempt + single retry)"
         );
         server.abort();
+    }
+
+    fn runtime_revision(
+        revision: u64,
+        model: &str,
+        effort: buzz_core::hosted_agent_runtime::ReasoningEffort,
+    ) -> PendingRuntimeRevision {
+        PendingRuntimeRevision {
+            revision,
+            selection: serde_json::from_value(json!({
+                "model": model,
+                "effort": effort,
+                "runtime_name": "Market Intelligence"
+            }))
+            .expect("runtime selection"),
+            method: buzz_core::hosted_agent_runtime::RuntimeSelectionMethod::SetModel {
+                model_id: format!(
+                    "{model}[{}]",
+                    serde_json::to_value(effort)
+                        .expect("effort")
+                        .as_str()
+                        .expect("effort string")
+                ),
+            },
+            catalog_digest: serde_json::from_value(json!("b".repeat(64))).expect("digest"),
+        }
+    }
+
+    fn insert_fake_active_turn(
+        pool: &mut AgentPool,
+        agent_index: usize,
+    ) -> (
+        tokio::task::Id,
+        tokio::sync::oneshot::Receiver<ControlSignal>,
+    ) {
+        let abort_handle = pool.join_set.spawn(std::future::pending::<()>());
+        let task_id = abort_handle.id();
+        let (control_tx, control_rx) = tokio::sync::oneshot::channel();
+        pool.task_map.insert(
+            task_id,
+            TaskMeta {
+                agent_index,
+                channel_id: Some(Uuid::new_v4()),
+                turn_id: Uuid::new_v4().to_string(),
+                recoverable_batch: None,
+                control_tx: Some(control_tx),
+                steer_tx: None,
+                successful_steer_deliveries: HashSet::new(),
+            },
+        );
+        (task_id, control_rx)
+    }
+
+    #[tokio::test]
+    async fn runtime_revision_waits_for_last_turn_without_sending_cancellation() {
+        use buzz_core::hosted_agent_runtime::ReasoningEffort;
+        use tokio::sync::oneshot::error::TryRecvError;
+
+        let mut pool = AgentPool::from_slots(Vec::new());
+        let (first_id, mut first_control) = insert_fake_active_turn(&mut pool, 0);
+        let (second_id, mut second_control) = insert_fake_active_turn(&mut pool, 1);
+
+        assert_eq!(
+            pool.request_runtime_defaults(runtime_revision(
+                2,
+                "gpt-5.6-sol",
+                ReasoningEffort::High
+            )),
+            RuntimeRevisionDisposition::Quiescing
+        );
+        assert_eq!(
+            pool.runtime_defaults_state(),
+            RuntimeDefaultsState::Quiescing
+        );
+        assert_eq!(first_control.try_recv(), Err(TryRecvError::Empty));
+        assert_eq!(second_control.try_recv(), Err(TryRecvError::Empty));
+        assert!(pool.try_claim(None).is_none());
+
+        pool.task_map.remove(&first_id);
+        assert!(!pool.note_active_turns_changed());
+        assert_eq!(
+            pool.runtime_defaults_state(),
+            RuntimeDefaultsState::Quiescing
+        );
+        pool.task_map.remove(&second_id);
+        assert!(pool.note_active_turns_changed());
+        assert_eq!(
+            pool.runtime_defaults_state(),
+            RuntimeDefaultsState::Applying
+        );
+        assert_eq!(pool.pending_runtime_apply().expect("pending").revision, 2);
+
+        pool.commit_runtime_defaults(2).expect("commit");
+        assert!(pool.runtime_dispatch_allowed());
+        assert_eq!(pool.runtime_defaults_state(), RuntimeDefaultsState::Current);
+    }
+
+    #[tokio::test]
+    async fn runtime_quiescing_does_not_reject_new_queue_events() {
+        use buzz_core::hosted_agent_runtime::ReasoningEffort;
+
+        let mut pool = AgentPool::from_slots(Vec::new());
+        let (_task_id, _control) = insert_fake_active_turn(&mut pool, 0);
+        pool.request_runtime_defaults(runtime_revision(7, "gpt-5.6-terra", ReasoningEffort::Xhigh));
+
+        let channel_id = Uuid::new_v4();
+        let event = EventBuilder::new(Kind::Custom(9), "queued during runtime change")
+            .sign_with_keys(&Keys::generate())
+            .expect("event");
+        let mut queue = crate::queue::EventQueue::new(DedupMode::Queue);
+        assert!(queue.push(crate::queue::QueuedEvent {
+            channel_id,
+            event,
+            received_at: std::time::Instant::now(),
+            prompt_tag: "runtime-gate-test".into(),
+        }));
+
+        assert!(!pool.runtime_dispatch_allowed());
+        assert_eq!(queue.pending_channels(), 1);
+        assert_eq!(queue.pending_events(), 1);
     }
 }

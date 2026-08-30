@@ -1,18 +1,23 @@
-//! Typed event builder functions (38 builders).
+//! Typed event builder functions.
 //!
 //! All functions return `Result<nostr::EventBuilder, SdkError>`.
 //! The caller signs: `builder.sign_with_keys(&keys)?`.
 
 use buzz_core::{
+    hosted_agent_runtime::{
+        AgentRuntimeAcknowledgment, HostedAgentRuntimeRequest, HostedAgentRuntimeStatus,
+        ModelFamily, RuntimeModelId,
+    },
     kind::{
-        KIND_AGENT_OBSERVER_FRAME, KIND_APPROVAL_DENY, KIND_APPROVAL_GRANT, KIND_DELETION,
-        KIND_DM_ADD_MEMBER, KIND_DM_OPEN, KIND_EMOJI_SET, KIND_GIT_ISSUE, KIND_GIT_PATCH,
-        KIND_GIT_PR_UPDATE, KIND_GIT_PULL_REQUEST, KIND_GIT_REPO_ANNOUNCEMENT,
+        KIND_AGENT_OBSERVER_FRAME, KIND_AGENT_PROFILE, KIND_APPROVAL_DENY, KIND_APPROVAL_GRANT,
+        KIND_DELETION, KIND_DM_ADD_MEMBER, KIND_DM_OPEN, KIND_EMOJI_SET, KIND_GIT_ISSUE,
+        KIND_GIT_PATCH, KIND_GIT_PR_UPDATE, KIND_GIT_PULL_REQUEST, KIND_GIT_REPO_ANNOUNCEMENT,
         KIND_GIT_STATUS_CLOSED, KIND_GIT_STATUS_DRAFT, KIND_GIT_STATUS_MERGED,
-        KIND_GIT_STATUS_OPEN, KIND_IA_ARCHIVE_REQUEST, KIND_IA_UNARCHIVE_REQUEST,
-        KIND_MODERATION_BAN, KIND_MODERATION_RESOLVE_REPORT, KIND_MODERATION_TIMEOUT,
-        KIND_MODERATION_UNBAN, KIND_MODERATION_UNTIMEOUT, KIND_PRESENCE_UPDATE, KIND_PROJECT,
-        KIND_USER_STATUS, KIND_WORKFLOW_DEF, KIND_WORKFLOW_TRIGGER,
+        KIND_GIT_STATUS_OPEN, KIND_HOSTED_AGENT_RUNTIME_REQUEST, KIND_HOSTED_AGENT_RUNTIME_STATUS,
+        KIND_IA_ARCHIVE_REQUEST, KIND_IA_UNARCHIVE_REQUEST, KIND_MODERATION_BAN,
+        KIND_MODERATION_RESOLVE_REPORT, KIND_MODERATION_TIMEOUT, KIND_MODERATION_UNBAN,
+        KIND_MODERATION_UNTIMEOUT, KIND_PRESENCE_UPDATE, KIND_PROJECT, KIND_USER_STATUS,
+        KIND_WORKFLOW_DEF, KIND_WORKFLOW_TRIGGER,
     },
     observer::{
         content_looks_like_nip44, OBSERVER_AGENT_TAG, OBSERVER_FRAME_CONTROL, OBSERVER_FRAME_TAG,
@@ -279,6 +284,84 @@ pub fn build_agent_observer_frame(
         encrypted_content,
     )
     .tags(tags))
+}
+
+/// Build an encrypted owner-to-controller hosted-agent runtime request.
+///
+/// The cleartext routing boundary is deliberately limited to the pinned
+/// controller, target agent, idempotency key, and expiry. Model, effort, and
+/// catalog details remain inside the NIP-44 ciphertext.
+pub fn build_hosted_agent_runtime_request(
+    controller_pubkey: &str,
+    request: &HostedAgentRuntimeRequest,
+    expiration: u64,
+    encrypted_content: &str,
+) -> Result<EventBuilder, SdkError> {
+    if !content_looks_like_nip44(encrypted_content) {
+        return Err(SdkError::InvalidInput(
+            "hosted runtime request content must be NIP-44 v2 ciphertext".into(),
+        ));
+    }
+    let controller_pubkey = check_pubkey_hex(controller_pubkey, "controller_pubkey")?;
+    let request_id = request.request_id.as_uuid().to_string();
+    let expiration = expiration.to_string();
+    let tags = vec![
+        tag(&["p", &controller_pubkey])?,
+        tag(&[OBSERVER_AGENT_TAG, request.agent_pubkey.as_str()])?,
+        tag(&["request", &request_id])?,
+        tag(&["expiration", &expiration])?,
+    ];
+
+    Ok(EventBuilder::new(
+        Kind::Custom(KIND_HOSTED_AGENT_RUNTIME_REQUEST as u16),
+        encrypted_content,
+    )
+    .tags(tags))
+}
+
+/// Build a public controller-authored hosted-agent runtime status snapshot.
+pub fn build_hosted_agent_runtime_status(
+    status: &HostedAgentRuntimeStatus,
+) -> Result<EventBuilder, SdkError> {
+    let content = serde_json::to_string(status)
+        .map_err(|error| SdkError::InvalidInput(format!("invalid runtime status: {error}")))?;
+    let tags = vec![tag(&["d", status.agent_pubkey.as_str()])?];
+    Ok(EventBuilder::new(
+        Kind::Custom(KIND_HOSTED_AGENT_RUNTIME_STATUS as u16),
+        content,
+    )
+    .tags(tags))
+}
+
+/// Build an encrypted controller-to-agent `apply_runtime_defaults` envelope.
+///
+/// Payload serialization and NIP-44 encryption happen before this boundary;
+/// the observer tags intentionally disclose no model or effort data.
+pub fn build_hosted_runtime_control_frame(
+    recipient_pubkey: &str,
+    agent_pubkey: &str,
+    encrypted_content: &str,
+) -> Result<EventBuilder, SdkError> {
+    build_agent_observer_frame(
+        recipient_pubkey,
+        agent_pubkey,
+        OBSERVER_FRAME_CONTROL,
+        encrypted_content,
+    )
+}
+
+/// Build an encrypted agent-to-controller runtime application receipt.
+pub fn build_hosted_runtime_receipt_frame(
+    recipient_pubkey: &str,
+    agent_pubkey: &str,
+    encrypted_content: &str,
+) -> Result<EventBuilder, SdkError> {
+    build_agent_observer_frame(
+        recipient_pubkey,
+        agent_pubkey,
+        OBSERVER_FRAME_TELEMETRY,
+        encrypted_content,
+    )
 }
 
 /// Build a forum post thread root (kind 45001).
@@ -593,6 +676,66 @@ pub fn build_profile_with_existing(
     }
     let content = serde_json::Value::Object(map).to_string();
     Ok(EventBuilder::new(Kind::Custom(0), content).tags([]))
+}
+
+/// Build a compatible hosted-agent profile while preserving unknown fields.
+///
+/// Kind `10100` is replaceable, so callers must begin with the complete latest
+/// self-authored profile. The flat `models` array remains for old consumers;
+/// supplied model, family, and runtime values are replaced as one snapshot.
+/// Omitted optional values retain their current snapshot values.
+pub fn build_agent_profile_with_runtime(
+    existing: &serde_json::Map<String, serde_json::Value>,
+    display_name: &str,
+    model: Option<&RuntimeModelId>,
+    models: &serde_json::Value,
+    model_families: Option<&[ModelFamily]>,
+    runtime: Option<&AgentRuntimeAcknowledgment>,
+) -> Result<EventBuilder, SdkError> {
+    if display_name.trim().is_empty() || display_name.trim() != display_name {
+        return Err(SdkError::InvalidInput(
+            "display_name must be nonempty and trimmed".into(),
+        ));
+    }
+    if !models.is_array() {
+        return Err(SdkError::InvalidInput("models must be a JSON array".into()));
+    }
+
+    let mut map = existing.clone();
+    map.insert(
+        "name".into(),
+        serde_json::Value::String(display_name.into()),
+    );
+    map.insert(
+        "display_name".into(),
+        serde_json::Value::String(display_name.into()),
+    );
+    map.insert("models".into(), models.clone());
+    if let Some(model) = model {
+        map.insert(
+            "model".into(),
+            serde_json::Value::String(model.as_str().to_owned()),
+        );
+    }
+    if let Some(model_families) = model_families {
+        map.insert(
+            "model_families".into(),
+            serde_json::to_value(model_families).map_err(|error| {
+                SdkError::InvalidInput(format!("invalid model families: {error}"))
+            })?,
+        );
+    }
+    if let Some(runtime) = runtime {
+        map.insert(
+            "runtime".into(),
+            serde_json::to_value(runtime).map_err(|error| {
+                SdkError::InvalidInput(format!("invalid runtime acknowledgment: {error}"))
+            })?,
+        );
+    }
+
+    let content = serde_json::Value::Object(map).to_string();
+    Ok(EventBuilder::new(Kind::Custom(KIND_AGENT_PROFILE as u16), content).tags([]))
 }
 
 /// Build a NIP-29 add-member event (kind 9000).
@@ -2421,6 +2564,13 @@ pub fn build_delete_addressable(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use buzz_core::hosted_agent_runtime::{
+        AgentRuntimeAcknowledgment, HostedAgentRuntimeRequest, HostedAgentRuntimeStatus,
+        ModelFamily,
+    };
+    use buzz_core::kind::{
+        KIND_AGENT_PROFILE, KIND_HOSTED_AGENT_RUNTIME_REQUEST, KIND_HOSTED_AGENT_RUNTIME_STATUS,
+    };
     use nostr::{EventId, Keys};
 
     fn keys() -> Keys {
@@ -2564,6 +2714,223 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, SdkError::InvalidInput(_)));
+    }
+
+    fn hosted_runtime_request_fixture() -> HostedAgentRuntimeRequest {
+        serde_json::from_value(serde_json::json!({
+            "schema": "buzz.hosted-agent-runtime-request.v1",
+            "request_id": "550e8400-e29b-41d4-a716-446655440000",
+            "agent_pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "model": "gpt-5.6-terra",
+            "effort": "high",
+            "presentation_event_id": null,
+            "catalog_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }))
+        .expect("runtime request fixture")
+    }
+
+    fn hosted_runtime_status_fixture() -> HostedAgentRuntimeStatus {
+        serde_json::from_value(serde_json::json!({
+            "schema": "buzz.hosted-agent-runtime-status.v1",
+            "agent_pubkey": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "request_id": "550e8400-e29b-41d4-a716-446655440000",
+            "revision": 12,
+            "state": "pending_busy",
+            "effective": {
+                "model": "gpt-5.6-terra",
+                "effort": "medium",
+                "runtime_name": "Market Intelligence"
+            },
+            "requested": {
+                "model": "gpt-5.6-sol",
+                "effort": "high",
+                "runtime_name": "Market Intelligence"
+            },
+            "catalog_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "error": null
+        }))
+        .expect("runtime status fixture")
+    }
+
+    #[test]
+    fn hosted_runtime_request_has_only_exact_routing_tags() {
+        let request = hosted_runtime_request_fixture();
+        let encrypted = "A".repeat(buzz_core::observer::NIP44_MIN_CONTENT_LEN);
+        let controller = "b".repeat(64);
+        let event = sign(
+            build_hosted_agent_runtime_request(&controller, &request, 1_788_000_300, &encrypted)
+                .expect("request builder"),
+        );
+
+        assert_eq!(
+            event.kind.as_u16(),
+            KIND_HOSTED_AGENT_RUNTIME_REQUEST as u16
+        );
+        assert_eq!(event.content, encrypted);
+        assert_eq!(event.tags.len(), 4);
+        assert_eq!(tag_values(&event, "p"), vec![controller]);
+        assert_eq!(
+            tag_values(&event, "agent"),
+            vec![request.agent_pubkey.as_str().to_owned()]
+        );
+        assert_eq!(
+            tag_values(&event, "request"),
+            vec![request.request_id.as_uuid().to_string()]
+        );
+        assert_eq!(tag_values(&event, "expiration"), vec!["1788000300"]);
+    }
+
+    #[test]
+    fn hosted_runtime_status_has_only_agent_d_tag() {
+        let status = hosted_runtime_status_fixture();
+        let event = sign(build_hosted_agent_runtime_status(&status).expect("status builder"));
+
+        assert_eq!(event.kind.as_u16(), KIND_HOSTED_AGENT_RUNTIME_STATUS as u16);
+        assert_eq!(event.tags.len(), 1);
+        assert_eq!(
+            tag_values(&event, "d"),
+            vec![status.agent_pubkey.as_str().to_owned()]
+        );
+        assert_eq!(
+            serde_json::from_str::<HostedAgentRuntimeStatus>(&event.content)
+                .expect("strict status content"),
+            status
+        );
+    }
+
+    #[test]
+    fn hosted_runtime_control_and_receipt_keep_model_data_encrypted() {
+        let controller = keys();
+        let agent = keys();
+        let control_payload = serde_json::json!({
+            "type": "apply_runtime_defaults",
+            "revision": 12,
+            "model": "gpt-5.6-sol",
+            "effort": "high",
+            "runtime_name": "Market Intelligence",
+            "catalog_digest": "c".repeat(64)
+        });
+        let control_ciphertext = buzz_core::observer::encrypt_observer_payload(
+            &controller,
+            &agent.public_key(),
+            &control_payload,
+        )
+        .expect("encrypt control");
+        let control = build_hosted_runtime_control_frame(
+            &agent.public_key().to_hex(),
+            &agent.public_key().to_hex(),
+            &control_ciphertext,
+        )
+        .expect("control frame")
+        .sign_with_keys(&controller)
+        .expect("sign control");
+
+        assert_eq!(control.tags.len(), 3);
+        assert!(has_tag(
+            &control,
+            OBSERVER_FRAME_TAG,
+            OBSERVER_FRAME_CONTROL
+        ));
+        let control_tags = serde_json::to_string(&control.tags).expect("serialize tags");
+        assert!(!control_tags.contains("gpt-5.6-sol"));
+        assert!(!control_tags.contains("high"));
+        let decrypted: serde_json::Value =
+            buzz_core::observer::decrypt_observer_payload(&agent, &control)
+                .expect("decrypt control");
+        assert_eq!(decrypted["type"], "apply_runtime_defaults");
+
+        let receipt_payload = serde_json::json!({
+            "type": "runtime_defaults_applied",
+            "revision": 12
+        });
+        let receipt_ciphertext = buzz_core::observer::encrypt_observer_payload(
+            &agent,
+            &controller.public_key(),
+            &receipt_payload,
+        )
+        .expect("encrypt receipt");
+        let receipt = build_hosted_runtime_receipt_frame(
+            &controller.public_key().to_hex(),
+            &agent.public_key().to_hex(),
+            &receipt_ciphertext,
+        )
+        .expect("receipt frame")
+        .sign_with_keys(&agent)
+        .expect("sign receipt");
+        assert_eq!(receipt.tags.len(), 3);
+        assert!(has_tag(
+            &receipt,
+            OBSERVER_FRAME_TAG,
+            OBSERVER_FRAME_TELEMETRY
+        ));
+        let receipt_tags = serde_json::to_string(&receipt.tags).expect("serialize tags");
+        assert!(!receipt_tags.contains("gpt-5.6-sol"));
+        let decrypted: serde_json::Value =
+            buzz_core::observer::decrypt_observer_payload(&controller, &receipt)
+                .expect("decrypt receipt");
+        assert_eq!(decrypted["type"], "runtime_defaults_applied");
+    }
+
+    #[test]
+    fn hosted_runtime_profile_replaces_runtime_fields_and_preserves_unknown_fields() {
+        let existing = serde_json::json!({
+            "name": "Old name",
+            "display_name": "Old name",
+            "model": "legacy-model",
+            "models": [{"id": "legacy-model", "name": "Legacy"}],
+            "model_families": [],
+            "runtime": null,
+            "aliases": ["Intel"],
+            "about": "Market research",
+            "future_top_level_field": {"keep": true}
+        });
+        let models = serde_json::json!([
+            {"id": "gpt-5.6-sol[high]", "name": "GPT-5.6-Sol (high)"}
+        ]);
+        let families: Vec<ModelFamily> = serde_json::from_value(serde_json::json!([{
+            "id": "gpt-5.6-sol",
+            "name": "GPT-5.6-Sol",
+            "description": "Latest frontier agentic coding model.",
+            "default_effort": "medium",
+            "efforts": ["low", "medium", "high", "xhigh", "max", "ultra"]
+        }]))
+        .expect("families");
+        let runtime: AgentRuntimeAcknowledgment = serde_json::from_value(serde_json::json!({
+            "schema": "buzz.agent-runtime.v1",
+            "controller_pubkey": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "revision": 12,
+            "model": "gpt-5.6-sol",
+            "effort": "high",
+            "effective_name": "Market Intelligence",
+            "catalog_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        }))
+        .expect("runtime");
+
+        let model =
+            serde_json::from_value(serde_json::json!("gpt-5.6-sol")).expect("base model id");
+        let event = sign(
+            build_agent_profile_with_runtime(
+                existing.as_object().expect("existing object"),
+                "Market Intelligence",
+                Some(&model),
+                &models,
+                Some(&families),
+                Some(&runtime),
+            )
+            .expect("agent profile builder"),
+        );
+        let content: serde_json::Value = serde_json::from_str(&event.content).expect("content");
+
+        assert_eq!(event.kind.as_u16(), KIND_AGENT_PROFILE as u16);
+        assert_eq!(content["name"], "Market Intelligence");
+        assert_eq!(content["display_name"], "Market Intelligence");
+        assert_eq!(content["model"], "gpt-5.6-sol");
+        assert_eq!(content["models"], models);
+        assert_eq!(content["model_families"][0]["id"], "gpt-5.6-sol");
+        assert_eq!(content["runtime"]["revision"], 12);
+        assert_eq!(content["aliases"], serde_json::json!(["Intel"]));
+        assert_eq!(content["about"], "Market research");
+        assert_eq!(content["future_top_level_field"]["keep"], true);
     }
 
     #[test]

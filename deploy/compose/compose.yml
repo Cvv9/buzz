@@ -1,20 +1,24 @@
 name: buzz-prod
 
 x-varvik-agent-environment: &varvik-agent-environment
-  DATABASE_URL: postgres://${POSTGRES_USER:-buzz}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-buzz}
-  REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379
   # Host-derived community routing requires the canonical public relay host.
   BUZZ_RELAY_URL: ${BUZZ_AGENT_RELAY_URL:-${RELAY_URL:-ws://relay:3000}}
   CODEX_API_KEY: ${CODEX_API_KEY:-}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
   BUZZ_ACP_AGENT_COMMAND: codex-acp
   BUZZ_ACP_AGENT_ARGS: ""
+  RUST_LOG: ${BUZZ_AGENT_RUST_LOG:-buzz_acp=info}
   BUZZ_ACP_RESPOND_TO: anyone
   BUZZ_ACP_ALLOWED_RESPOND_TO: owner-only,anyone
   BUZZ_ACP_SUBSCRIBE: mentions
   BUZZ_ACP_LAZY_POOL: "true"
   # Enables authenticated owner control frames for per-agent model changes.
   BUZZ_ACP_RELAY_OBSERVER: "true"
+  # The runner accepts runtime revisions only from this relay-advertised pin.
+  BUZZ_ACP_RUNTIME_CONTROLLER_PUBKEY: ${BUZZ_HOSTED_AGENT_RUNTIME_CONTROLLER_PUBKEY:-}
+  # Fixed controller mappings require identities to be pre-registered. Never
+  # give agent containers the relay administrator key for self-registration.
+  BUZZ_ACP_SKIP_MEMBER_BOOTSTRAP: "true"
   BUZZ_ACP_AGENT_OWNER: ${RELAY_OWNER_PUBKEY:-}
   BUZZ_ACP_PROFILE_OWNER_PUBKEY: ${RELAY_OWNER_PUBKEY:-}
   # Reject any tool action that asks to escape the runtime's normal sandbox.
@@ -27,8 +31,6 @@ x-varvik-agent-service: &varvik-agent-service
   # Share the relay namespace so the canonical localhost URL used by the
   # default single-host deployment reaches the relay without changing Host.
   network_mode: service:relay
-  env_file:
-    - .env
   environment: *varvik-agent-environment
   depends_on:
     relay:
@@ -53,12 +55,21 @@ x-varvik-agent-service: &varvik-agent-service
 services:
   relay:
     image: ${BUZZ_IMAGE:-ghcr.io/block/buzz:main}
-    env_file:
-      - .env
     environment:
       BUZZ_BIND_ADDR: 0.0.0.0:3000
       BUZZ_HEALTH_PORT: "8080"
       BUZZ_METRICS_PORT: "9102"
+      RELAY_URL: ${RELAY_URL:-ws://localhost:3000}
+      RELAY_OWNER_PUBKEY: ${RELAY_OWNER_PUBKEY:-}
+      BUZZ_RELAY_PRIVATE_KEY: ${BUZZ_RELAY_PRIVATE_KEY:-}
+      BUZZ_GIT_HOOK_HMAC_SECRET: ${BUZZ_GIT_HOOK_HMAC_SECRET:-}
+      BUZZ_REQUIRE_AUTH_TOKEN: ${BUZZ_REQUIRE_AUTH_TOKEN:-true}
+      BUZZ_REQUIRE_RELAY_MEMBERSHIP: ${BUZZ_REQUIRE_RELAY_MEMBERSHIP:-true}
+      BUZZ_ALLOW_NIP_OA_AUTH: ${BUZZ_ALLOW_NIP_OA_AUTH:-true}
+      BUZZ_CORS_ORIGINS: ${BUZZ_CORS_ORIGINS:-}
+      BUZZ_MEDIA_BASE_URL: ${BUZZ_MEDIA_BASE_URL:-}
+      BUZZ_MEDIA_SERVER_DOMAIN: ${BUZZ_MEDIA_SERVER_DOMAIN:-}
+      RUST_LOG: ${RUST_LOG:-buzz_relay=info}
       DATABASE_URL: postgres://${POSTGRES_USER:-buzz}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-buzz}
       REDIS_URL: redis://:${REDIS_PASSWORD:?set REDIS_PASSWORD}@redis:6379
       BUZZ_S3_ENDPOINT: http://minio:9000
@@ -72,6 +83,7 @@ services:
       BUZZ_GIT_CONFORMANCE_PROBE: ${BUZZ_GIT_CONFORMANCE_PROBE:-true}
       BUZZ_SERVE_WEB_WORKSPACE: ${BUZZ_SERVE_WEB_WORKSPACE:-true}
       BUZZ_SERVE_GIT_WEB_GUI: ${BUZZ_SERVE_GIT_WEB_GUI:-true}
+      BUZZ_HOSTED_AGENT_RUNTIME_CONTROLLER_PUBKEY: ${BUZZ_HOSTED_AGENT_RUNTIME_CONTROLLER_PUBKEY:-}
     ports:
       - "${BUZZ_HTTP_PORT:-3000}:3000"
     volumes:
@@ -99,6 +111,44 @@ services:
     restart: unless-stopped
     networks:
       - buzz-net
+
+  runtime-controller:
+    profiles: ["agents", "personal-agents"]
+    image: ${BUZZ_IMAGE:-ghcr.io/block/buzz:main}
+    entrypoint: ["/usr/local/bin/runtime-controller-entrypoint"]
+    network_mode: service:relay
+    user: "0:0"
+    environment:
+      BUZZ_RUNTIME_CONTROLLER_RELAY_URL: ${BUZZ_AGENT_RELAY_URL:-${RELAY_URL:-ws://relay:3000}}
+      BUZZ_RUNTIME_CONTROLLER_PRIVATE_KEY: ${BUZZ_RUNTIME_CONTROLLER_PRIVATE_KEY:-}
+      BUZZ_HOSTED_AGENT_RUNTIME_CONTROLLER_PUBKEY: ${BUZZ_HOSTED_AGENT_RUNTIME_CONTROLLER_PUBKEY:-}
+      BUZZ_RUNTIME_CONTROLLER_AGENTS_JSON: ${BUZZ_RUNTIME_CONTROLLER_AGENTS_JSON:-}
+      RELAY_OWNER_PUBKEY: ${RELAY_OWNER_PUBKEY:-}
+      BUZZ_RUNTIME_CONTROLLER_HEALTH_ADDR: 0.0.0.0:8081
+      RUST_LOG: ${BUZZ_RUNTIME_CONTROLLER_RUST_LOG:-buzz_runtime_controller=info}
+    volumes:
+      - buzz-runtime-controller-state:/var/lib/buzz-runtime-controller
+    depends_on:
+      relay:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "bash -ec 'exec 3<>/dev/tcp/127.0.0.1/8081; printf \"GET /_readiness HTTP/1.1\\r\\nHost: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n\" >&3; grep -q \"200 OK\" <&3'",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=16m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
   # Agents share the relay's network namespace so the URL host remains the
   # canonical community boundary. Local deployments publish 3300 on the host
@@ -545,6 +595,9 @@ services:
       - buzz-net
 
 volumes:
+  buzz-runtime-controller-state:
+    labels:
+      com.buzz.volume: runtime-controller-state
   buzz-agent-codex-data:
     labels:
       com.buzz.volume: agent-codex

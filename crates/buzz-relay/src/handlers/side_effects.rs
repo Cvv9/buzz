@@ -17,6 +17,9 @@ use buzz_core::StoredEvent;
 use buzz_db::channel::{MemberRecord, MemberRole};
 
 use super::event::dispatch_persistent_event;
+use crate::hosted_agent_policy::{
+    hosted_agent_action_authorized, is_current_hosted_agent, HostedAgentAction,
+};
 use crate::protocol::RelayMessage;
 use crate::state::AppState;
 use buzz_core::tenant::TenantContext;
@@ -34,6 +37,39 @@ pub fn is_admin_kind(kind: u32) -> bool {
 /// duplicates without storing the event at all.
 pub fn is_side_effect_kind(kind: u32) -> bool {
     matches!(kind, 0 | 5 | 9000..=9022 | KIND_GIT_REPO_ANNOUNCEMENT | KIND_AGENT_PROFILE | 41001..=41003 | KIND_SYSTEM_MESSAGE)
+}
+
+fn hosted_target_membership_change_authorized(
+    is_hosted_target: bool,
+    current_community_role: Option<&str>,
+) -> bool {
+    !is_hosted_target
+        || hosted_agent_action_authorized(
+            HostedAgentAction::ChannelMembershipMutation,
+            current_community_role,
+        )
+}
+
+async fn hosted_delete_requires_current_owner(
+    tenant: &TenantContext,
+    state: &Arc<AppState>,
+    actor_pubkey: &[u8],
+    target_agent_pubkey: &[u8],
+) -> anyhow::Result<bool> {
+    if !is_current_hosted_agent(&state.db, tenant.community(), target_agent_pubkey).await? {
+        return Ok(false);
+    }
+    let role = state
+        .db
+        .get_relay_member(tenant.community(), &hex::encode(actor_pubkey))
+        .await?
+        .map(|member| member.role);
+    if !hosted_agent_action_authorized(HostedAgentAction::ArchiveDelete, role.as_deref()) {
+        return Err(anyhow::anyhow!(
+            "hosted-agent archive/delete requires the community owner"
+        ));
+    }
+    Ok(true)
 }
 
 async fn evict_live_channel_subscriptions(
@@ -243,11 +279,29 @@ pub async fn validate_standard_deletion_event(
             .and_then(|t| t.content().map(|s| s.to_string()))
             .ok_or_else(|| anyhow::anyhow!("missing e or a tag for target"))?;
         let parts: Vec<&str> = a_tag.splitn(3, ':').collect();
-        if parts.len() < 2 {
+        if parts.len() != 3 {
             return Err(anyhow::anyhow!("invalid a-tag format"));
         }
         let target_pubkey_bytes =
             hex::decode(parts[1]).map_err(|_| anyhow::anyhow!("invalid pubkey in a-tag"))?;
+        let target_kind = parts[0]
+            .parse::<u32>()
+            .map_err(|_| anyhow::anyhow!("invalid kind in a-tag"))?;
+        let hosted_target = match target_kind {
+            buzz_core::kind::KIND_HOSTED_AGENT_CONFIG => Some(
+                hex::decode(parts[2])
+                    .map_err(|_| anyhow::anyhow!("invalid hosted-agent d-tag in a-tag"))?,
+            ),
+            KIND_AGENT_PROFILE => Some(target_pubkey_bytes.clone()),
+            _ => None,
+        };
+        if let Some(hosted_target) = hosted_target {
+            if hosted_delete_requires_current_owner(tenant, state, &actor_bytes, &hosted_target)
+                .await?
+            {
+                return Ok(());
+            }
+        }
         if target_pubkey_bytes != actor_bytes
             && !state
                 .db
@@ -265,6 +319,23 @@ pub async fn validate_standard_deletion_event(
             .get_event_by_id_including_deleted(tenant.community(), &target_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("target event not found"))?;
+
+        let target_kind = event_kind_u32(&target_event.event);
+        let hosted_target = if target_kind == buzz_core::kind::KIND_HOSTED_AGENT_CONFIG {
+            buzz_db::event::extract_d_tag(&target_event.event)
+                .and_then(|target| hex::decode(target).ok())
+        } else if target_kind == KIND_AGENT_PROFILE {
+            Some(target_event.event.pubkey.to_bytes().to_vec())
+        } else {
+            None
+        };
+        if let Some(hosted_target) = hosted_target {
+            if hosted_delete_requires_current_owner(tenant, state, &actor_bytes, &hosted_target)
+                .await?
+            {
+                continue;
+            }
+        }
 
         let target_author =
             effective_message_author(&target_event.event, &state.relay_keypair.public_key());
@@ -363,6 +434,25 @@ pub async fn validate_admin_event(
         extract_h_tag_channel(event).ok_or_else(|| anyhow::anyhow!("missing or invalid h tag"))?;
 
     let actor_bytes = event.pubkey.to_bytes().to_vec();
+
+    if matches!(kind, 9000 | 9001) {
+        let target = extract_p_tag(event).ok_or_else(|| anyhow::anyhow!("missing p tag"))?;
+        let is_hosted_target =
+            is_current_hosted_agent(&state.db, tenant.community(), &target).await?;
+        if is_hosted_target {
+            let role = state
+                .db
+                .get_relay_member(tenant.community(), &hex::encode(&actor_bytes))
+                .await?
+                .map(|member| member.role);
+            if !hosted_target_membership_change_authorized(is_hosted_target, role.as_deref()) {
+                return Err(anyhow::anyhow!(
+                    "hosted-agent channel membership changes require the community owner"
+                ));
+            }
+        }
+    }
+
     let actor_is_community_elevated =
         actor_is_community_owner_or_admin(state, tenant.community(), &actor_bytes).await?;
 
@@ -3686,7 +3776,7 @@ mod tests {
     }
 
     #[test]
-    fn admin_role_is_owner_or_admin_for_moderation_metadata() {
+    fn ordinary_human_channel_admin_retains_moderation_authority() {
         let channel_id = Uuid::new_v4();
         let actor = vec![7_u8; 32];
         let members = vec![MemberRecord {
@@ -3699,6 +3789,21 @@ mod tests {
         }];
 
         assert!(actor_is_channel_owner_or_admin(&members, &actor));
+        assert!(hosted_target_membership_change_authorized(
+            false,
+            Some("admin")
+        ));
+    }
+
+    #[test]
+    fn hosted_agent_membership_mutation_rejects_admin_and_allows_owner() {
+        assert!(hosted_target_membership_change_authorized(
+            true,
+            Some("owner")
+        ));
+        for role in [Some("admin"), Some("member"), Some("agent"), None] {
+            assert!(!hosted_target_membership_change_authorized(true, role));
+        }
     }
 
     /// Build a signed event of `kind` carrying the given `p` tags (raw values,

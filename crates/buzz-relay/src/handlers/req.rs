@@ -268,6 +268,20 @@ pub async fn handle_req(
     // the fan_out() invariant in subscription.rs.
     if channel_id.is_none() {
         let authed_pubkey_hex = hex::encode(&pubkey_bytes);
+        if !hosted_runtime_filters_authorized(
+            &filters,
+            &authed_pubkey_hex,
+            state
+                .config
+                .hosted_agent_runtime_controller_pubkey
+                .as_deref(),
+        ) {
+            conn.send(RelayMessage::closed(
+                &sub_id,
+                "restricted: hosted runtime requests require the pinned controller and matching #p",
+            ));
+            return;
+        }
         if !p_gated_filters_authorized(&filters, &authed_pubkey_hex) {
             conn.send(RelayMessage::closed(
                 &sub_id,
@@ -545,6 +559,34 @@ pub async fn handle_req(
         count = total_sent,
         "EOSE sent after historical delivery"
     );
+}
+
+pub(crate) fn hosted_runtime_filters_authorized(
+    filters: &[Filter],
+    authed_pubkey_hex: &str,
+    configured_controller_pubkey: Option<&str>,
+) -> bool {
+    let p_tag = nostr::SingleLetterTag::lowercase(nostr::Alphabet::P);
+    filters.iter().all(|filter| {
+        let can_match_runtime_request = filter.kinds.as_ref().is_none_or(|kinds| {
+            kinds.iter().any(|kind| {
+                kind.as_u16() as u32 == buzz_core::kind::KIND_HOSTED_AGENT_RUNTIME_REQUEST
+            })
+        });
+        if !can_match_runtime_request {
+            return true;
+        }
+
+        let Some(controller) = configured_controller_pubkey else {
+            return false;
+        };
+        if authed_pubkey_hex != controller || filter.kinds.is_none() {
+            return false;
+        }
+        filter.generic_tags.get(&p_tag).is_some_and(|values| {
+            !values.is_empty() && values.iter().all(|value| value == controller)
+        })
+    })
 }
 
 /// FTS candidate hits fetched per page. Pages are always full regardless of
@@ -1503,6 +1545,51 @@ mod tests {
     use nostr::{Alphabet, Filter, SingleLetterTag};
 
     #[test]
+    fn hosted_runtime_subscription_requires_pinned_controller_and_matching_p_tag() {
+        let controller = "a".repeat(64);
+        let other = "b".repeat(64);
+        let p = SingleLetterTag::lowercase(Alphabet::P);
+        let valid = Filter::new()
+            .kind(nostr::Kind::Custom(
+                buzz_core::kind::KIND_HOSTED_AGENT_RUNTIME_REQUEST as u16,
+            ))
+            .custom_tag(p, controller.clone());
+
+        assert!(hosted_runtime_filters_authorized(
+            std::slice::from_ref(&valid),
+            &controller,
+            Some(&controller)
+        ));
+        assert!(!hosted_runtime_filters_authorized(
+            std::slice::from_ref(&valid),
+            &other,
+            Some(&controller)
+        ));
+        assert!(!hosted_runtime_filters_authorized(
+            &[Filter::new().kind(nostr::Kind::Custom(
+                buzz_core::kind::KIND_HOSTED_AGENT_RUNTIME_REQUEST as u16,
+            ))],
+            &controller,
+            Some(&controller)
+        ));
+        assert!(!hosted_runtime_filters_authorized(
+            &[Filter::new().custom_tag(p, controller.clone())],
+            &controller,
+            Some(&controller)
+        ));
+        assert!(!hosted_runtime_filters_authorized(
+            &[valid],
+            &controller,
+            None
+        ));
+        assert!(hosted_runtime_filters_authorized(
+            &[Filter::new().kind(nostr::Kind::TextNote)],
+            &other,
+            Some(&controller)
+        ));
+    }
+
+    #[test]
     fn global_queries_push_access_scope_before_limit() {
         let accessible = vec![uuid::Uuid::new_v4(), uuid::Uuid::new_v4()];
         let mut query = EventQuery::for_community(buzz_core::tenant::CommunityId::from_uuid(
@@ -1646,6 +1733,7 @@ mod tests {
             None,
             false,
             crate::config::DEFAULT_MAX_FRAME_BYTES,
+            None,
             None,
         )
         .limitation

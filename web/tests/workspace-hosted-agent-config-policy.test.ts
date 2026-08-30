@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  applyHostedAgentPresentationConfig,
   buildHostedAgentConfigTemplate,
+  hostedAgentConfigAuthorizedForOwners,
   hostedAgentConfigTarget,
   isNewerReplaceableHead,
 } from "../src/features/workspace/workspace-hosted-agent-config-policy.ts";
@@ -154,5 +156,59 @@ test("replaceable hosted-config heads use the lowest event id as the equal-time 
   assert.equal(
     isNewerReplaceableHead({ id: "0", created_at: 101 }, higherId),
     true,
+  );
+});
+
+test("presentation overlays never replace the agent-signed effective runtime", () => {
+  assert.deepEqual(
+    applyHostedAgentPresentationConfig(
+      {
+        name: "Signed name",
+        picture: "https://example.test/signed.png",
+        model: "gpt-5.6-sol",
+        legacyHostedConfigModel: "gpt-4",
+      },
+      {
+        name: "Owner name",
+        avatarUrl: "https://example.test/owner.png",
+        legacyModel: "gpt-3.5-turbo-16k",
+      },
+    ),
+    {
+      name: "Owner name",
+      picture: "https://example.test/owner.png",
+      model: "gpt-5.6-sol",
+      legacyHostedConfigModel: "gpt-3.5-turbo-16k",
+    },
+  );
+});
+
+test("only the exact current community owner can author a hosted presentation overlay", () => {
+  const owner = "b".repeat(64);
+  const admin = "c".repeat(64);
+  const event = {
+    id: "1",
+    kind: 30180,
+    pubkey: owner,
+    created_at: 1,
+    tags: [["d", AGENT]],
+    content: JSON.stringify({
+      schema: "buzz.hosted-agent-config.v1",
+      agent_pubkey: AGENT,
+      name: "Helpdesk",
+      avatar_url: null,
+      model: null,
+    }),
+  };
+  assert.equal(
+    hostedAgentConfigAuthorizedForOwners(event, new Set([owner])),
+    true,
+  );
+  assert.equal(
+    hostedAgentConfigAuthorizedForOwners(
+      { ...event, pubkey: admin },
+      new Set([owner]),
+    ),
+    false,
   );
 });

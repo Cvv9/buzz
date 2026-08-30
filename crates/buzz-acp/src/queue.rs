@@ -665,6 +665,16 @@ impl EventQueue {
         self.queues.len()
     }
 
+    /// Number of accepted events still waiting for dispatch.
+    ///
+    /// Runtime quiescing gates claims in `AgentPool`, not ingestion here, so
+    /// messages arriving during a model/default change remain observable and
+    /// queued until dispatch resumes.
+    #[cfg(test)]
+    pub fn pending_events(&self) -> usize {
+        self.queues.values().map(VecDeque::len).sum()
+    }
+
     /// Number of queued events for a specific channel. Test-only.
     #[cfg(test)]
     pub fn queued_event_count(&self, channel_id: &Uuid) -> usize {
@@ -1912,6 +1922,10 @@ mod tests {
             Tag::parse(["workflow-name", "Morning brief"]).unwrap(),
             Tag::parse(["workflow-run", &run_id]).unwrap(),
             Tag::parse(["workflow-step", "research"]).unwrap(),
+            // Task-authored runtime hints are untrusted prompt metadata. They
+            // never enter WorkflowAgentTaskMeta or the agent-global defaults.
+            Tag::parse(["model", "untrusted-task-model"]).unwrap(),
+            Tag::parse(["effort", "ultra"]).unwrap(),
         ])
         .sign_with_keys(&Keys::generate())
         .unwrap();

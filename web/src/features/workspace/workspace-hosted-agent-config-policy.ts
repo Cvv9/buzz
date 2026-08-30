@@ -18,6 +18,19 @@ export type HostedAgentConfigEvent = {
   tags: string[][];
 };
 
+export type HostedAgentPresentationProfile = {
+  name: string;
+  picture?: string;
+  model?: string;
+  legacyHostedConfigModel?: string | null;
+};
+
+export type HostedAgentPresentationOverlay = {
+  name: string;
+  avatarUrl: string | null;
+  legacyModel: string | null;
+};
+
 export function isLowercasePubkey(value: string): boolean {
   return /^[0-9a-f]{64}$/.test(value);
 }
@@ -90,6 +103,17 @@ export function hostedAgentConfigTarget(
   return null;
 }
 
+/** Historical heads are projected only when authored by a current owner. */
+export function hostedAgentConfigAuthorizedForOwners(
+  event: HostedAgentConfigEvent,
+  ownerPubkeys: ReadonlySet<string>,
+): boolean {
+  return (
+    hostedAgentConfigTarget(event) !== null &&
+    ownerPubkeys.has(event.pubkey.toLowerCase())
+  );
+}
+
 /** NIP-33 tie-break: newer timestamp, then lexicographically lowest event id. */
 export function isNewerReplaceableHead(
   candidate: Pick<HostedAgentConfigEvent, "created_at" | "id">,
@@ -122,5 +146,17 @@ export function buildHostedAgentConfigTemplate(input: HostedAgentConfigInput) {
       model: input.model?.trim() || null,
     }),
     tags: [["d", pubkey]],
+  };
+}
+
+/** Apply presentation only; the effective runtime always remains agent-signed. */
+export function applyHostedAgentPresentationConfig<
+  T extends HostedAgentPresentationProfile,
+>(profile: T, overlay: HostedAgentPresentationOverlay): T {
+  return {
+    ...profile,
+    name: overlay.name.trim() || profile.name,
+    picture: overlay.avatarUrl?.trim() || undefined,
+    legacyHostedConfigModel: overlay.legacyModel,
   };
 }

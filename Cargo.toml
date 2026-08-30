@@ -10,6 +10,7 @@ members = [
     "crates/buzz-search",
     "crates/buzz-audit",
     "crates/buzz-acp",
+    "crates/buzz-runtime-controller",
     "crates/buzz-agent",
     "crates/sprig",
     "crates/buzz-test-client",
@@ -147,6 +148,7 @@ buzz-sdk = { path = "crates/buzz-sdk" }
 buzz-ws-client = { path = "crates/buzz-ws-client" }
 buzz-relay-mesh = { path = "crates/buzz-relay-mesh" }
 buzz-datastore-tracing = { path = "crates/buzz-datastore-tracing" }
+buzz-runtime-controller = { path = "crates/buzz-runtime-controller" }
 
 # Dev profile — workspace crates keep full debug info; dependencies carry none.
 # Rust's default `debug = true` emits DWARF/PDB for all ~800 dependency crates,

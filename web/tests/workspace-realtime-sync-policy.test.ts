@@ -16,7 +16,7 @@ test("channel catalog heads invalidate the channel query immediately", () => {
 });
 
 test("directory and authorized hosted config heads invalidate the agent query", () => {
-  for (const kind of [10100, 30177, 30180]) {
+  for (const kind of [10100, 30177, 30180, 30181]) {
     assert.deepEqual(workspaceInvalidationTargets({ kind, tags: [] }, VIEWER), [
       "agents",
     ]);

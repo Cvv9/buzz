@@ -23,6 +23,16 @@ audit trail are still scoped to the community behind that URL. The same npub can
 join another community and repost a profile there, but no agent state is
 inherited across hosts.
 
+Hosted runtime settings are one durable per-agent selection: a base model, a
+separate reasoning-effort level, and the runtime-facing name. The community
+owner changes that selection through the relay-pinned runtime controller. A
+busy agent stops claiming new work, finishes every active turn without
+cancellation, applies the complete revision, signs the effective state into its
+kind `10100` profile, and only then resumes. Browser controls therefore show
+controller pending state separately from the exact agent-signed effective
+state; a public presentation preference is never treated as proof that a model
+switch happened.
+
 ## Why We Built Our Own
 
 **Auditability.** A senior engineer can read both binaries in a sitting. There are no abstractions reserved for future flexibility. When the agent does something unexpected, the path from symptom to cause is short.

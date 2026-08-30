@@ -44,7 +44,6 @@ import {
   listProfiles,
   listWorkspaceCommunityMembers,
   listWorkspaceChannels,
-  publishHostedAgentConfig,
   isConversationalWorkspaceMessage,
   publishWorkspaceProfile,
   removeWorkspaceMember,
@@ -54,6 +53,8 @@ import {
   subscribeToWorkspaceDirectory,
   subscribeToWorkspaceMembershipChanges,
 } from "@/features/workspace/workspace-api";
+import { updateHostedAgent } from "@/features/workspace/workspace-hosted-agent-update-api";
+import type { HostedAgentUpdate } from "@/features/workspace/workspace-hosted-agent-update-policy";
 import { listChannelThreadMessages } from "@/features/workspace/workspace-thread-api";
 import {
   materializeMessages,
@@ -233,16 +234,8 @@ export function WorkspacePage({
       update,
     }: {
       agent: WorkspaceProfile;
-      update: {
-        name: string;
-        avatarUrl: string | null;
-        model: string | null;
-      };
-    }) =>
-      publishHostedAgentConfig({
-        pubkey: agent.pubkey,
-        ...update,
-      }),
+      update: HostedAgentUpdate;
+    }) => updateHostedAgent(agent, update),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["workspace-agents"] });
     },
@@ -843,8 +836,7 @@ export function WorkspacePage({
             canManage={Boolean(
               communityMembersQuery.data?.some(
                 (member) =>
-                  member.pubkey === identity.pubkey &&
-                  (member.role === "owner" || member.role === "admin"),
+                  member.pubkey === identity.pubkey && member.role === "owner",
               ),
             )}
             busy={

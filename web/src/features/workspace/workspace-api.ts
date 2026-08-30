@@ -10,12 +10,17 @@ import {
   GENERAL_PROFILE_KINDS,
   hostedDirectoryEvents,
 } from "./workspace-agent-directory-policy";
-import { parseWorkspaceAgentModels } from "./workspace-agent-models";
+import { KIND_HOSTED_AGENT_RUNTIME_STATUS } from "./workspace-agent-runtime";
+import {
+  loadWorkspaceAgentRuntimeContext,
+  projectWorkspaceAgentRuntimeFields,
+} from "./workspace-agent-runtime-api";
 import { canDiscoverPrivateWorkspaceChannels } from "./workspace-channel-discovery-policy";
 import {
-  buildHostedAgentConfigTemplate,
+  applyHostedAgentPresentationConfig,
   hostedAgentConfigTarget as hostedAgentConfigTargetForEvent,
   HOSTED_AGENT_CONFIG_SCHEMA,
+  hostedAgentConfigAuthorizedForOwners,
   isNewerReplaceableHead,
 } from "./workspace-hosted-agent-config-policy";
 import { listArchivedWorkspaceIdentities } from "./workspace-archive-api";
@@ -111,6 +116,12 @@ export type WorkspaceProfile = {
   accessTier?: "shared" | "personal" | "admin";
   model?: string;
   models?: import("./workspace-agent-models").WorkspaceAgentModel[];
+  modelFamilies?: import("./workspace-agent-models").WorkspaceAgentModelFamily[];
+  runtime?: import("./workspace-agent-runtime").WorkspaceAgentRuntimeProjection;
+  runtimeCatalogDigest?: string;
+  runtimeControllerPubkey?: string;
+  runtimeStatusTrusted?: boolean;
+  legacyHostedConfigModel?: string | null;
   resources?: string[];
 };
 
@@ -174,7 +185,7 @@ function hostedAgentConfigTarget(event: NostrEvent): string | null {
   return hostedAgentConfigTargetForEvent(event);
 }
 
-function communityAdminPubkeys(events: NostrEvent[]): Set<string> {
+function communityOwnerPubkeys(events: NostrEvent[]): Set<string> {
   const latest = [...events].sort(
     (left, right) =>
       right.created_at - left.created_at || left.id.localeCompare(right.id),
@@ -185,7 +196,7 @@ function communityAdminPubkeys(events: NostrEvent[]): Set<string> {
       .filter(
         (tag) =>
           tag[0] === "member" &&
-          (tag[2] === "owner" || tag[2] === "admin") &&
+          tag[2] === "owner" &&
           typeof tag[1] === "string",
       )
       .map((tag) => tag[1].toLowerCase()),
@@ -195,18 +206,14 @@ function communityAdminPubkeys(events: NostrEvent[]): Set<string> {
 function applyHostedAgentConfigs(
   profiles: Map<string, WorkspaceProfile>,
   configEvents: NostrEvent[],
-  adminPubkeys: ReadonlySet<string>,
+  ownerPubkeys: ReadonlySet<string>,
 ) {
   const latestByTarget = new Map<string, NostrEvent>();
   for (const event of configEvents) {
     const target = hostedAgentConfigTarget(event);
     const profile = target ? profiles.get(target) : undefined;
     if (!target || !profile) continue;
-    const author = event.pubkey.toLowerCase();
-    if (
-      !adminPubkeys.has(author) &&
-      profile.ownerPubkey?.toLowerCase() !== author
-    ) {
+    if (!hostedAgentConfigAuthorizedForOwners(event, ownerPubkeys)) {
       continue;
     }
     const current = latestByTarget.get(target);
@@ -222,23 +229,21 @@ function applyHostedAgentConfigs(
     const configuredName =
       typeof content.name === "string" ? content.name.trim() : "";
     const avatarUrl = content.avatar_url;
-    const model = content.model;
-    profiles.set(target, {
-      ...profile,
-      name: configuredName || profile.name,
-      picture:
-        typeof avatarUrl === "string"
-          ? avatarUrl.trim() || undefined
-          : avatarUrl === null
-            ? undefined
-            : profile.picture,
-      model:
-        typeof model === "string"
-          ? model.trim() || undefined
-          : model === null
-            ? undefined
-            : profile.model,
-    });
+    const legacyModel = content.model;
+    profiles.set(
+      target,
+      applyHostedAgentPresentationConfig(profile, {
+        name: configuredName || profile.name,
+        avatarUrl:
+          typeof avatarUrl === "string"
+            ? avatarUrl
+            : avatarUrl === null
+              ? null
+              : (profile.picture ?? null),
+        legacyModel:
+          typeof legacyModel === "string" ? legacyModel.trim() || null : null,
+      }),
+    );
   }
 }
 
@@ -468,26 +473,32 @@ export async function listWorkspaceChannelMembers(
 export async function listAgents(
   viewerPubkey: string,
 ): Promise<WorkspaceProfile[]> {
-  const [agentEvents, configEvents, membershipEvents, archivedPubkeys] =
-    await Promise.all([
-      queryEvents(relayWsUrl(), {
-        // Kind 30177 is a managed-agent projection, not a hosted directory
-        // entry. Treating every projection as hosted produced the stale
-        // Bumble/Fizz/Honey roster in web workspaces. The compatibility form
-        // remains accepted only below as an authorized config overlay.
-        kinds: [KIND_AGENT_PROFILE],
-        limit: 200,
-      }),
-      queryEvents(relayWsUrl(), {
-        kinds: [KIND_HOSTED_AGENT_CONFIG, KIND_MANAGED_AGENT],
-        limit: 500,
-      }),
-      queryEvents(relayWsUrl(), {
-        kinds: [KIND_COMMUNITY_MEMBERS],
-        limit: 50,
-      }),
-      listArchivedWorkspaceIdentities(),
-    ]);
+  const [
+    agentEvents,
+    configEvents,
+    membershipEvents,
+    archivedPubkeys,
+    runtimeContext,
+  ] = await Promise.all([
+    queryEvents(relayWsUrl(), {
+      // Kind 30177 is a managed-agent projection, not a hosted directory
+      // entry. Treating every projection as hosted produced the stale
+      // Bumble/Fizz/Honey roster in web workspaces. The compatibility form
+      // remains accepted only below as an authorized config overlay.
+      kinds: [KIND_AGENT_PROFILE],
+      limit: 200,
+    }),
+    queryEvents(relayWsUrl(), {
+      kinds: [KIND_HOSTED_AGENT_CONFIG, KIND_MANAGED_AGENT],
+      limit: 500,
+    }),
+    queryEvents(relayWsUrl(), {
+      kinds: [KIND_COMMUNITY_MEMBERS],
+      limit: 50,
+    }),
+    listArchivedWorkspaceIdentities(),
+    loadWorkspaceAgentRuntimeContext(),
+  ]);
   const events = hostedDirectoryEvents(agentEvents);
   const agentPubkeys = events.map((event) => event.pubkey);
   const profiles = await listProfiles(agentPubkeys);
@@ -528,8 +539,7 @@ export async function listAgents(
         content.access_tier === "personal" || content.access_tier === "admin"
           ? content.access_tier
           : "shared",
-      model: typeof content.model === "string" ? content.model : undefined,
-      models: parseWorkspaceAgentModels(content.models),
+      ...projectWorkspaceAgentRuntimeFields(pubkey, content, runtimeContext),
       resources: Array.isArray(content.resources)
         ? content.resources
             .filter(
@@ -543,7 +553,7 @@ export async function listAgents(
   applyHostedAgentConfigs(
     profiles,
     configEvents.filter(isHostedAgentConfigEvent),
-    communityAdminPubkeys(membershipEvents),
+    communityOwnerPubkeys(membershipEvents),
   );
   return [...profiles.values()]
     .filter(
@@ -750,24 +760,11 @@ export function removeWorkspaceMember(
 }
 
 export type { HostedAgentConfigInput } from "./workspace-hosted-agent-config-policy";
-
-/** Build the canonical, public hosted-agent presentation configuration. */
-export function hostedAgentConfigTemplate(
-  input: import("./workspace-hosted-agent-config-policy").HostedAgentConfigInput,
-): { kind: number; content: string; tags: string[][] } {
-  return buildHostedAgentConfigTemplate(input);
-}
-
-/**
- * Publish an overlay for an existing hosted directory entry. The relay verifies
- * that the signer is a community admin or the agent's declared owner; this API
- * cannot create or manage a browser-local agent.
- */
-export function publishHostedAgentConfig(
-  input: import("./workspace-hosted-agent-config-policy").HostedAgentConfigInput,
-): Promise<NostrEvent> {
-  return publishEvent(relayWsUrl(), hostedAgentConfigTemplate(input));
-}
+export {
+  hostedAgentConfigTemplate,
+  publishHostedAgentConfig,
+} from "./workspace-hosted-agent-config-api";
+export { publishHostedAgentRuntimeRequest } from "./workspace-agent-runtime-api";
 
 export async function publishWorkspaceProfile(
   pubkey: string,
@@ -952,6 +949,7 @@ export function subscribeToWorkspaceDirectory(
         KIND_HOSTED_AGENT_CONFIG,
         KIND_MANAGED_AGENT,
         KIND_COMMUNITY_MEMBERS,
+        KIND_HOSTED_AGENT_RUNTIME_STATUS,
       ],
       since: Math.floor(Date.now() / 1000),
     },

@@ -27,6 +27,27 @@ fn event_is_newer(candidate: &Event, previous: &Event) -> bool {
         || (candidate.created_at == previous.created_at && candidate.id < previous.id)
 }
 
+fn is_reasoning_effort(value: &str) -> bool {
+    matches!(value, "low" | "medium" | "high" | "xhigh" | "max" | "ultra")
+}
+
+fn is_lower_hex_64(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .chars()
+            .all(|character| character.is_ascii_hexdigit() && !character.is_ascii_uppercase())
+}
+
+fn runtime_acknowledgment_is_valid(runtime: &crate::managed_agents::RelayAgentRuntimeInfo) -> bool {
+    runtime.schema == "buzz.agent-runtime.v1"
+        && is_lower_hex_64(&runtime.controller_pubkey)
+        && runtime.revision > 0
+        && !runtime.model.trim().is_empty()
+        && is_reasoning_effort(&runtime.effort)
+        && !runtime.effective_name.trim().is_empty()
+        && is_lower_hex_64(&runtime.catalog_digest)
+}
+
 fn relay_agents_from_legacy_events(events: &[Event]) -> Vec<RelayAgentInfo> {
     let mut latest: HashMap<String, &Event> = HashMap::new();
     for event in events {
@@ -45,6 +66,34 @@ fn relay_agents_from_legacy_events(events: &[Event]) -> Vec<RelayAgentInfo> {
             let value = agents_from_events(std::slice::from_ref(event));
             let mut agent: RelayAgentInfo =
                 serde_json::from_value(value.get("agents")?.as_array()?.first()?.clone()).ok()?;
+            let mut family_ids = BTreeSet::new();
+            let mut family_labels = BTreeSet::new();
+            agent.model_families.retain(|family| {
+                let id = family.id.trim().to_string();
+                let label = family.name.trim().to_ascii_lowercase();
+                !id.is_empty()
+                    && !label.is_empty()
+                    && is_reasoning_effort(&family.default_effort)
+                    && family
+                        .efforts
+                        .iter()
+                        .all(|effort| is_reasoning_effort(effort))
+                    && family.efforts.contains(&family.default_effort)
+                    && family_ids.insert(id)
+                    && family_labels.insert(label)
+            });
+            if !agent
+                .runtime
+                .as_ref()
+                .is_some_and(runtime_acknowledgment_is_valid)
+            {
+                agent.runtime = None;
+            }
+            if let Some(runtime) = &agent.runtime {
+                // `runtime` is the exact signed effective selection. The
+                // top-level `model` remains only a flat compatibility field.
+                agent.model = Some(runtime.model.clone());
+            }
             // Legacy directory entries are not authenticated managed-policy
             // coordinates, so they must not drive the live 30177 watcher.
             agent.owner_pubkey = None;
@@ -146,6 +195,8 @@ fn relay_agent_from_managed_policy(agent_pubkey: &str, event: &Event) -> Option<
         access_tier: Some(if owner_only { "personal" } else { "shared" }.to_string()),
         model: content.model,
         models: Vec::new(),
+        model_families: Vec::new(),
+        runtime: None,
     })
 }
 

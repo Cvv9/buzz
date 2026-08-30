@@ -261,6 +261,29 @@ Each channel has at most one prompt in flight. Multiple channels can be processe
 
 > **Note:** On startup, the harness replays all unprocessed @mentions since the last run. Expect a burst of activity if there are stale events in the channel.
 
+## Hosted runtime control
+
+Set `BUZZ_ACP_RUNTIME_CONTROLLER_PUBKEY` to the pinned 64-character hex public
+key of the hosted runtime controller. The runner then accepts model, reasoning
+effort, and runtime-name revisions only as encrypted, signed controller frames.
+Direct owner `switch_model` observer commands return
+`managed_by_controller`; owner cancel and steer controls remain available.
+
+A revision is agent-global. New work stops claiming adapter slots while any
+active turns finish naturally, then model, effort, and runtime name apply
+together to fresh sessions. Messages and scheduled workflow tasks continue to
+enter the ordinary queue during that boundary. The runner publishes the exact
+effective revision in its self-authored kind `10100` profile and sends an
+encrypted receipt to the pinned controller. A failed adapter probe restores the
+prior effective acknowledgment and resumes queued work with a fixed redacted
+failure code.
+
+Lazy runners wake for trusted controller commands. On restart, dispatch remains
+gated until a matching controller status and self-authored acknowledgment prove
+the current revision, or the controller replays a pending revision. The pinned
+public key is not a credential; the controller private key must never be placed
+in a runner container.
+
 ## Bring Your Own Harness (BYOH)
 
 Buzz Desktop supports registering any ACP-speaking agent tool as a selectable runtime without a PR.

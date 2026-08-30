@@ -55,6 +55,22 @@ pub struct RelayInfo {
     /// Relay's own signing pubkey (NIP-11 `self` field, NIP-43).
     #[serde(rename = "self", skip_serializing_if = "Option::is_none")]
     pub relay_self: Option<String>,
+    /// Pinned hosted-agent runtime controller protocol descriptor.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub buzz_hosted_agent_runtime: Option<HostedAgentRuntimeDescriptor>,
+}
+
+/// Public discovery descriptor for hosted-agent runtime reconciliation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostedAgentRuntimeDescriptor {
+    /// Runtime-control protocol version.
+    pub version: u8,
+    /// Exact pinned controller public key.
+    pub controller_pubkey: String,
+    /// Encrypted owner request event kind.
+    pub request_kind: u32,
+    /// Public controller status event kind.
+    pub status_kind: u32,
 }
 
 /// Protocol and resource limits advertised in the NIP-11 document.
@@ -144,6 +160,7 @@ impl RelayInfo {
         advertise_nip43: bool,
         max_message_length: usize,
         pairing_relay_url: Option<&str>,
+        hosted_agent_runtime_controller_pubkey: Option<&str>,
     ) -> Self {
         debug_assert!(
             !advertise_nip43 || relay_self.is_some(),
@@ -169,6 +186,14 @@ impl RelayInfo {
             limitation: Some(relay_limitation(max_message_length)),
             pairing_relay_url: pairing_relay_url.map(str::to_string),
             relay_self: relay_self.map(|s| s.to_string()),
+            buzz_hosted_agent_runtime: hosted_agent_runtime_controller_pubkey.map(|pubkey| {
+                HostedAgentRuntimeDescriptor {
+                    version: 1,
+                    controller_pubkey: pubkey.to_owned(),
+                    request_kind: buzz_core::kind::KIND_HOSTED_AGENT_RUNTIME_REQUEST,
+                    status_kind: buzz_core::kind::KIND_HOSTED_AGENT_RUNTIME_STATUS,
+                }
+            }),
         }
     }
 }
@@ -235,8 +260,8 @@ fn push_descriptor(
 ///
 /// Centralised so the content-negotiated root handler and the dedicated
 /// `/info` endpoint can't drift apart. Every input to `RelayInfo::build`
-/// stays a pre-derived scalar: [`nip11_facts`] (config + keypair) plus the
-/// host-scoped workspace icon.
+/// stays a pre-derived scalar: [`nip11_facts`] (config + keypair), the pinned
+/// controller pubkey from config, plus the host-scoped workspace icon.
 pub(crate) async fn nip11_document(state: &crate::state::AppState, raw_host: &str) -> RelayInfo {
     let (relay_self, advertise_nip43) = nip11_facts(state);
     let icon = workspace_icon_for_host(state, raw_host).await;
@@ -246,6 +271,10 @@ pub(crate) async fn nip11_document(state: &crate::state::AppState, raw_host: &st
         advertise_nip43,
         state.config.max_frame_bytes,
         state.config.pairing_relay_url.as_deref(),
+        state
+            .config
+            .hosted_agent_runtime_controller_pubkey
+            .as_deref(),
     );
     let tenant_host = if state.config.push_gateway_delivery_url.is_some() {
         crate::tenant::bind_community(&state.db, raw_host)
@@ -317,8 +346,9 @@ pub(crate) fn nip11_facts(state: &crate::state::AppState) -> (Option<String>, bo
 /// DB/search/audit inputs", so an unauthenticated NIP-11 read can never become
 /// an enumeration oracle for *other* communities. `build` takes only static
 /// and scalar inputs — the per-deployment facts arrive pre-derived through
-/// [`nip11_facts`] (config + relay keypair), and the one host-scoped fact
-/// (the workspace `icon`) arrives as a scalar from
+/// [`nip11_facts`] (config + relay keypair), the controller trust anchor is a
+/// scalar from config, and the one host-scoped fact (the workspace `icon`)
+/// arrives as a scalar from
 /// [`workspace_icon_for_host`], whose DB lookup is scoped through
 /// [`crate::tenant::bind_community`] and can therefore only ever surface the
 /// requesting host's own community state.
@@ -336,6 +366,7 @@ const _RELAY_INFO_BUILD_STATIC_INPUT_FENCE: fn(
     Option<&str>,
     bool,
     usize,
+    Option<&str>,
     Option<&str>,
 ) -> RelayInfo = RelayInfo::build;
 
@@ -391,7 +422,7 @@ mod tests {
 
     #[test]
     fn build_advertises_buzz_repository_url() {
-        let info = RelayInfo::build(None, None, false, DEFAULT_MAX_FRAME_BYTES, None);
+        let info = RelayInfo::build(None, None, false, DEFAULT_MAX_FRAME_BYTES, None, None);
         assert_eq!(info.software, "https://github.com/block/buzz");
     }
 
@@ -403,6 +434,7 @@ mod tests {
             false,
             DEFAULT_MAX_FRAME_BYTES,
             Some("wss://pairing.buzz.xyz"),
+            None,
         );
         let json = serde_json::to_value(&info).expect("serialize");
         assert_eq!(
@@ -411,9 +443,36 @@ mod tests {
             Some("wss://pairing.buzz.xyz")
         );
 
-        let info = RelayInfo::build(None, None, false, DEFAULT_MAX_FRAME_BYTES, None);
+        let info = RelayInfo::build(None, None, false, DEFAULT_MAX_FRAME_BYTES, None, None);
         let json = serde_json::to_value(&info).expect("serialize");
         assert!(json.get("pairing_relay_url").is_none());
+    }
+
+    #[test]
+    fn hosted_runtime_controller_descriptor_is_exact_and_optional() {
+        let controller = "a".repeat(64);
+        let configured = RelayInfo::build(
+            None,
+            None,
+            false,
+            DEFAULT_MAX_FRAME_BYTES,
+            None,
+            Some(&controller),
+        );
+        let json = serde_json::to_value(configured).expect("serialize configured NIP-11");
+        assert_eq!(
+            json.get("buzz_hosted_agent_runtime"),
+            Some(&serde_json::json!({
+                "version": 1,
+                "controller_pubkey": controller,
+                "request_kind": 24201,
+                "status_kind": 30181
+            }))
+        );
+
+        let disabled = RelayInfo::build(None, None, false, DEFAULT_MAX_FRAME_BYTES, None, None);
+        let json = serde_json::to_value(disabled).expect("serialize disabled NIP-11");
+        assert!(json.get("buzz_hosted_agent_runtime").is_none());
     }
 
     /// NIP-WP → NIP-11 mirror: a set workspace icon is served in the standard
@@ -427,6 +486,7 @@ mod tests {
             false,
             DEFAULT_MAX_FRAME_BYTES,
             None,
+            None,
         );
         assert_eq!(
             info.icon.as_deref(),
@@ -439,7 +499,7 @@ mod tests {
         );
 
         for icon in [None, Some("")] {
-            let info = RelayInfo::build(None, icon, false, DEFAULT_MAX_FRAME_BYTES, None);
+            let info = RelayInfo::build(None, icon, false, DEFAULT_MAX_FRAME_BYTES, None, None);
             assert!(info.icon.is_none());
             let json = serde_json::to_value(&info).expect("serialize");
             assert!(
@@ -459,7 +519,7 @@ mod tests {
 
     #[test]
     fn max_message_length_uses_configured_frame_limit() {
-        let info = RelayInfo::build(None, None, false, 262_144, None);
+        let info = RelayInfo::build(None, None, false, 262_144, None, None);
         let limitation = info.limitation.expect("limitation");
         assert_eq!(limitation.max_message_length, Some(262_144));
     }
@@ -490,7 +550,7 @@ mod tests {
     /// Open relay, ephemeral key — both `self` and NIP-43 are absent.
     #[test]
     fn build_open_relay_ephemeral_key_omits_self_and_nip43() {
-        let info = RelayInfo::build(None, None, false, DEFAULT_MAX_FRAME_BYTES, None);
+        let info = RelayInfo::build(None, None, false, DEFAULT_MAX_FRAME_BYTES, None, None);
         assert!(info.relay_self.is_none());
         assert!(!info.supported_nips.contains(&NIP_RELAY_MEMBERSHIP));
     }
@@ -503,7 +563,7 @@ mod tests {
     #[test]
     fn build_open_relay_stable_key_advertises_self_but_not_nip43() {
         let pk = "0000000000000000000000000000000000000000000000000000000000000001";
-        let info = RelayInfo::build(Some(pk), None, false, DEFAULT_MAX_FRAME_BYTES, None);
+        let info = RelayInfo::build(Some(pk), None, false, DEFAULT_MAX_FRAME_BYTES, None, None);
         assert_eq!(info.relay_self.as_deref(), Some(pk));
         assert!(!info.supported_nips.contains(&NIP_RELAY_MEMBERSHIP));
     }
@@ -512,7 +572,7 @@ mod tests {
     #[test]
     fn build_membership_relay_advertises_self_and_nip43() {
         let pk = "0000000000000000000000000000000000000000000000000000000000000001";
-        let info = RelayInfo::build(Some(pk), None, true, DEFAULT_MAX_FRAME_BYTES, None);
+        let info = RelayInfo::build(Some(pk), None, true, DEFAULT_MAX_FRAME_BYTES, None, None);
         assert_eq!(info.relay_self.as_deref(), Some(pk));
         assert!(info.supported_nips.contains(&NIP_RELAY_MEMBERSHIP));
     }
@@ -523,6 +583,6 @@ mod tests {
     #[test]
     #[should_panic(expected = "advertise_nip43=true requires relay_self=Some")]
     fn build_nip43_without_self_panics_in_debug() {
-        let _ = RelayInfo::build(None, None, true, DEFAULT_MAX_FRAME_BYTES, None);
+        let _ = RelayInfo::build(None, None, true, DEFAULT_MAX_FRAME_BYTES, None, None);
     }
 }

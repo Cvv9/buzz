@@ -1,6 +1,34 @@
 use super::*;
 
 #[test]
+fn acp_model_normalization_accepts_the_current_name_field() {
+    let raw = serde_json::json!({
+        "agent": { "name": "codex-acp", "version": "1.1.14" },
+        "stable": {
+            "configOptions": [{
+                "category": "model",
+                "options": [{
+                    "value": "gpt-5.6-terra",
+                    "name": "GPT-5.6-Terra",
+                    "description": "Balanced agentic coding model for everyday work."
+                }]
+            }]
+        },
+        "unstable": null
+    });
+
+    let response = normalize_agent_models(&raw, None);
+
+    assert_eq!(response.models.len(), 1);
+    assert_eq!(response.models[0].id, "gpt-5.6-terra");
+    assert_eq!(response.models[0].name.as_deref(), Some("GPT-5.6-Terra"));
+    assert_eq!(
+        response.models[0].description.as_deref(),
+        Some("Balanced agentic coding model for everyday work.")
+    );
+}
+
+#[test]
 fn access_policy_change_requires_runtime_refresh_for_effective_gate_changes() {
     use crate::managed_agents::RespondTo;
 

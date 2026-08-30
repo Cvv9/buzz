@@ -1,0 +1,61 @@
+{
+  "stable": {
+    "configOptions": [
+      {
+        "category": "model",
+        "configId": "model",
+        "options": [
+          { "value": "gpt-3.5-turbo-16k", "displayName": "GPT-3.5-Turbo-16k" }
+        ]
+      }
+    ]
+  },
+  "unstable": {
+    "availableModels": [
+      { "modelId": "legacy-gpt35-a", "name": "GPT-3.5-Turbo-16k" },
+      { "modelId": "legacy-gpt35-b", "name": "GPT-3.5-Turbo-16k" }
+    ]
+  },
+  "canonical": {
+    "compatibility_models": [
+      { "id": "gpt-3.5-turbo-16k", "name": "GPT-3.5-Turbo-16k" }
+    ],
+    "catalog": {
+      "model_families": [
+        {
+          "id": "gpt-3.5-turbo-16k",
+          "name": "GPT-3.5-Turbo-16k",
+          "description": "",
+          "default_effort": "medium",
+          "efforts": ["medium"]
+        }
+      ],
+      "bindings": [
+        {
+          "model": "gpt-3.5-turbo-16k",
+          "effort": "medium",
+          "method": {
+            "type": "config_option",
+            "config_id": "model",
+            "option_value": "gpt-3.5-turbo-16k"
+          }
+        }
+      ]
+    },
+    "binding_conflicts": [
+      {
+        "model": "gpt-3.5-turbo-16k",
+        "effort": "medium",
+        "selected": {
+          "type": "config_option",
+          "config_id": "model",
+          "option_value": "gpt-3.5-turbo-16k"
+        },
+        "discarded": [
+          { "type": "set_model", "model_id": "legacy-gpt35-a" },
+          { "type": "set_model", "model_id": "legacy-gpt35-b" }
+        ]
+      }
+    ]
+  }
+}

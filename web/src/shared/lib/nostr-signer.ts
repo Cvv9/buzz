@@ -137,6 +137,17 @@ export async function nip44EncryptToSelf(
   pubkey: string,
   plaintext: string,
 ): Promise<string> {
+  return nip44EncryptToRecipient(pubkey, plaintext);
+}
+
+/** Encrypt a payload to an explicit NIP-44 recipient using the active signer. */
+export async function nip44EncryptToRecipient(
+  pubkey: string,
+  plaintext: string,
+): Promise<string> {
+  const provider = typeof window === "undefined" ? undefined : window.nostr;
+  if (provider?.nip44) return provider.nip44.encrypt(pubkey, plaintext);
+
   const browserSecret = await getBrowserSecretKey();
   if (browserSecret) {
     return nip44.encrypt(
@@ -144,9 +155,6 @@ export async function nip44EncryptToSelf(
       nip44.utils.getConversationKey(browserSecret, pubkey),
     );
   }
-
-  const provider = typeof window === "undefined" ? undefined : window.nostr;
-  if (provider?.nip44) return provider.nip44.encrypt(pubkey, plaintext);
 
   throw new Nip07UnavailableError();
 }
@@ -156,6 +164,9 @@ export async function nip44DecryptFromSelf(
   pubkey: string,
   ciphertext: string,
 ): Promise<string> {
+  const provider = typeof window === "undefined" ? undefined : window.nostr;
+  if (provider?.nip44) return provider.nip44.decrypt(pubkey, ciphertext);
+
   const browserSecret = await getBrowserSecretKey();
   if (browserSecret) {
     return nip44.decrypt(
@@ -163,9 +174,6 @@ export async function nip44DecryptFromSelf(
       nip44.utils.getConversationKey(browserSecret, pubkey),
     );
   }
-
-  const provider = typeof window === "undefined" ? undefined : window.nostr;
-  if (provider?.nip44) return provider.nip44.decrypt(pubkey, ciphertext);
 
   throw new Nip07UnavailableError();
 }

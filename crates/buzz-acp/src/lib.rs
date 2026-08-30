@@ -9,6 +9,11 @@ mod pool;
 mod pool_lifecycle;
 mod queue;
 mod relay;
+mod runtime_catalog;
+mod runtime_control;
+mod runtime_defaults;
+mod runtime_identity;
+mod runtime_profile;
 mod setup_mode;
 mod usage;
 
@@ -19,7 +24,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use acp::{AcpClient, EnvVar, McpServer};
-use anyhow::Result;
+use anyhow::{Context, Result};
+use buzz_core::hosted_agent_runtime::{
+    HostedAgentRuntimeStatus, RuntimeErrorCode, RuntimeRevision, RuntimeSelectionMethod,
+    RuntimeStatusState,
+};
 use buzz_core::kind::{
     KIND_MEMBER_ADDED_NOTIFICATION, KIND_MEMBER_REMOVED_NOTIFICATION, KIND_STREAM_MESSAGE,
     KIND_STREAM_REMINDER, KIND_WORKFLOW_AGENT_TASK, KIND_WORKFLOW_APPROVAL_REQUESTED,
@@ -43,6 +52,9 @@ use pool::{
 use pool_lifecycle::PoolLifecycle;
 use queue::{CancelReason, EventQueue, FlushBatch, QueuedEvent, ThreadTags};
 use relay::{HarnessRelay, RelayEventPublisher};
+use runtime_control::{
+    decode_runtime_control, prevalidate_runtime_control, RuntimeApplicationReceipt,
+};
 use tokio::sync::{mpsc, watch};
 use tracing_subscriber::EnvFilter;
 use uuid::Uuid;
@@ -1098,6 +1110,291 @@ async fn publish_relay_observer_event(
     }
 }
 
+async fn publish_runtime_receipt(
+    publisher: &RelayEventPublisher,
+    keys: &nostr::Keys,
+    controller: &PublicKey,
+    receipt: &RuntimeApplicationReceipt,
+) -> Result<()> {
+    let agent_pubkey = keys.public_key().to_hex();
+    let controller_pubkey = controller.to_hex();
+    let encrypted = encrypt_observer_payload(keys, controller, receipt)
+        .map_err(|error| anyhow::anyhow!("encrypt runtime receipt: {error}"))?;
+    let event =
+        buzz_sdk::build_hosted_runtime_receipt_frame(&controller_pubkey, &agent_pubkey, &encrypted)
+            .map_err(|error| anyhow::anyhow!("build runtime receipt: {error}"))?
+            .sign_with_keys(keys)
+            .map_err(|error| anyhow::anyhow!("sign runtime receipt: {error}"))?;
+    publisher
+        .publish_event(event)
+        .await
+        .map_err(|error| anyhow::anyhow!("publish runtime receipt: {error}"))
+}
+
+async fn publish_effective_runtime(
+    pool: &AgentPool,
+    ctx: &PromptContext,
+    controller: &PublicKey,
+    publisher: &RelayEventPublisher,
+    revision: &runtime_defaults::PendingRuntimeRevision,
+) -> Result<()> {
+    let catalog = pool
+        .runtime_catalog()
+        .ok_or_else(|| anyhow::anyhow!("runtime catalog unavailable"))?;
+    let acknowledgment = runtime_profile::runtime_acknowledgment(&controller.to_hex(), revision)?;
+    ctx.runtime_identity.apply(&revision.selection.runtime_name);
+    runtime_profile::publish_runtime_acknowledgment(
+        &ctx.rest_client,
+        &ctx.agent_keys,
+        &catalog,
+        &acknowledgment,
+    )
+    .await?;
+    publish_runtime_receipt(
+        publisher,
+        &ctx.agent_keys,
+        controller,
+        &RuntimeApplicationReceipt::Applied { acknowledgment },
+    )
+    .await
+}
+
+async fn apply_ready_runtime_revision(
+    pool: &mut AgentPool,
+    ctx: &PromptContext,
+    controller: &PublicKey,
+    publisher: &RelayEventPublisher,
+) {
+    let Some(pending) = pool.pending_runtime_apply() else {
+        return;
+    };
+    if let Some(revision) = RuntimeRevision::new(pending.revision) {
+        if let Err(error) = publish_runtime_receipt(
+            publisher,
+            &ctx.agent_keys,
+            controller,
+            &RuntimeApplicationReceipt::Applying { revision },
+        )
+        .await
+        {
+            tracing::warn!(
+                revision = pending.revision,
+                "failed to publish runtime applying receipt: {error}"
+            );
+        }
+    }
+    let prior = pool.effective_runtime_revision();
+    match pool.apply_pending_runtime_defaults(&ctx.cwd).await {
+        Ok(revision) => {
+            pool.mark_runtime_reconciled();
+            if let Err(error) =
+                publish_effective_runtime(pool, ctx, controller, publisher, &pending).await
+            {
+                tracing::error!(
+                    revision,
+                    "runtime applied but acknowledgment failed: {error}"
+                );
+            }
+        }
+        Err(error) => {
+            pool.mark_runtime_reconciled();
+            if let Some(prior) = prior {
+                if let Err(publish_error) =
+                    publish_effective_runtime(pool, ctx, controller, publisher, &prior).await
+                {
+                    tracing::error!(
+                        revision = prior.revision,
+                        "failed to republish prior runtime acknowledgment: {publish_error}"
+                    );
+                }
+            }
+            if let Some(revision) = RuntimeRevision::new(pending.revision) {
+                let receipt = RuntimeApplicationReceipt::Failed {
+                    revision,
+                    error: RuntimeErrorCode::AdapterRejected,
+                };
+                if let Err(receipt_error) =
+                    publish_runtime_receipt(publisher, &ctx.agent_keys, controller, &receipt).await
+                {
+                    tracing::error!(
+                        revision = pending.revision,
+                        "failed to publish runtime failure receipt: {receipt_error}"
+                    );
+                }
+            }
+            tracing::warn!(
+                revision = pending.revision,
+                code = error.code,
+                "runtime revision rolled back"
+            );
+        }
+    }
+}
+
+async fn handle_runtime_controller_event(
+    keys: &nostr::Keys,
+    event: nostr::Event,
+    pool: &mut AgentPool,
+    ctx: &PromptContext,
+    controller: &PublicKey,
+    publisher: &RelayEventPublisher,
+) {
+    let catalog = match pool.ensure_runtime_catalog(&ctx.cwd).await {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            tracing::warn!("runtime controller event deferred: {error}");
+            return;
+        }
+    };
+    let pending = match decode_runtime_control(
+        keys,
+        &event,
+        controller,
+        &catalog,
+        chrono::Utc::now().timestamp(),
+    ) {
+        Ok(pending) => pending,
+        Err(error) => {
+            tracing::warn!(code = %error, "runtime controller event rejected");
+            return;
+        }
+    };
+    let revision = pending.revision;
+    let disposition = pool.request_runtime_defaults(pending);
+    tracing::info!(
+        revision,
+        disposition = ?disposition,
+        "runtime controller revision received"
+    );
+    if matches!(
+        disposition,
+        runtime_defaults::RuntimeRevisionDisposition::Stale
+    ) {
+        return;
+    }
+    pool.mark_runtime_reconciled();
+    if matches!(
+        disposition,
+        runtime_defaults::RuntimeRevisionDisposition::Idempotent
+    ) {
+        if let Some(effective) = pool.effective_runtime_revision() {
+            if effective.revision == revision {
+                if let Err(error) =
+                    publish_effective_runtime(pool, ctx, controller, publisher, &effective).await
+                {
+                    tracing::warn!(revision, "failed to replay runtime acknowledgment: {error}");
+                }
+            }
+        }
+        return;
+    }
+    if matches!(
+        disposition,
+        runtime_defaults::RuntimeRevisionDisposition::Quiescing
+            | runtime_defaults::RuntimeRevisionDisposition::SupersededQuiescing
+    ) {
+        if let Some(revision) = RuntimeRevision::new(revision) {
+            if let Err(error) = publish_runtime_receipt(
+                publisher,
+                &ctx.agent_keys,
+                controller,
+                &RuntimeApplicationReceipt::PendingBusy { revision },
+            )
+            .await
+            {
+                tracing::warn!(
+                    revision = revision.get(),
+                    "failed to publish runtime pending receipt: {error}"
+                );
+            }
+        }
+    }
+    apply_ready_runtime_revision(pool, ctx, controller, publisher).await;
+}
+
+async fn reconcile_startup_runtime(
+    pool: &mut AgentPool,
+    ctx: &PromptContext,
+    controller: &PublicKey,
+) -> Result<bool> {
+    use nostr::{Alphabet, SingleLetterTag};
+
+    let agent_pubkey = ctx.agent_keys.public_key().to_hex();
+    let d_tag = SingleLetterTag::lowercase(Alphabet::D);
+    let filter = nostr::Filter::new()
+        .kind(nostr::Kind::Custom(
+            buzz_core::kind::KIND_HOSTED_AGENT_RUNTIME_STATUS as u16,
+        ))
+        .author(*controller)
+        .custom_tags(d_tag, [agent_pubkey.clone()])
+        .limit(1);
+    let response = ctx
+        .rest_client
+        .query(std::slice::from_ref(&filter))
+        .await
+        .map_err(|error| anyhow::anyhow!("query runtime status: {error}"))?;
+    let Some(raw_status_event) = response.as_array().and_then(|events| events.first()) else {
+        return Ok(false);
+    };
+    let status_event: nostr::Event =
+        serde_json::from_value(raw_status_event.clone()).context("parse runtime status event")?;
+    buzz_core::verify_event(&status_event).context("verify runtime status event")?;
+    if status_event.pubkey != *controller {
+        anyhow::bail!("runtime status was not authored by the pinned controller");
+    }
+    let status: HostedAgentRuntimeStatus =
+        serde_json::from_str(&status_event.content).context("parse runtime status")?;
+    if status.agent_pubkey.as_str() != agent_pubkey {
+        anyhow::bail!("runtime status targets another agent");
+    }
+    if !matches!(
+        status.state,
+        RuntimeStatusState::Current | RuntimeStatusState::Applied | RuntimeStatusState::Failed
+    ) {
+        return Ok(false);
+    }
+
+    let Some(acknowledgment) =
+        runtime_profile::fetch_runtime_acknowledgment(&ctx.rest_client, &ctx.agent_keys).await?
+    else {
+        return Ok(false);
+    };
+    let exact_match = acknowledgment.controller_pubkey.as_str() == controller.to_hex()
+        && acknowledgment.revision == status.revision
+        && acknowledgment.model == status.effective.model
+        && acknowledgment.effort == status.effective.effort
+        && acknowledgment.effective_name == status.effective.runtime_name
+        && acknowledgment.catalog_digest == status.catalog_digest;
+    if !exact_match {
+        anyhow::bail!("runtime status and agent acknowledgment do not match");
+    }
+
+    let catalog = pool.ensure_runtime_catalog(&ctx.cwd).await?;
+    if catalog.digest != acknowledgment.catalog_digest {
+        anyhow::bail!("runtime catalog digest changed since the acknowledgment");
+    }
+    let method: RuntimeSelectionMethod = catalog
+        .catalog
+        .bindings
+        .iter()
+        .find(|binding| {
+            binding.model == acknowledgment.model && binding.effort == acknowledgment.effort
+        })
+        .map(|binding| binding.method.clone())
+        .context("effective runtime binding is no longer supported")?;
+    let effective = runtime_defaults::PendingRuntimeRevision {
+        revision: acknowledgment.revision.get(),
+        selection: status.effective,
+        method,
+        catalog_digest: acknowledgment.catalog_digest,
+    };
+    ctx.runtime_identity
+        .apply(&effective.selection.runtime_name);
+    pool.restore_runtime_defaults(runtime_defaults::RuntimeDefaults::new(Some(effective)));
+    pool.mark_runtime_reconciled();
+    Ok(true)
+}
+
 /// Maximum age (seconds) for an observer control frame to be considered fresh.
 const OBSERVER_CONTROL_FRESHNESS_SECS: i64 = 300;
 
@@ -1108,6 +1405,7 @@ fn handle_relay_observer_control_event(
     observer: Option<&observer::ObserverHandle>,
     owner_pubkey_hex: &str,
     event_publisher: RelayEventPublisher,
+    runtime_managed: bool,
 ) {
     // Defense-in-depth: verify signature even though the relay already checked.
     if let Err(e) = buzz_core::verify_event(&event) {
@@ -1151,7 +1449,11 @@ fn handle_relay_observer_control_event(
             handle_cancel_turn_control(&payload, pool, observer);
         }
         Some("switch_model") => {
-            handle_switch_model_control(&payload, pool, observer);
+            if runtime_managed {
+                reject_managed_switch_model_control(&payload, observer);
+            } else {
+                handle_switch_model_control(&payload, pool, observer);
+            }
         }
         Some("publish_project_owner_announcements") => {
             handle_publish_project_owner_announcements_control(
@@ -1164,6 +1466,101 @@ fn handle_relay_observer_control_event(
         _ => {
             tracing::debug!(payload = %payload, "ignoring unknown observer control frame");
         }
+    }
+}
+
+fn reject_managed_switch_model_control(
+    payload: &serde_json::Value,
+    observer: Option<&observer::ObserverHandle>,
+) {
+    let channel_id = payload
+        .get("channelId")
+        .and_then(|value| value.as_str())
+        .and_then(|value| value.parse::<Uuid>().ok());
+    let Some(observer) = observer else {
+        return;
+    };
+    observer.emit(
+        "control_result",
+        None,
+        &observer::ObserverContext {
+            channel_id: channel_id.map(|value| value.to_string()),
+            session_id: None,
+            turn_id: None,
+            started_at: None,
+        },
+        serde_json::json!({
+            "type": "switch_model",
+            "status": "managed_by_controller",
+        }),
+    );
+}
+
+#[cfg(test)]
+mod managed_runtime_control_tests {
+    use super::*;
+
+    #[test]
+    fn direct_switch_model_is_rejected_when_runtime_is_controller_managed() {
+        let observer = observer::ObserverHandle::in_process();
+        let channel = Uuid::new_v4();
+        reject_managed_switch_model_control(
+            &serde_json::json!({
+                "type": "switch_model",
+                "channelId": channel,
+                "modelId": "gpt-5.6-sol[high]"
+            }),
+            Some(&observer),
+        );
+
+        let events = observer.snapshot();
+        let result = events.last().expect("control result");
+        assert_eq!(result.kind, "control_result");
+        assert_eq!(result.payload["type"], "switch_model");
+        assert_eq!(result.payload["status"], "managed_by_controller");
+    }
+
+    #[test]
+    fn owner_cancel_control_remains_available_with_runtime_management() {
+        let observer = observer::ObserverHandle::in_process();
+        let channel = Uuid::new_v4();
+        let mut pool = AgentPool::from_slots(vec![]);
+        pool.require_runtime_reconciliation();
+
+        handle_cancel_turn_control(
+            &serde_json::json!({
+                "type": "cancel_turn",
+                "channelId": channel
+            }),
+            &mut pool,
+            Some(&observer),
+        );
+
+        let events = observer.snapshot();
+        let result = events.last().expect("control result");
+        assert_eq!(result.payload["type"], "cancel_turn");
+        assert_eq!(result.payload["status"], "no_active_turn");
+    }
+
+    #[tokio::test]
+    async fn runtime_failure_receipt_is_encrypted_to_the_exact_controller() {
+        let agent = nostr::Keys::generate();
+        let controller = nostr::Keys::generate();
+        let (publisher, mut published) = RelayEventPublisher::test_pair();
+        let receipt = RuntimeApplicationReceipt::Failed {
+            revision: RuntimeRevision::new(4).expect("revision"),
+            error: RuntimeErrorCode::AdapterRejected,
+        };
+
+        publish_runtime_receipt(&publisher, &agent, &controller.public_key(), &receipt)
+            .await
+            .expect("receipt publish");
+
+        let event = published.recv().await.expect("published event");
+        assert_eq!(event.pubkey, agent.public_key());
+        let decrypted: RuntimeApplicationReceipt =
+            decrypt_observer_payload(&controller, &event).expect("controller decrypt");
+        assert_eq!(decrypted, receipt);
     }
 }
 
@@ -1673,11 +2070,13 @@ fn idle_pool_sleep_due(
     turn_in_flight: bool,
     prompt_tasks_in_flight: bool,
     work_queued: bool,
+    runtime_change_pending: bool,
     wake_or_respawn_in_flight: bool,
 ) -> bool {
     pool_ready
         && !work_queued
         && !prompt_tasks_in_flight
+        && !runtime_change_pending
         && !wake_or_respawn_in_flight
         && inactivity_expired(last_activity, now, bound, turn_in_flight)
 }
@@ -1745,7 +2144,7 @@ mod idle_pool_sleep_tests {
     fn sleeps_when_ready_idle_and_quiet() {
         let (last, now, bound) = ready_after_bound();
         assert!(idle_pool_sleep_due(
-            true, last, now, bound, false, false, false, false
+            true, last, now, bound, false, false, false, false, false
         ));
     }
 
@@ -1760,6 +2159,7 @@ mod idle_pool_sleep_tests {
             false,
             false,
             false,
+            false,
             false
         ));
     }
@@ -1769,7 +2169,7 @@ mod idle_pool_sleep_tests {
         // A still-sleeping (or waking) pool must not "re-sleep".
         let (last, now, bound) = ready_after_bound();
         assert!(!idle_pool_sleep_due(
-            false, last, now, bound, false, false, false, false
+            false, last, now, bound, false, false, false, false, false
         ));
     }
 
@@ -1777,7 +2177,7 @@ mod idle_pool_sleep_tests {
     fn active_turn_defers_sleep() {
         let (last, now, bound) = ready_after_bound();
         assert!(!idle_pool_sleep_due(
-            true, last, now, bound, true, false, false, false
+            true, last, now, bound, true, false, false, false, false
         ));
     }
 
@@ -1785,7 +2185,7 @@ mod idle_pool_sleep_tests {
     fn in_flight_prompt_task_defers_sleep() {
         let (last, now, bound) = ready_after_bound();
         assert!(!idle_pool_sleep_due(
-            true, last, now, bound, false, true, false, false
+            true, last, now, bound, false, true, false, false, false
         ));
     }
 
@@ -1795,7 +2195,15 @@ mod idle_pool_sleep_tests {
         // teardown so it is never stranded — the loop dispatches it instead.
         let (last, now, bound) = ready_after_bound();
         assert!(!idle_pool_sleep_due(
-            true, last, now, bound, false, false, true, false
+            true, last, now, bound, false, false, true, false, false
+        ));
+    }
+
+    #[test]
+    fn pending_runtime_change_defers_sleep() {
+        let (last, now, bound) = ready_after_bound();
+        assert!(!idle_pool_sleep_due(
+            true, last, now, bound, false, false, false, true, false
         ));
     }
 
@@ -1803,7 +2211,7 @@ mod idle_pool_sleep_tests {
     fn wake_or_respawn_in_flight_defers_sleep() {
         let (last, now, bound) = ready_after_bound();
         assert!(!idle_pool_sleep_due(
-            true, last, now, bound, false, false, false, true
+            true, last, now, bound, false, false, false, false, true
         ));
     }
 
@@ -1818,6 +2226,7 @@ mod idle_pool_sleep_tests {
             recent,
             now,
             Duration::from_secs(60),
+            false,
             false,
             false,
             false,
@@ -1855,6 +2264,7 @@ mod idle_pool_sleep_tests {
             false,
             false,
             false,
+            false,
             any_respawn_in_flight(&busy),
         ));
 
@@ -1868,6 +2278,7 @@ mod idle_pool_sleep_tests {
             last,
             now,
             bound,
+            false,
             false,
             false,
             false,
@@ -1988,6 +2399,9 @@ async fn tokio_main() -> Result<()> {
     } else {
         initialize_agent_pool(&PoolStartup::from_config(&config, observer.clone()), None).await?
     };
+    if config.runtime_controller_pubkey.is_some() {
+        pool.require_runtime_reconciliation();
+    }
     let mut pool_ready = !config.lazy_pool;
     let mut pool_lifecycle: PoolLifecycle<AgentPool> = PoolLifecycle::listening();
 
@@ -2109,6 +2523,14 @@ async fn tokio_main() -> Result<()> {
             );
         }
     }
+    if config.runtime_controller_pubkey.is_some() && relay_observer_control_rx.is_none() {
+        relay
+            .subscribe_observer_controls()
+            .await
+            .map_err(|e| anyhow::anyhow!("runtime control subscribe error: {e}"))?;
+        relay_observer_control_rx = relay.take_observer_control_rx();
+        tracing::info!("hosted runtime controller subscription enabled");
+    }
 
     let channel_info_map = relay
         .discover_channels()
@@ -2218,7 +2640,7 @@ async fn tokio_main() -> Result<()> {
         turn_liveness_interval: Duration::from_secs(config.turn_liveness_secs),
         dedup_mode: config.dedup_mode,
         system_prompt: config.system_prompt.clone(),
-        session_title: config.session_title.clone(),
+        runtime_identity: runtime_identity::RuntimeIdentity::new(config.session_title.clone()),
         team_instructions: config.team_instructions.clone(),
         base_prompt: if config.no_base_prompt {
             None
@@ -2268,6 +2690,9 @@ async fn tokio_main() -> Result<()> {
         None
     };
     let mut heartbeat_in_flight = false;
+    let mut heartbeat_schedule = HeartbeatScheduleState::default();
+    let mut pending_runtime_control_events = VecDeque::<nostr::Event>::new();
+    let mut startup_runtime_reconcile_attempted = false;
 
     let mut presence_heartbeat = if config.presence_enabled {
         let interval = Duration::from_secs(60);
@@ -2426,10 +2851,66 @@ async fn tokio_main() -> Result<()> {
         Result(Box<PromptResult>),
         Panic(tokio::task::JoinError),
         SteerAck(SteerAckEvent),
-        Wake(u32, Result<AgentPool, String>),
+        Wake(u32, Box<Result<AgentPool, String>>),
     }
 
     loop {
+        if pool_ready {
+            while let Some(event) = pending_runtime_control_events.pop_front() {
+                if let Some(controller) = config.runtime_controller_pubkey.as_ref() {
+                    handle_runtime_controller_event(
+                        &config.keys,
+                        event,
+                        &mut pool,
+                        &ctx,
+                        controller,
+                        &relay.event_publisher(),
+                    )
+                    .await;
+                }
+            }
+            if let Some(controller) = config.runtime_controller_pubkey.as_ref() {
+                apply_ready_runtime_revision(&mut pool, &ctx, controller, &relay.event_publisher())
+                    .await;
+                if !pool.runtime_is_reconciled() && !startup_runtime_reconcile_attempted {
+                    startup_runtime_reconcile_attempted = true;
+                    match reconcile_startup_runtime(&mut pool, &ctx, controller).await {
+                        Ok(true) => tracing::info!(
+                            "runtime startup gate opened from matching signed status"
+                        ),
+                        Ok(false) => tracing::info!(
+                            "runtime startup gate is waiting for controller reconciliation"
+                        ),
+                        Err(error) => {
+                            tracing::warn!("runtime startup reconciliation remains gated: {error}")
+                        }
+                    }
+                }
+            }
+        }
+        // A scheduled heartbeat is work, not a best-effort notification. Keep
+        // it pending across a sleeping pool, runtime reconciliation, queued
+        // channel events, and busy agents. This matters most for daily report
+        // agents: dropping one tick would otherwise defer the report by a full
+        // day. Channel work keeps priority, then the heartbeat claims the next
+        // idle runtime-reconciled agent.
+        if heartbeat_schedule.should_wake_lazy_pool() && pool_ready {
+            if queue.has_flushable_work() {
+                for (channel_id, thread_tags) in
+                    dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity)
+                {
+                    typing_channels.insert(channel_id, thread_tags);
+                }
+            }
+            if heartbeat_schedule.take_if_dispatchable(
+                pool_ready,
+                pool.runtime_dispatch_allowed(),
+                queue.has_flushable_work(),
+                pool.any_idle(),
+            ) {
+                dispatch_heartbeat(&mut pool, &ctx, &mut heartbeat_in_flight);
+            }
+        }
         // Whether buffered work is waiting on a lazy pool. Also gates the
         // retry-deadline sleep arm below: a `Failed` lifecycle keeps its
         // (possibly past) `retry_at` until the next wake, so sleeping on it
@@ -2437,7 +2918,9 @@ async fn tokio_main() -> Result<()> {
         // busy spin — whenever the queued work drained after a failed wake.
         let mut lazy_wake_work_pending = false;
         if config.lazy_pool && !pool_ready {
-            lazy_wake_work_pending = queue.has_flushable_work();
+            lazy_wake_work_pending = queue.has_flushable_work()
+                || !pending_runtime_control_events.is_empty()
+                || heartbeat_schedule.should_wake_lazy_pool();
             if let Some(attempt) = pool_lifecycle
                 .start_wake_if_due(lazy_wake_work_pending, tokio::time::Instant::now())
             {
@@ -2585,7 +3068,7 @@ async fn tokio_main() -> Result<()> {
                     Some(PoolEvent::SteerAck(ack_event))
                 }
                 Some((attempt, result)) = wake_rx.recv(), if config.lazy_pool && !pool_ready => {
-                    Some(PoolEvent::Wake(attempt, result))
+                    Some(PoolEvent::Wake(attempt, Box::new(result)))
                 }
                 // Gated on pending work: with an empty queue there is nothing
                 // for the retry to dispatch, and a past `retry_at` would
@@ -2628,7 +3111,44 @@ async fn tokio_main() -> Result<()> {
                     let _ = result_rx;
                     match control_event {
                         Some(event) => {
-                            if let Some(ref owner_hex) = owner_cache.pubkey {
+                            if config
+                                .runtime_controller_pubkey
+                                .as_ref()
+                                .is_some_and(|controller| event.pubkey == *controller)
+                            {
+                                let controller = config
+                                    .runtime_controller_pubkey
+                                    .as_ref()
+                                    .expect("checked controller");
+                                match prevalidate_runtime_control(
+                                    &config.keys,
+                                    &event,
+                                    controller,
+                                    chrono::Utc::now().timestamp(),
+                                ) {
+                                    Ok(()) if pool_ready => {
+                                        handle_runtime_controller_event(
+                                            &config.keys,
+                                            event,
+                                            &mut pool,
+                                            &ctx,
+                                            controller,
+                                            &relay.event_publisher(),
+                                        )
+                                        .await;
+                                    }
+                                    Ok(()) => {
+                                        if pending_runtime_control_events.len() == 32 {
+                                            pending_runtime_control_events.pop_front();
+                                        }
+                                        pending_runtime_control_events.push_back(event);
+                                    }
+                                    Err(error) => tracing::warn!(
+                                        code = %error,
+                                        "runtime controller frame rejected before wake"
+                                    ),
+                                }
+                            } else if let Some(ref owner_hex) = owner_cache.pubkey {
                                 handle_relay_observer_control_event(
                                     &config.keys,
                                     event,
@@ -2636,6 +3156,7 @@ async fn tokio_main() -> Result<()> {
                                     observer.as_ref(),
                                     owner_hex,
                                     relay.event_publisher(),
+                                    config.runtime_controller_pubkey.is_some(),
                                 );
                             } else {
                                 tracing::warn!("observer control frame received but no owner resolved — dropping");
@@ -3088,6 +3609,7 @@ async fn tokio_main() -> Result<()> {
                         queue.has_in_flight() || heartbeat_in_flight,
                         !pool.join_set.is_empty(),
                         queue.has_undispatched_work(),
+                        !pool.runtime_dispatch_allowed(),
                         !wake_tasks.is_empty()
                             || any_respawn_in_flight(&crash_history),
                     ) {
@@ -3095,6 +3617,7 @@ async fn tokio_main() -> Result<()> {
                             idle_pool_sleep_seconds = config.idle_pool_sleep_secs,
                             "idle pool sleep bound reached — tearing pool back to lazy state"
                         );
+                        let runtime_defaults = pool.runtime_defaults_snapshot();
                         shutdown_agent_pool(&mut pool).await;
                         // Return to the exact pre-wake lazy state: empty slots,
                         // Listening lifecycle. The top-of-loop wake path re-wakes
@@ -3102,6 +3625,7 @@ async fn tokio_main() -> Result<()> {
                         pool = AgentPool::from_slots(
                             (0..config.agents).map(|_| None).collect(),
                         );
+                        pool.restore_runtime_defaults(runtime_defaults);
                         pool_ready = false;
                         pool_lifecycle = PoolLifecycle::listening();
                         last_activity = tokio::time::Instant::now();
@@ -3123,20 +3647,12 @@ async fn tokio_main() -> Result<()> {
                     }
                 } => {
                     let _ = result_rx;
-                    if !pool_ready {
-                        tracing::debug!("heartbeat_skipped_pool_not_ready");
-                    } else if queue.has_flushable_work() {
-                        tracing::debug!("heartbeat_skipped_events");
-                        for (channel_id, thread_tags) in
-                            dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity)
-                        {
-                            typing_channels.insert(channel_id, thread_tags);
-                        }
-                    } else if pool.any_idle() {
-                        dispatch_heartbeat(&mut pool, &ctx, &mut heartbeat_in_flight);
-                    } else {
-                        tracing::debug!("heartbeat_skipped_busy");
-                    }
+                    heartbeat_schedule.note_tick(heartbeat_in_flight);
+                    tracing::debug!(
+                        pool_ready,
+                        heartbeat_in_flight,
+                        "heartbeat_due_recorded"
+                    );
                     None
                 }
                 _ = async {
@@ -3413,19 +3929,30 @@ async fn tokio_main() -> Result<()> {
                 }
             }
             Some(PoolEvent::Wake(attempt, result)) => {
-                let completion = result.as_ref().map(|_| ()).map_err(|error| error.clone());
+                let completion = result
+                    .as_ref()
+                    .as_ref()
+                    .map(|_| ())
+                    .map_err(|error| error.clone());
                 if let Err(error) =
-                    pool_lifecycle.complete_wake(attempt, result, tokio::time::Instant::now())
+                    pool_lifecycle.complete_wake(attempt, *result, tokio::time::Instant::now())
                 {
                     tracing::warn!(attempt, error, "discarding stale pool wake result");
                     continue;
                 }
                 match completion {
                     Ok(()) => {
-                        pool = pool_lifecycle
+                        let runtime_defaults = pool.runtime_defaults_snapshot();
+                        let mut awakened_pool = pool_lifecycle
                             .take_ready()
                             .expect("successful wake stores a ready pool");
+                        awakened_pool.restore_runtime_defaults(runtime_defaults);
+                        if config.runtime_controller_pubkey.is_some() {
+                            awakened_pool.require_runtime_reconciliation();
+                        }
+                        pool = awakened_pool;
                         pool_ready = true;
+                        startup_runtime_reconcile_attempted = false;
                         emit_runtime_lifecycle(
                             observer.as_ref(),
                             &runtime_start_nonce,
@@ -3856,6 +4383,13 @@ fn dispatch_pending(
     last_activity: &mut tokio::time::Instant,
 ) -> Vec<(Uuid, ThreadTags)> {
     let mut dispatched_channels = Vec::new();
+    if !pool.runtime_dispatch_allowed() {
+        tracing::debug!(
+            queue_depth = queue.pending_channels(),
+            "dispatch_suspended_for_runtime_defaults"
+        );
+        return dispatched_channels;
+    }
     loop {
         let batch = match queue.flush_next() {
             Some(b) => b,
@@ -4020,6 +4554,7 @@ fn handle_prompt_result(
         .unwrap_or_default();
     pool.task_map_mut()
         .retain(|_, meta| meta.agent_index != agent_index);
+    pool.note_active_turns_changed();
     debug_assert_eq!(before, pool.task_map().len() + 1);
     if let PromptSource::Channel(channel_id) = &result.source {
         // The task may have invalidated this session before returning. Never
@@ -4404,6 +4939,7 @@ fn recover_panicked_agent(
         tracing::error!("panic for unknown task {task_id:?} — bug");
         return;
     };
+    pool.note_active_turns_changed();
     let i = meta.agent_index;
 
     // Requeue BEFORE mark_complete (same rationale as handle_prompt_result).
@@ -4519,6 +5055,50 @@ fn drain_ready_join_results(
         }
     }
     LoopAction::Continue
+}
+
+/// Tracks one scheduled heartbeat until it is actually dispatched.
+///
+/// Tokio interval ticks are edge-triggered. Treating the tick itself as the
+/// work item loses scheduled reports whenever the lazy pool is asleep or all
+/// agents are occupied. This small level-triggered state keeps one due run
+/// pending without accumulating duplicate runs while another heartbeat is
+/// already in flight.
+#[derive(Debug, Default)]
+struct HeartbeatScheduleState {
+    pending: bool,
+}
+
+impl HeartbeatScheduleState {
+    fn note_tick(&mut self, heartbeat_in_flight: bool) {
+        if !heartbeat_in_flight {
+            self.pending = true;
+        }
+    }
+
+    fn should_wake_lazy_pool(&self) -> bool {
+        self.pending
+    }
+
+    fn take_if_dispatchable(
+        &mut self,
+        pool_ready: bool,
+        runtime_dispatch_allowed: bool,
+        queue_has_flushable_work: bool,
+        pool_has_idle_agent: bool,
+    ) -> bool {
+        if self.pending
+            && pool_ready
+            && runtime_dispatch_allowed
+            && !queue_has_flushable_work
+            && pool_has_idle_agent
+        {
+            self.pending = false;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 fn dispatch_heartbeat(
@@ -5026,7 +5606,9 @@ async fn run_authenticate(args: AuthenticateArgs) -> Result<()> {
 /// Flow: spawn → initialize → session/new → print models → shutdown.
 /// No relay connection, no MCP servers, no subscriptions. ~2-5s total.
 async fn run_models(args: ModelsArgs) -> Result<()> {
-    use acp::{extract_model_config_options, extract_model_state};
+    use acp::{
+        extract_model_config_options, extract_model_state, normalize_session_runtime_catalog,
+    };
 
     let agent_args = config::normalize_agent_args(&args.agent.agent_command, args.agent.agent_args);
     let cwd = std::env::current_dir()
@@ -5085,6 +5667,14 @@ async fn run_models(args: ModelsArgs) -> Result<()> {
     // Extract model info from session/new response.
     let config_options = extract_model_config_options(&session_resp.raw);
     let model_state = extract_model_state(&session_resp.raw);
+    let canonical = match normalize_session_runtime_catalog(&session_resp.raw) {
+        Ok(catalog) => catalog,
+        Err(error) => {
+            client.shutdown().await;
+            eprintln!("error: invalid adapter model catalog: {error}");
+            std::process::exit(1);
+        }
+    };
 
     if args.json {
         // Structured JSON output — consumed by Phase 3 `get_agent_models`.
@@ -5100,6 +5690,7 @@ async fn run_models(args: ModelsArgs) -> Result<()> {
                 "currentModelId": ms.get("currentModelId"),
                 "availableModels": ms.get("availableModels"),
             })),
+            "canonical": canonical,
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
@@ -5271,6 +5862,43 @@ mod heartbeat_base_prompt_tests {
         let prompt = "[System: Heartbeat]\nrun feed get";
         let composed = pool::prepend_standing_for_legacy(2, &heartbeat_standing(), prompt);
         assert_eq!(composed, prompt);
+    }
+}
+
+#[cfg(test)]
+mod heartbeat_scheduling_tests {
+    use super::*;
+
+    #[test]
+    fn due_heartbeat_survives_a_sleeping_pool_until_it_can_dispatch() {
+        let mut schedule = HeartbeatScheduleState::default();
+        schedule.note_tick(false);
+
+        assert!(schedule.should_wake_lazy_pool());
+        assert!(!schedule.take_if_dispatchable(false, true, false, true));
+        assert!(schedule.should_wake_lazy_pool());
+
+        assert!(schedule.take_if_dispatchable(true, true, false, true));
+        assert!(!schedule.should_wake_lazy_pool());
+    }
+
+    #[test]
+    fn due_heartbeat_waits_for_runtime_gate_events_and_an_idle_agent() {
+        let mut schedule = HeartbeatScheduleState::default();
+        schedule.note_tick(false);
+
+        assert!(!schedule.take_if_dispatchable(true, false, false, true));
+        assert!(!schedule.take_if_dispatchable(true, true, true, true));
+        assert!(!schedule.take_if_dispatchable(true, true, false, false));
+        assert!(schedule.should_wake_lazy_pool());
+    }
+
+    #[test]
+    fn tick_during_a_heartbeat_does_not_queue_a_duplicate_run() {
+        let mut schedule = HeartbeatScheduleState::default();
+        schedule.note_tick(true);
+
+        assert!(!schedule.should_wake_lazy_pool());
     }
 }
 
@@ -7254,6 +7882,7 @@ mod build_mcp_servers_tests {
             lazy_pool: false,
             idle_pool_sleep_secs: 0,
             agent_owner: None,
+            runtime_controller_pubkey: None,
             no_base_prompt: false,
             base_prompt_content: None,
         }
@@ -7478,6 +8107,7 @@ mod error_outcome_emission_tests {
             lazy_pool: false,
             idle_pool_sleep_secs: 0,
             agent_owner: None,
+            runtime_controller_pubkey: None,
             no_base_prompt: false,
             base_prompt_content: None,
         }

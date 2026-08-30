@@ -16,6 +16,24 @@ compose() {
   docker compose --env-file .env "${COMPOSE_FILES[@]}" "$@"
 }
 
+AGENT_SERVICES=(
+  agent-project-brain
+  agent-market-intelligence
+  agent-opportunity-scout
+  agent-bid-partnerships
+  agent-gtm-discovery
+  agent-people-culture
+  agent-chief-of-staff
+  agent-operations-desk
+)
+PERSONAL_AGENT_SERVICES=(
+  agent-personal-varun
+  agent-personal-vikram
+  agent-personal-adhika
+  agent-personal-swathi
+  agent-personal-raja
+)
+
 require_env() {
   if [[ ! -f .env ]]; then
     cat >&2 <<'MSG'
@@ -44,6 +62,26 @@ require_agent_credentials() {
     echo "Set CODEX_API_KEY or OPENAI_API_KEY in .env, or use the ChatGPT command." >&2
     exit 1
   fi
+}
+
+require_runtime_controller() {
+  for key in BUZZ_RUNTIME_CONTROLLER_PRIVATE_KEY BUZZ_HOSTED_AGENT_RUNTIME_CONTROLLER_PUBKEY BUZZ_RUNTIME_CONTROLLER_AGENTS_JSON; do
+    if ! env_has_value "${key}"; then
+      echo "Set ${key} in deploy/compose/.env before starting managed agents." >&2
+      exit 1
+    fi
+  done
+}
+
+verify_running_services() {
+  local running service
+  running="$(compose ps --status running --services)"
+  for service in "$@"; do
+    if ! grep -Fxq "${service}" <<<"${running}"; then
+      echo "Service ${service} is not running after deployment." >&2
+      return 1
+    fi
+  done
 }
 
 require_personal_pubkeys() {
@@ -86,7 +124,9 @@ case "${1:-help}" in
   start-agents)
     require_env
     require_agent_credentials
+    require_runtime_controller
     compose --profile agents up -d --wait
+    verify_running_services runtime-controller "${AGENT_SERVICES[@]}"
     ;;
   start-agents-chatgpt)
     require_env
@@ -94,13 +134,17 @@ case "${1:-help}" in
       echo "Set VARVIK_CODEX_AUTH_FILE in .env first." >&2
       exit 1
     fi
+    require_runtime_controller
     compose -f compose.agent-chatgpt.yml --profile agents up -d --wait
+    verify_running_services runtime-controller "${AGENT_SERVICES[@]}"
     ;;
   start-personal-agents)
     require_env
     require_personal_pubkeys
     require_agent_credentials
+    require_runtime_controller
     compose --profile personal-agents up -d --wait
+    verify_running_services runtime-controller "${PERSONAL_AGENT_SERVICES[@]}"
     ;;
   start-personal-agents-chatgpt)
     require_env
@@ -109,7 +153,9 @@ case "${1:-help}" in
       echo "Set VARVIK_CODEX_AUTH_FILE in .env first." >&2
       exit 1
     fi
+    require_runtime_controller
     compose -f compose.agent-chatgpt.yml --profile personal-agents up -d --wait
+    verify_running_services runtime-controller "${PERSONAL_AGENT_SERVICES[@]}"
     ;;
   stop|down)
     compose down
@@ -127,6 +173,22 @@ case "${1:-help}" in
     compose pull
     compose up -d --wait
     backup_hint
+    ;;
+  upgrade-runtime)
+    require_env
+    require_agent_credentials
+    require_runtime_controller
+    compose pull relay runtime-controller
+    compose up -d --wait relay
+    compose --profile agents up -d --wait runtime-controller
+    compose --profile agents up -d --wait agent-market-intelligence
+    verify_running_services runtime-controller agent-market-intelligence
+    if [[ "${BUZZ_RUNTIME_CANARY_APPROVED:-false}" != "true" ]]; then
+      echo "Runtime canary is healthy. Complete the runtime acceptance check, then rerun with BUZZ_RUNTIME_CANARY_APPROVED=true to roll the fleet." >&2
+      exit 2
+    fi
+    compose --profile agents up -d --wait
+    verify_running_services runtime-controller "${AGENT_SERVICES[@]}"
     ;;
   logs)
     shift || true
@@ -166,6 +228,9 @@ Commands:
   restart       Recreate the relay after env/image changes
   pull          Pull configured images
   upgrade       Pull and restart, then print backup reminders
+  upgrade-runtime
+                Deploy relay/controller compatibility, then one canary; set
+                BUZZ_RUNTIME_CANARY_APPROVED=true only after acceptance to roll the fleet
   logs [svc]    Follow logs (default: relay)
   status        Show compose service status
   config        Render merged compose config

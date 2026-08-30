@@ -192,6 +192,14 @@ pub struct Config {
     /// with the `owner` role on first startup.
     pub relay_owner_pubkey: Option<String>,
 
+    /// Pinned controller authorized to receive hosted-agent runtime requests
+    /// and publish reconciled runtime status snapshots.
+    ///
+    /// Unset disables runtime control advertisement. A configured value is
+    /// required to be exactly 64 lowercase hexadecimal characters so clients
+    /// never normalize or guess a trust anchor.
+    pub hosted_agent_runtime_controller_pubkey: Option<String>,
+
     /// Canonical HTTP origin of the deployment-global operator API.
     ///
     /// Every operator NIP-98 `u` tag is verified against this origin, independent
@@ -671,6 +679,27 @@ impl Config {
                 }
             });
 
+        let hosted_agent_runtime_controller_pubkey =
+            std::env::var("BUZZ_HOSTED_AGENT_RUNTIME_CONTROLLER_PUBKEY")
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+                .map(|value| {
+                    let valid = value.len() == 64
+                        && value.bytes().all(|byte| {
+                            byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+                        });
+                    if valid {
+                        Ok(value)
+                    } else {
+                        Err(ConfigError::InvalidValue(
+                            "BUZZ_HOSTED_AGENT_RUNTIME_CONTROLLER_PUBKEY must be exactly 64 lowercase hexadecimal characters"
+                                .to_string(),
+                        ))
+                    }
+                })
+                .transpose()?;
+
         // Note: intentionally not prefixed with BUZZ_ — same relay-identity
         // config family as RELAY_OWNER_PUBKEY. Comma-separated 64-char hex
         // pubkeys. Unlike RELAY_OWNER_PUBKEY (warn-and-ignore), an invalid
@@ -1090,6 +1119,7 @@ impl Config {
             mesh,
             mesh_demo_echo,
             relay_owner_pubkey,
+            hosted_agent_runtime_controller_pubkey,
             relay_operator_api_origin,
             relay_operator_pubkeys,
             allow_nip_oa_auth,
@@ -1210,6 +1240,10 @@ mod tests {
             "relay_owner_pubkey should default to None"
         );
         assert!(
+            config.hosted_agent_runtime_controller_pubkey.is_none(),
+            "hosted runtime controller should default to disabled"
+        );
+        assert!(
             config.relay_operator_pubkeys.is_empty(),
             "relay_operator_pubkeys should default empty (provisioning disabled)"
         );
@@ -1238,6 +1272,41 @@ mod tests {
             config.huddle_audio_available,
             "huddle_audio_available should default to true so single-pod (N=1) keeps today's huddle behavior"
         );
+    }
+
+    #[test]
+    fn hosted_runtime_controller_pubkey_is_strict_or_unset() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        const NAME: &str = "BUZZ_HOSTED_AGENT_RUNTIME_CONTROLLER_PUBKEY";
+        let previous = std::env::var_os(NAME);
+
+        std::env::set_var(NAME, "a".repeat(64));
+        let configured = Config::from_env().expect("valid controller config");
+        assert_eq!(
+            configured.hosted_agent_runtime_controller_pubkey.as_deref(),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+
+        for malformed in ["A".repeat(64), "a".repeat(63), "g".repeat(64)] {
+            std::env::set_var(NAME, malformed);
+            assert!(matches!(
+                Config::from_env(),
+                Err(ConfigError::InvalidValue(ref message))
+                    if message.contains(NAME) && message.contains("64 lowercase hexadecimal")
+            ));
+        }
+
+        std::env::set_var(NAME, "   ");
+        assert!(Config::from_env()
+            .expect("blank disables controller")
+            .hosted_agent_runtime_controller_pubkey
+            .is_none());
+
+        if let Some(value) = previous {
+            std::env::set_var(NAME, value);
+        } else {
+            std::env::remove_var(NAME);
+        }
     }
 
     #[test]

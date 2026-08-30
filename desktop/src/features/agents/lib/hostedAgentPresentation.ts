@@ -1,4 +1,8 @@
-import type { RelayAgent, UserProfileSummary } from "@/shared/api/types";
+import type {
+  AgentReasoningEffort,
+  RelayAgent,
+  UserProfileSummary,
+} from "@/shared/api/types";
 import { normalizePubkey } from "@/shared/lib/pubkey";
 
 type ProfileFallback = {
@@ -29,6 +33,34 @@ export function getHostedAgentPresentation(
     avatarUrl: firstNonBlank(agent.avatarUrl, profile?.avatarUrl),
     displayName:
       firstNonBlank(agent.name, profile?.displayName) ?? "Hosted agent",
+  };
+}
+
+/**
+ * Resolve the runtime summary shown by desktop compatibility surfaces.
+ * Controller-managed values come only from the exact agent-signed runtime
+ * acknowledgment. The old flat model field is display-only fallback data.
+ */
+export function getHostedAgentRuntimePresentation(
+  agent: Pick<RelayAgent, "model" | "modelFamilies" | "runtime">,
+): {
+  effort: AgentReasoningEffort | null;
+  managedOnWeb: boolean;
+  modelId: string | null;
+  modelName: string | null;
+  revision: number | null;
+} {
+  const runtime = agent.runtime ?? null;
+  const modelId = firstNonBlank(runtime?.model, agent.model);
+  const modelName =
+    agent.modelFamilies?.find((family) => family.id === modelId)?.name ??
+    modelId;
+  return {
+    effort: runtime?.effort ?? null,
+    managedOnWeb: runtime !== null,
+    modelId,
+    modelName,
+    revision: runtime?.revision ?? null,
   };
 }
 
