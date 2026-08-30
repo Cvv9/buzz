@@ -66,12 +66,18 @@ impl ApplyRuntimeDefaultsControl {
 
 /// Encrypted runner-to-controller receipt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", deny_unknown_fields)]
 pub enum RuntimeApplicationReceipt {
-    RuntimeDefaultsApplied {
+    #[serde(rename = "runtime_defaults_pending_busy")]
+    PendingBusy { revision: RuntimeRevision },
+    #[serde(rename = "runtime_defaults_applying")]
+    Applying { revision: RuntimeRevision },
+    #[serde(rename = "runtime_defaults_applied")]
+    Applied {
         acknowledgment: AgentRuntimeAcknowledgment,
     },
-    RuntimeDefaultsFailed {
+    #[serde(rename = "runtime_defaults_failed")]
+    Failed {
         revision: RuntimeRevision,
         error: RuntimeErrorCode,
     },
@@ -295,7 +301,7 @@ mod tests {
 
     #[test]
     fn receipt_schema_is_exact_and_redacted() {
-        let receipt = RuntimeApplicationReceipt::RuntimeDefaultsFailed {
+        let receipt = RuntimeApplicationReceipt::Failed {
             revision: RuntimeRevision::new(9).expect("revision"),
             error: RuntimeErrorCode::AdapterRejected,
         };
@@ -307,6 +313,27 @@ mod tests {
             "revision": 9,
             "error": "adapter_rejected",
             "raw": "private adapter detail"
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn boundary_receipts_are_revision_only_and_strict() {
+        let revision = RuntimeRevision::new(9).expect("revision");
+        let pending = RuntimeApplicationReceipt::PendingBusy { revision };
+        assert_eq!(
+            serde_json::to_value(pending).expect("pending"),
+            json!({"type":"runtime_defaults_pending_busy", "revision":9})
+        );
+        let applying = RuntimeApplicationReceipt::Applying { revision };
+        assert_eq!(
+            serde_json::to_value(applying).expect("applying"),
+            json!({"type":"runtime_defaults_applying", "revision":9})
+        );
+        assert!(serde_json::from_value::<RuntimeApplicationReceipt>(json!({
+            "type":"runtime_defaults_applying",
+            "revision":9,
+            "active_turns":0
         }))
         .is_err());
     }

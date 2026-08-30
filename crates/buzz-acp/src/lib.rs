@@ -1154,7 +1154,7 @@ async fn publish_effective_runtime(
         publisher,
         &ctx.agent_keys,
         controller,
-        &RuntimeApplicationReceipt::RuntimeDefaultsApplied { acknowledgment },
+        &RuntimeApplicationReceipt::Applied { acknowledgment },
     )
     .await
 }
@@ -1168,6 +1168,21 @@ async fn apply_ready_runtime_revision(
     let Some(pending) = pool.pending_runtime_apply() else {
         return;
     };
+    if let Some(revision) = RuntimeRevision::new(pending.revision) {
+        if let Err(error) = publish_runtime_receipt(
+            publisher,
+            &ctx.agent_keys,
+            controller,
+            &RuntimeApplicationReceipt::Applying { revision },
+        )
+        .await
+        {
+            tracing::warn!(
+                revision = pending.revision,
+                "failed to publish runtime applying receipt: {error}"
+            );
+        }
+    }
     let prior = pool.effective_runtime_revision();
     match pool.apply_pending_runtime_defaults(&ctx.cwd).await {
         Ok(revision) => {
@@ -1194,7 +1209,7 @@ async fn apply_ready_runtime_revision(
                 }
             }
             if let Some(revision) = RuntimeRevision::new(pending.revision) {
-                let receipt = RuntimeApplicationReceipt::RuntimeDefaultsFailed {
+                let receipt = RuntimeApplicationReceipt::Failed {
                     revision,
                     error: RuntimeErrorCode::AdapterRejected,
                 };
@@ -1272,6 +1287,27 @@ async fn handle_runtime_controller_event(
             }
         }
         return;
+    }
+    if matches!(
+        disposition,
+        runtime_defaults::RuntimeRevisionDisposition::Quiescing
+            | runtime_defaults::RuntimeRevisionDisposition::SupersededQuiescing
+    ) {
+        if let Some(revision) = RuntimeRevision::new(revision) {
+            if let Err(error) = publish_runtime_receipt(
+                publisher,
+                &ctx.agent_keys,
+                controller,
+                &RuntimeApplicationReceipt::PendingBusy { revision },
+            )
+            .await
+            {
+                tracing::warn!(
+                    revision = revision.get(),
+                    "failed to publish runtime pending receipt: {error}"
+                );
+            }
+        }
     }
     apply_ready_runtime_revision(pool, ctx, controller, publisher).await;
 }
@@ -1511,7 +1547,7 @@ mod managed_runtime_control_tests {
         let agent = nostr::Keys::generate();
         let controller = nostr::Keys::generate();
         let (publisher, mut published) = RelayEventPublisher::test_pair();
-        let receipt = RuntimeApplicationReceipt::RuntimeDefaultsFailed {
+        let receipt = RuntimeApplicationReceipt::Failed {
             revision: RuntimeRevision::new(4).expect("revision"),
             error: RuntimeErrorCode::AdapterRejected,
         };

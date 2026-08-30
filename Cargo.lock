@@ -1343,6 +1343,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "buzz-runtime-controller"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "buzz-core",
+ "buzz-sdk",
+ "buzz-ws-client",
+ "chrono",
+ "nostr 0.44.7",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "zeroize",
+]
+
+[[package]]
 name = "buzz-sdk"
 version = "0.1.0"
 dependencies = [
