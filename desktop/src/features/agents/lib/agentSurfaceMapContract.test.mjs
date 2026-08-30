@@ -92,3 +92,17 @@ test("desktop and web hosted configuration readers remain represented", () => {
     );
   }
 });
+
+test("desktop treats hosted runtime as a web-managed compatibility surface", () => {
+  const editor = read(
+    "desktop/src/features/agents/ui/HostedAgentEditDialog.tsx",
+  );
+  const presentation = read(
+    "desktop/src/features/agents/lib/hostedAgentPresentation.ts",
+  );
+
+  assert.match(editor, /Runtime settings are managed in Buzz on the web/);
+  assert.doesNotMatch(editor, /switchManagedAgentModel/);
+  assert.match(presentation, /agent\.runtime/);
+  assert.match(surfaceMap, /Desktop[\s\S]*read-only[\s\S]*web/i);
+});

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   getHostedAgentPresentation,
+  getHostedAgentRuntimePresentation,
   overlayHostedAgentProfiles,
 } from "./hostedAgentPresentation.ts";
 
@@ -73,4 +74,53 @@ test("hosted directory identity overlays stale Inbox profiles by pubkey", () => 
     isAgent: true,
   });
   assert.equal(result?.["b".repeat(64)], profiles["b".repeat(64)]);
+});
+
+test("hosted runtime presentation uses the signed effective selection", () => {
+  assert.deepEqual(
+    getHostedAgentRuntimePresentation({
+      model: "legacy-config-model",
+      modelFamilies: [
+        {
+          id: "gpt-5.6-terra",
+          name: "GPT-5.6-Terra",
+          description: "Balanced agentic coding model.",
+          defaultEffort: "medium",
+          efforts: ["low", "medium", "high"],
+        },
+      ],
+      runtime: {
+        controllerPubkey: "b".repeat(64),
+        revision: 7,
+        model: "gpt-5.6-terra",
+        effort: "high",
+        effectiveName: "Lanaya",
+        catalogDigest: "c".repeat(64),
+      },
+    }),
+    {
+      effort: "high",
+      managedOnWeb: true,
+      modelId: "gpt-5.6-terra",
+      modelName: "GPT-5.6-Terra",
+      revision: 7,
+    },
+  );
+});
+
+test("legacy public model preferences are never labeled controller-managed", () => {
+  assert.deepEqual(
+    getHostedAgentRuntimePresentation({
+      model: "legacy-config-model",
+      modelFamilies: [],
+      runtime: null,
+    }),
+    {
+      effort: null,
+      managedOnWeb: false,
+      modelId: "legacy-config-model",
+      modelName: "legacy-config-model",
+      revision: null,
+    },
+  );
 });

@@ -33,6 +33,7 @@ import type {
   ThreadRepliesResponse,
   CreateManagedAgentInput,
   AgentModelsResponse,
+  AgentReasoningEffort,
   UpdateManagedAgentInput,
   AcpAvailabilityStatus,
   AcpRuntimeCatalogEntry,
@@ -114,6 +115,21 @@ type RawRelayAgent = {
   access_tier?: string;
   model?: string | null;
   models?: Array<{ id: string; name?: string | null }>;
+  model_families?: Array<{
+    id: string;
+    name: string;
+    description: string;
+    default_effort: AgentReasoningEffort;
+    efforts: AgentReasoningEffort[];
+  }>;
+  runtime?: {
+    controller_pubkey: string;
+    revision: number;
+    model: string;
+    effort: AgentReasoningEffort;
+    effective_name: string;
+    catalog_digest: string;
+  } | null;
 };
 import type { RestartDiffEntry as RawRestartDiffEntry } from "./restartDiff";
 export type RawManagedAgent = {
@@ -686,6 +702,23 @@ function fromRawRelayAgent(agent: RawRelayAgent): RelayAgent {
       name: model.name ?? null,
       description: null,
     })),
+    modelFamilies: (agent.model_families ?? []).map((family) => ({
+      id: family.id,
+      name: family.name,
+      description: family.description,
+      defaultEffort: family.default_effort,
+      efforts: family.efforts,
+    })),
+    runtime: agent.runtime
+      ? {
+          controllerPubkey: agent.runtime.controller_pubkey,
+          revision: agent.runtime.revision,
+          model: agent.runtime.model,
+          effort: agent.runtime.effort,
+          effectiveName: agent.runtime.effective_name,
+          catalogDigest: agent.runtime.catalog_digest,
+        }
+      : null,
   };
 }
 

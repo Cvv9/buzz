@@ -202,7 +202,15 @@ with a TypeScript lookup table or an id comparison in a component.
    panel shell or return navigation, but must not filter or replace profile
    content.
 
-12. **Owner-only builds discover only verified same-owner remote agents.**
+14. **Hosted runtime control lives on the web controller path.** Desktop may
+   parse and display canonical kind `10100.model_families` and the exact
+   agent-signed `10100.runtime` acknowledgment, but it renders hosted model and
+   effort read-only. It must not publish a runtime preference or call the local
+   managed-agent `switch_model` route for a hosted agent. Kind `30180.model` is
+   compatibility-only and never overlays effective runtime state. Keep model
+   and effort separate; repeated flat model labels are not a runtime catalog.
+
+15. **Owner-only builds discover only verified same-owner remote agents.**
     The native `list_relay_agents` boundary authenticates ownership through the
     agent's NIP-OA profile, then retains only agents owned by the active user
     when the compiled owner-only capability is present. Keep this as the

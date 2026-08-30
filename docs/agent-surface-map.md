@@ -91,7 +91,9 @@ Primary files:
 1. Desktop `/agents` opens `HostedAgentEditDialog.tsx`; web's internal Agents
    view opens the editor in `WorkspaceAgents.tsx`. Both surfaces accept a local
    picture file and upload it to the authenticated community media service
-   before persisting the returned URL.
+   before persisting the returned URL. Desktop renders the agent-signed
+   effective model and effort read-only and directs runtime changes to web; it
+   never acts as a second hosted-runtime controller.
 2. `publishHostedAgentConfig` signs public kind `30180` with exactly one
    `d=<agent-pubkey>` tag and the matching `buzz.hosted-agent-config.v1` JSON
    body. An old relay that reports an unknown kind receives only the namespaced
@@ -123,7 +125,10 @@ Primary files:
    acknowledgment prove the current revision, or the controller replays a
    pending revision. Lazy runners wake for a trusted controller frame.
 9. Rosters, profiles, search, mentions, messages, and Inbox resolve presentation
-   by pubkey while runtime cards project signed effective plus trusted pending state.
+   by pubkey while runtime cards project signed effective plus trusted pending
+   state. Desktop compatibility consumers parse canonical `model_families` and
+   `10100.runtime`, collapse repeated family ids or labels, ignore
+   `30180.model` as effective state, and expose no runtime mutation route.
 
 Migration: historic `30179` documents are intentionally not read or migrated,
 because their NIP-33 coordinate overlaps the encrypted private managed-agent

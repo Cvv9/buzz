@@ -285,10 +285,39 @@ export type RelayAgent = {
   respondToAllowlist: string[];
   audience?: "community" | "owner";
   accessTier?: "shared" | "personal" | "admin";
-  /** Admin-authored desired model for this hosted agent. */
+  /** Agent-signed effective model, or legacy flat compatibility value. */
   model?: string | null;
   /** Model catalog advertised and signed by the hosted runtime. */
   models?: AgentModelInfo[];
+  /** Canonical base models with separate supported effort choices. */
+  modelFamilies?: AgentModelFamilyInfo[];
+  /** Agent-signed effective runtime acknowledgment; never desktop-authored. */
+  runtime?: AgentRuntimeInfo | null;
+};
+
+export type AgentReasoningEffort =
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max"
+  | "ultra";
+
+export type AgentModelFamilyInfo = {
+  id: string;
+  name: string;
+  description: string;
+  defaultEffort: AgentReasoningEffort;
+  efforts: AgentReasoningEffort[];
+};
+
+export type AgentRuntimeInfo = {
+  controllerPubkey: string;
+  revision: number;
+  model: string;
+  effort: AgentReasoningEffort;
+  effectiveName: string;
+  catalogDigest: string;
 };
 
 export type ManagedAgentRuntimeLifecycle =

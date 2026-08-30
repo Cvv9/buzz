@@ -58,7 +58,14 @@ Remote agents solve it from the inside. Because the desktop retains no substrate
 
 **Presence can lag the truth, but not for long.** If the substrate kills a body without ceremony, the presence dot can outlive the agent — by seconds if the connection drops cleanly, by at most about three minutes if it doesn't. Presence is a lease the agent renews, not a flag it sets: a dead agent stops renewing and the relay forgets it. A bounded wrong dot, never an indefinite one.
 
-**A running agent finishes on the configuration it started with.** New keys, new models, new settings take effect on the next body. And an instance that never got far enough to run — a body that failed to start — is the substrate operator's residue to clear, with the substrate's own tools. Editing an agent mid-sentence was never on the menu.
+**A running agent changes runtime defaults only at an idle boundary.** New keys
+and body-level deployment settings still take effect on the next body. Model,
+reasoning effort, and runtime-facing name are different: the relay-pinned
+controller can queue one atomic per-agent revision while the body is alive. The
+agent finishes every active turn on the old revision, stops claiming new work,
+applies and signs the new revision, then resumes. It is never edited
+mid-sentence, and an instance that never got far enough to run remains the
+substrate operator's residue to clear with substrate tools.
 
 These are honest costs. They're worth it if you want agents that outlive your laptop, on infrastructure you already trust, with no new control plane to guard. Know which one you are.
 

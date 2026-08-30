@@ -404,6 +404,85 @@ fn agents_preserves_allowlist_metadata_for_directory_parse() {
 }
 
 #[test]
+fn agents_parse_canonical_model_families_and_effective_runtime() {
+    let controller = "b".repeat(64);
+    let digest = "c".repeat(64);
+    let e = ev(
+        10100,
+        &serde_json::json!({
+            "name": "Scout",
+            "model": "gpt-5.6-terra",
+            "model_families": [
+                {
+                    "id": "gpt-5.6-terra",
+                    "name": "GPT-5.6-Terra",
+                    "description": "Balanced agentic coding model.",
+                    "default_effort": "medium",
+                    "efforts": ["low", "medium", "high"]
+                },
+                {
+                    "id": "gpt-5.6-terra[medium]",
+                    "name": "GPT-5.6-Terra",
+                    "description": "Balanced agentic coding model.",
+                    "default_effort": "medium",
+                    "efforts": ["low", "medium", "high"]
+                }
+            ],
+            "runtime": {
+                "schema": "buzz.agent-runtime.v1",
+                "controller_pubkey": controller,
+                "revision": 7,
+                "model": "gpt-5.6-terra",
+                "effort": "high",
+                "effective_name": "Scout",
+                "catalog_digest": digest
+            }
+        })
+        .to_string(),
+        vec![],
+    );
+
+    let agents = relay_agents_from_directory_events(&[e], &[], &[]);
+
+    assert_eq!(agents.len(), 1);
+    assert_eq!(agents[0].model_families.len(), 1);
+    assert_eq!(agents[0].model_families[0].id, "gpt-5.6-terra");
+    let runtime = agents[0].runtime.as_ref().expect("effective runtime");
+    assert_eq!(runtime.controller_pubkey, controller);
+    assert_eq!(runtime.revision, 7);
+    assert_eq!(runtime.model, "gpt-5.6-terra");
+    assert_eq!(runtime.effort, "high");
+}
+
+#[test]
+fn agents_ignore_malformed_effective_runtime_acknowledgments() {
+    let e = ev(
+        10100,
+        &serde_json::json!({
+            "name": "Scout",
+            "model": "legacy-flat-model",
+            "runtime": {
+                "schema": "buzz.agent-runtime.v1",
+                "controller_pubkey": "NOT-A-PUBKEY",
+                "revision": 7,
+                "model": "forged-effective-model",
+                "effort": "high",
+                "effective_name": "Scout",
+                "catalog_digest": "c".repeat(64)
+            }
+        })
+        .to_string(),
+        vec![],
+    );
+
+    let agents = relay_agents_from_directory_events(&[e], &[], &[]);
+
+    assert_eq!(agents.len(), 1);
+    assert!(agents[0].runtime.is_none());
+    assert_eq!(agents[0].model.as_deref(), Some("legacy-flat-model"));
+}
+
+#[test]
 fn managed_agent_directory_accepts_only_the_verified_owner_policy() {
     let agent_keys = Keys::generate();
     let owner_keys = Keys::generate();

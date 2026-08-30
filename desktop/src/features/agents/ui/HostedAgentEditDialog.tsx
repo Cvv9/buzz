@@ -2,8 +2,7 @@ import * as React from "react";
 import { ImagePlus } from "lucide-react";
 
 import { publishHostedAgentConfig } from "@/features/agents/lib/hostedAgentConfig";
-import { hostedAgentModelGroups } from "@/features/agents/lib/hostedAgentModelCatalog";
-import { switchManagedAgentModel } from "@/shared/api/agentControl";
+import { getHostedAgentRuntimePresentation } from "@/features/agents/lib/hostedAgentPresentation";
 import { useAvatarUpload } from "@/features/profile/useAvatarUpload";
 import type { RelayAgent } from "@/shared/api/types";
 import { Button } from "@/shared/ui/button";
@@ -29,26 +28,9 @@ export function HostedAgentEditDialog({
   onSaved: () => Promise<void> | void;
   open: boolean;
 }) {
-  const modelGroups = React.useMemo(
-    () => hostedAgentModelGroups(agent.models),
-    [agent.models],
-  );
-  const knownModelIds = React.useMemo(
-    () =>
-      new Set(
-        modelGroups.flatMap((group) => group.options.map(({ id }) => id)),
-      ),
-    [modelGroups],
-  );
+  const runtime = getHostedAgentRuntimePresentation(agent);
   const [name, setName] = React.useState(agent.name);
   const [avatarUrl, setAvatarUrl] = React.useState(agent.avatarUrl ?? "");
-  const knownModel = agent.model ? knownModelIds.has(agent.model) : false;
-  const [modelChoice, setModelChoice] = React.useState(
-    agent.model ? (knownModel ? agent.model : "custom") : "runtime-default",
-  );
-  const [customModel, setCustomModel] = React.useState(
-    agent.model && !knownModel ? agent.model : "",
-  );
   const [saving, setSaving] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const avatarUpload = useAvatarUpload({
@@ -59,20 +41,8 @@ export function HostedAgentEditDialog({
     if (!open) return;
     setName(agent.name);
     setAvatarUrl(agent.avatarUrl ?? "");
-    const nextKnown = agent.model ? knownModelIds.has(agent.model) : false;
-    setModelChoice(
-      agent.model ? (nextKnown ? agent.model : "custom") : "runtime-default",
-    );
-    setCustomModel(agent.model && !nextKnown ? agent.model : "");
     setError(null);
-  }, [agent, knownModelIds, open]);
-
-  const selectedModel =
-    modelChoice === "runtime-default"
-      ? null
-      : modelChoice === "custom"
-        ? customModel.trim() || null
-        : modelChoice;
+  }, [agent, open]);
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
@@ -80,8 +50,8 @@ export function HostedAgentEditDialog({
         <DialogHeader>
           <DialogTitle>Edit hosted agent</DialogTitle>
           <DialogDescription>
-            Name and picture update everywhere in Buzz. The model is saved for
-            this agent instead of changing the global agent default.
+            Name and picture update everywhere in Buzz. Hosted runtime settings
+            are shown here for compatibility and changed in the web app.
           </DialogDescription>
         </DialogHeader>
 
@@ -149,41 +119,17 @@ export function HostedAgentEditDialog({
             </p>
           </div>
 
-          <div className="space-y-2">
-            <label className="text-sm font-medium" htmlFor="hosted-agent-model">
-              Model
-            </label>
-            <select
-              className="flex h-10 w-full rounded-xl border border-input bg-background px-3 py-2 text-sm text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              data-testid="hosted-agent-model"
-              id="hosted-agent-model"
-              onChange={(event) => setModelChoice(event.target.value)}
-              value={modelChoice}
-            >
-              <option value="runtime-default">Runtime default</option>
-              {modelGroups.map((group) => (
-                <optgroup key={group.id} label={group.label}>
-                  {group.options.map((option) => (
-                    <option key={option.id} value={option.id}>
-                      {option.name?.trim() || option.id}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-              <option value="custom">Custom model…</option>
-            </select>
-            {modelChoice === "custom" ? (
-              <Input
-                aria-label="Custom model ID"
-                onChange={(event) => setCustomModel(event.target.value)}
-                placeholder="Provider model ID"
-                value={customModel}
-              />
-            ) : null}
+          <div className="space-y-3" data-testid="hosted-agent-runtime">
+            <p className="text-sm font-medium">Current runtime</p>
+            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+              <dt className="text-muted-foreground">Model</dt>
+              <dd>{runtime.modelName ?? "—"}</dd>
+              <dt className="text-muted-foreground">Reasoning effort</dt>
+              <dd>{runtime.effort ?? "—"}</dd>
+            </dl>
             <p className="text-xs text-muted-foreground">
-              Claude Code and Codex choices remain available while older agents
-              load their live catalog. Runtime default follows the agent&apos;s
-              current provider configuration.
+              Runtime settings are managed in Buzz on the web. Desktop never
+              writes a second model or effort preference.
             </p>
           </div>
 
@@ -201,12 +147,7 @@ export function HostedAgentEditDialog({
           </Button>
           <Button
             data-testid="hosted-agent-save"
-            disabled={
-              saving ||
-              avatarUpload.isUploading ||
-              !name.trim() ||
-              (modelChoice === "custom" && !customModel.trim())
-            }
+            disabled={saving || avatarUpload.isUploading || !name.trim()}
             onClick={async () => {
               setSaving(true);
               setError(null);
@@ -215,19 +156,8 @@ export function HostedAgentEditDialog({
                   pubkey: agent.pubkey,
                   name,
                   avatarUrl: avatarUrl || null,
-                  model: selectedModel,
+                  model: agent.model ?? null,
                 });
-                if (selectedModel && agent.channelIds.length > 0) {
-                  await Promise.all(
-                    agent.channelIds.map((channelId) =>
-                      switchManagedAgentModel(
-                        agent.pubkey,
-                        channelId,
-                        selectedModel,
-                      ),
-                    ),
-                  );
-                }
                 await onSaved();
                 onOpenChange(false);
               } catch (caught) {

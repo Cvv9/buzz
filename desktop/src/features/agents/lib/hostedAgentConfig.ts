@@ -11,6 +11,7 @@ export type HostedAgentConfigInput = {
   pubkey: string;
   name: string;
   avatarUrl: string | null;
+  /** Legacy compatibility member only; never evidence of effective runtime. */
   model: string | null;
 };
 
@@ -37,9 +38,10 @@ async function publishConfigEvent(
 }
 
 /**
- * Publish the current administrator's durable presentation/runtime preference
- * for one hosted agent. The agent pubkey is the NIP-33 coordinate; no agent
- * secret or provider credential ever crosses this boundary.
+ * Publish the current administrator's durable presentation for one hosted
+ * agent. The model member is preserved only for mixed-version readers; hosted
+ * runtime changes use the web controller route. The agent pubkey is the NIP-33
+ * coordinate; no agent secret or provider credential crosses this boundary.
  */
 export async function publishHostedAgentConfig(
   input: HostedAgentConfigInput,

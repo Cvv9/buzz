@@ -215,12 +215,41 @@ pub struct RelayAgentInfo {
     pub model: Option<String>,
     #[serde(default)]
     pub models: Vec<RelayAgentModelInfo>,
+    /// Canonical public runtime catalog. One row is one base model; effort is
+    /// represented separately so compatibility clients never repeat labels.
+    #[serde(default)]
+    pub model_families: Vec<RelayAgentModelFamilyInfo>,
+    /// Agent-signed effective runtime acknowledgment. Desktop displays this
+    /// read-only; the hosted controller remains the sole mutation path.
+    #[serde(default)]
+    pub runtime: Option<RelayAgentRuntimeInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelayAgentModelInfo {
     pub id: String,
     pub name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RelayAgentModelFamilyInfo {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub default_effort: String,
+    pub efforts: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RelayAgentRuntimeInfo {
+    #[serde(skip_serializing)]
+    pub schema: String,
+    pub controller_pubkey: String,
+    pub revision: u64,
+    pub model: String,
+    pub effort: String,
+    pub effective_name: String,
+    pub catalog_digest: String,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ManagedAgentRecord {
