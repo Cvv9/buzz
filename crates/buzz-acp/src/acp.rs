@@ -218,6 +218,10 @@ pub struct AcpClient {
     /// Background workflow tasks consume this at turn completion and publish it
     /// as the guaranteed human-facing result.
     captured_agent_message: String,
+    /// ACP logical message currently represented by `captured_agent_message`.
+    /// A new ID denotes a replacement message (for example, final after a
+    /// progress update), while repeated IDs are streaming chunks to append.
+    captured_agent_message_id: Option<String>,
 }
 
 fn append_captured_agent_message(captured: &mut String, text: &str) {
@@ -238,6 +242,24 @@ fn append_captured_agent_message(captured: &mut String, text: &str) {
             .unwrap_or(0)
     };
     captured.push_str(&text[..end]);
+}
+
+fn capture_agent_message_chunk(
+    captured: &mut String,
+    captured_message_id: &mut Option<String>,
+    message_id: Option<&str>,
+    text: &str,
+) {
+    if let Some(message_id) = message_id.filter(|value| !value.is_empty()) {
+        if captured_message_id
+            .as_deref()
+            .is_some_and(|current| current != message_id)
+        {
+            captured.clear();
+        }
+        *captured_message_id = Some(message_id.to_string());
+    }
+    append_captured_agent_message(captured, text);
 }
 
 /// Recursively merge `overlay` into `base`, with `overlay` winning on scalar/shape
@@ -588,6 +610,7 @@ impl AcpClient {
             standard_usage: StandardUsageTracker::default(),
             standard_adapter,
             captured_agent_message: String::new(),
+            captured_agent_message_id: None,
         })
     }
 
@@ -807,6 +830,7 @@ impl AcpClient {
         max_duration: std::time::Duration,
     ) -> Result<StopReason, AcpError> {
         self.captured_agent_message.clear();
+        self.captured_agent_message_id = None;
         let params = build_prompt_params(session_id, prompt_blocks);
         let hard_deadline = tokio::time::Instant::now() + max_duration;
         self.current_hard_deadline = Some(hard_deadline);
@@ -918,6 +942,7 @@ impl AcpClient {
 
     /// Consume the text streamed by the agent during the most recent prompt.
     pub fn take_captured_agent_message(&mut self) -> String {
+        self.captured_agent_message_id = None;
         std::mem::take(&mut self.captured_agent_message)
     }
 
@@ -1787,7 +1812,12 @@ impl AcpClient {
             "agent_message_chunk" => {
                 if let Some(text) = update["content"]["text"].as_str() {
                     tracing::info!(target: "acp::stream", "{text}");
-                    append_captured_agent_message(&mut self.captured_agent_message, text);
+                    capture_agent_message_chunk(
+                        &mut self.captured_agent_message,
+                        &mut self.captured_agent_message_id,
+                        update.get("messageId").and_then(|value| value.as_str()),
+                        text,
+                    );
                 }
                 false
             }
@@ -2377,6 +2407,40 @@ fn configure_no_window(cmd: &mut tokio::process::Command) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn captured_agent_message_appends_chunks_with_the_same_message_id() {
+        let mut captured = String::new();
+        let mut message_id = None;
+
+        capture_agent_message_chunk(&mut captured, &mut message_id, Some("final-1"), "hello ");
+        capture_agent_message_chunk(&mut captured, &mut message_id, Some("final-1"), "world");
+
+        assert_eq!(captured, "hello world");
+        assert_eq!(message_id.as_deref(), Some("final-1"));
+    }
+
+    #[test]
+    fn captured_agent_message_replaces_progress_when_a_new_message_id_begins() {
+        let mut captured = String::new();
+        let mut message_id = None;
+
+        capture_agent_message_chunk(
+            &mut captured,
+            &mut message_id,
+            Some("progress-1"),
+            "I am checking the current state.",
+        );
+        capture_agent_message_chunk(
+            &mut captured,
+            &mut message_id,
+            Some("final-1"),
+            "ACCEPT-PROJECT-BRAIN PASS",
+        );
+
+        assert_eq!(captured, "ACCEPT-PROJECT-BRAIN PASS");
+        assert_eq!(message_id.as_deref(), Some("final-1"));
+    }
 
     #[test]
     fn stop_reason_parses_all_known_values() {
