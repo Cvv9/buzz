@@ -430,7 +430,8 @@ buzz workflows trigger --workflow "$WF_ID" | jq .
 
 # workflows runs
 buzz workflows runs --workflow "$WF_ID" | jq .
-# Expected: [] — relay stores runs in DB, not as Nostr events; empty is normal
+# Expected: a non-empty array containing the durable run record, including
+# status, execution_trace, started_at, and completed_at when the run finishes.
 
 # workflows approve — requires a workflow run waiting for approval
 # This is hard to test ad-hoc without a workflow that has an approval gate.

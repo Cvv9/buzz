@@ -57,12 +57,21 @@ pub async fn cmd_get_workflow(client: &BuzzClient, workflow_id: &str) -> Result<
     Ok(())
 }
 
-/// Get workflow run history — query kinds [46001, 46002, 46003].
-///
-/// NOTE: The relay does not currently emit workflow execution events (46001-46003).
-/// Run history is stored in the workflow_runs DB table, not as Nostr events.
-/// This command will return an empty array until the relay adds event emission
-/// or a dedicated REST endpoint for run history.
+fn workflow_runs_path(workflow_id: &str, limit: u32) -> String {
+    format!("/workflows/{workflow_id}/runs?limit={limit}")
+}
+
+fn workflow_runs_from_response(response: &str) -> Result<serde_json::Value, CliError> {
+    let payload: serde_json::Value = serde_json::from_str(response)
+        .map_err(|error| CliError::Other(format!("invalid workflow runs response: {error}")))?;
+    let runs = payload
+        .get("runs")
+        .filter(|value| value.is_array())
+        .ok_or_else(|| CliError::Other("workflow runs response is missing a runs array".into()))?;
+    Ok(runs.clone())
+}
+
+/// Get durable workflow run history from the relay-owned database read model.
 pub async fn cmd_get_workflow_runs(
     client: &BuzzClient,
     workflow_id: &str,
@@ -70,27 +79,10 @@ pub async fn cmd_get_workflow_runs(
 ) -> Result<(), CliError> {
     validate_uuid(workflow_id)?;
     let limit = limit.unwrap_or(20).min(100);
-    let filter = serde_json::json!({
-        "kinds": [46001, 46002, 46003],
-        "#d": [workflow_id],
-        "limit": limit
-    });
-    let resp = client.query(&filter).await?;
-    let events: Vec<serde_json::Value> = serde_json::from_str(&resp).unwrap_or_default();
-    let normalized: Vec<serde_json::Value> = events
-        .iter()
-        .map(|e| {
-            serde_json::json!({
-                "event_id": e.get("id").and_then(|v| v.as_str()).unwrap_or(""),
-                "kind": e.get("kind").and_then(|v| v.as_u64()).unwrap_or(0),
-                "content": e.get("content").and_then(|v| v.as_str()).unwrap_or(""),
-                "created_at": e.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0),
-                "tags": e.get("tags").cloned().unwrap_or(serde_json::json!([])),
-            })
-        })
-        .collect();
-    let output = serde_json::to_string(&normalized).unwrap_or_default();
-    println!("{output}");
+    let response = client
+        .get_authed(&workflow_runs_path(workflow_id, limit))
+        .await?;
+    println!("{}", workflow_runs_from_response(&response)?);
     Ok(())
 }
 
@@ -252,5 +244,41 @@ pub async fn dispatch(cmd: crate::WorkflowsCmd, client: &BuzzClient) -> Result<(
             // approved is already a bool — no parse_bool_flag needed
             cmd_approve_step(client, &token, approved, note.as_deref()).await
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn workflow_runs_path_targets_the_durable_relay_endpoint() {
+        let workflow_id = "00000000-0000-0000-0000-000000000001";
+
+        assert_eq!(
+            workflow_runs_path(workflow_id, 25),
+            "/workflows/00000000-0000-0000-0000-000000000001/runs?limit=25"
+        );
+    }
+
+    #[test]
+    fn workflow_runs_response_extracts_the_runs_array() {
+        let runs = workflow_runs_from_response(
+            r#"{"runs":[{"id":"run-1","status":"completed"}],"next":null}"#,
+        )
+        .expect("valid workflow runs response");
+
+        assert_eq!(
+            runs,
+            serde_json::json!([{"id":"run-1","status":"completed"}])
+        );
+    }
+
+    #[test]
+    fn workflow_runs_response_rejects_a_missing_runs_array() {
+        let error = workflow_runs_from_response(r#"{"next":null}"#)
+            .expect_err("missing runs must not masquerade as an empty history");
+
+        assert!(error.to_string().contains("runs array"));
     }
 }
