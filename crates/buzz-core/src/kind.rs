@@ -329,6 +329,12 @@ pub const KIND_TEAM_CATALOG: u32 = 30178;
 /// overlapping NIP-33 coordinates and making a content-shaped exception would
 /// risk exposing an author's encrypted managed-agent state.
 pub const KIND_HOSTED_AGENT_CONFIG: u32 = 30180;
+/// Hosted-agent runtime application status (parameterized replaceable, controller-authored).
+///
+/// Addressed by `(controller pubkey, kind, agent pubkey)`. The content is a
+/// public, secret-free snapshot; clients trust it only when the author matches
+/// the controller key pinned in relay discovery.
+pub const KIND_HOSTED_AGENT_RUNTIME_STATUS: u32 = 30181;
 
 // NIP-56 reporting
 /// NIP-56: Report an event, pubkey, or blob to relay moderators (kind:1984).
@@ -479,6 +485,11 @@ pub const KIND_PAIRING: u32 = 24134;
 pub const KIND_TYPING_INDICATOR: u32 = 20002;
 /// Ephemeral: owner-scoped encrypted agent observer telemetry and control frame.
 pub const KIND_AGENT_OBSERVER_FRAME: u32 = 24200;
+/// Encrypted owner-to-controller hosted-agent runtime request.
+///
+/// Ephemeral and never stored. Relay and controller policy independently
+/// validate its exact target, owner, freshness, replay ID, and encrypted body.
+pub const KIND_HOSTED_AGENT_RUNTIME_REQUEST: u32 = 24201;
 /// Ephemeral: huddle emoji reaction burst. Channel-scoped to the ephemeral
 /// huddle channel with an `h` tag; never stored in the timeline.
 pub const KIND_HUDDLE_REACTION: u32 = 24810;
@@ -677,6 +688,7 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_TEAM_CATALOG,
     KIND_PRIVATE_MANAGED_AGENT,
     KIND_HOSTED_AGENT_CONFIG,
+    KIND_HOSTED_AGENT_RUNTIME_STATUS,
     KIND_REPORT,
     KIND_PRODUCT_FEEDBACK,
     KIND_NIP29_PUT_USER,
@@ -718,6 +730,7 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_BLOSSOM_AUTH,
     KIND_PAIRING,
     KIND_AGENT_OBSERVER_FRAME,
+    KIND_HOSTED_AGENT_RUNTIME_REQUEST,
     KIND_HTTP_AUTH,
     KIND_STREAM_MESSAGE,
     KIND_STREAM_MESSAGE_V2,
@@ -881,6 +894,9 @@ const _: () = assert!(is_parameterized_replaceable(KIND_MANAGED_AGENT)); // 3017
 const _: () = assert!(is_parameterized_replaceable(KIND_TEAM_CATALOG)); // 30178 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_PRIVATE_MANAGED_AGENT)); // 30179 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_HOSTED_AGENT_CONFIG)); // 30180 ∈ 30000–39999
+const _: () = assert!(is_parameterized_replaceable(
+    KIND_HOSTED_AGENT_RUNTIME_STATUS
+)); // 30181 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_WORKFLOW_DEF)); // 30620 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_EVENT_REMINDER)); // 30300 ∈ 30000–39999
 const _: () = assert!(is_parameterized_replaceable(KIND_DM_VISIBILITY)); // 30622 ∈ 30000–39999
@@ -908,6 +924,8 @@ const _: () = assert!(!is_ephemeral(KIND_AGENT_TURN_METRIC));
 const _: () = assert!(!is_replaceable(KIND_AGENT_TURN_METRIC));
 const _: () = assert!(!is_parameterized_replaceable(KIND_AGENT_TURN_METRIC));
 const _: () = assert!(KIND_AGENT_TURN_METRIC <= u16::MAX as u32);
+const _: () = assert!(is_ephemeral(KIND_HOSTED_AGENT_RUNTIME_REQUEST));
+const _: () = assert!(KIND_HOSTED_AGENT_RUNTIME_REQUEST <= u16::MAX as u32);
 // Moderation kinds fit u16 and are neither replaceable nor ephemeral:
 // 1984 is a regular event (persisted to the queue, never fanned out);
 // 9040–9044 are direct commands (executed, never stored).
