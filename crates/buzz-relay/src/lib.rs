@@ -21,6 +21,7 @@ pub mod connection;
 pub mod error;
 /// WebSocket message handlers for NIP-01 client commands.
 pub mod handlers;
+mod hosted_agent_policy;
 mod hosted_agent_runtime;
 /// Stateless HMAC-signed relay invite tokens (mint/verify).
 pub mod invite_token;

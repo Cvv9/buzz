@@ -8,6 +8,7 @@ use nostr::{Event, EventId, PublicKey};
 use sha2::{Digest, Sha256};
 use uuid::{Uuid, Version};
 
+use crate::hosted_agent_policy::{hosted_agent_action_authorized, HostedAgentAction};
 use crate::state::AppState;
 
 const REQUEST_FRESHNESS_SECS: u64 = 300;
@@ -117,10 +118,6 @@ pub(crate) fn validate_runtime_request_envelope(
     })
 }
 
-fn runtime_request_authorized(role: Option<&str>, target_profile_present: bool) -> bool {
-    role == Some("owner") && target_profile_present
-}
-
 fn replay_scope(community: CommunityId, controller: &PublicKey) -> String {
     format!("hosted-runtime:{}:{}", community, controller.to_hex())
 }
@@ -162,7 +159,7 @@ pub(crate) async fn authorize_hosted_agent_runtime_request(
         .await
         .map_err(|_| "error: runtime request owner lookup failed".to_string())?;
     let role = member.as_ref().map(|member| member.role.as_str());
-    if role != Some("owner") {
+    if !hosted_agent_action_authorized(HostedAgentAction::RuntimeRequest, role) {
         return Err("restricted: hosted runtime changes require the community owner".into());
     }
 
@@ -175,7 +172,7 @@ pub(crate) async fn authorize_hosted_agent_runtime_request(
         )
         .await
         .map_err(|_| "error: runtime request agent lookup failed".to_string())?;
-    if !runtime_request_authorized(role, profile.is_some()) {
+    if profile.is_none() {
         return Err("restricted: runtime target is not a current self-authored agent".into());
     }
 
@@ -340,7 +337,8 @@ mod tests {
         ];
         for (label, role, target_profile_present, expected) in cases {
             assert_eq!(
-                runtime_request_authorized(role, target_profile_present),
+                hosted_agent_action_authorized(HostedAgentAction::RuntimeRequest, role)
+                    && target_profile_present,
                 expected,
                 "{label}"
             );
