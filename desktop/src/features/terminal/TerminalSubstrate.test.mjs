@@ -404,6 +404,16 @@ test("later reveals do not replay a consumed splash", async () => {
   await expectWelcome(subject.view, false);
 });
 
+test("a hidden docked terminal collapses its inline height", async () => {
+  const { view } = fixture({ mode: "docked", visible: false });
+  await ready(view);
+
+  assert.equal(
+    view.container.querySelector(".buzz-terminal-substrate").style.height,
+    "0px",
+  );
+});
+
 test("a consumed splash stays absent after substrate remount", async () => {
   const first = fixture({
     frame: EMPTY_FRAME,

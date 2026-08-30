@@ -6,7 +6,7 @@ import { waitForAnimations } from "../helpers/animations";
 const HOSTED_AGENT_PUBKEY = "8f44f5ed".repeat(8);
 const MOCK_OWNER_PUBKEY = "deadbeef".repeat(8);
 
-test("admin can edit a hosted agent identity and advertised model", async ({
+test("owner can edit hosted agent presentation and reviews its read-only runtime", async ({
   page,
 }) => {
   await installMockBridge(page, {
@@ -40,20 +40,12 @@ test("admin can edit a hosted agent identity and advertised model", async ({
   const dialog = page.getByTestId("hosted-agent-edit-dialog");
   await expect(dialog).toBeVisible();
   await expect(page.getByTestId("hosted-agent-name")).toHaveValue("Lanaya");
-  await expect(page.getByTestId("hosted-agent-model")).toHaveValue("gpt-5.5");
-  await expect(
-    page.getByTestId("hosted-agent-model").locator("option"),
-  ).toHaveText([
-    "Runtime default",
-    "Opus",
-    "Fable",
-    "Sol",
-    "Luna",
-    "Terra",
-    "GPT-5.5",
-    "GPT-5.4",
-    "Custom model…",
-  ]);
+  const runtime = page.getByTestId("hosted-agent-runtime");
+  await expect(runtime).toContainText("Current runtime");
+  await expect(runtime).toContainText("GPT-5.5");
+  await expect(runtime).toContainText("Reasoning effort");
+  await expect(runtime).toContainText("managed in Buzz on the web");
+  await expect(page.getByTestId("hosted-agent-model")).toHaveCount(0);
 
   await waitForAnimations(page);
   await dialog.screenshot({

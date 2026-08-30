@@ -112,6 +112,13 @@ test("legacy public model preferences are never labeled controller-managed", () 
   assert.deepEqual(
     getHostedAgentRuntimePresentation({
       model: "legacy-config-model",
+      models: [
+        {
+          id: "legacy-config-model",
+          name: "Legacy Config Model",
+          description: null,
+        },
+      ],
       modelFamilies: [],
       runtime: null,
     }),
@@ -119,7 +126,7 @@ test("legacy public model preferences are never labeled controller-managed", () 
       effort: null,
       managedOnWeb: false,
       modelId: "legacy-config-model",
-      modelName: "legacy-config-model",
+      modelName: "Legacy Config Model",
       revision: null,
     },
   );

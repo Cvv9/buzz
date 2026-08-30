@@ -493,6 +493,15 @@ test("invite asks Safari users to choose their Mac download", async ({
   await page.route("https://api.github.com/**", async (route) => {
     await route.fulfill({ status: 500 });
   });
+  await context.route(
+    "https://github.com/block/buzz/releases",
+    async (route) => {
+      await route.fulfill({
+        contentType: "text/html",
+        body: "<title>Buzz releases</title>",
+      });
+    },
+  );
 
   await page.goto("/invite/demo-code");
   const download = page.getByRole("link", { name: "Download it now" });

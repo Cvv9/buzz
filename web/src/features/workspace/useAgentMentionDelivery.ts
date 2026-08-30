@@ -112,7 +112,7 @@ export function useAgentMentionDelivery({
         pubkey: identity.pubkey,
         created_at: Math.floor(Date.now() / 1000),
         kind: 9,
-        tags: [["h", channelId]],
+        tags: [["h", channelId], ...(variables.mediaTags ?? [])],
         content: variables.content,
         sig: "",
         channelId,
