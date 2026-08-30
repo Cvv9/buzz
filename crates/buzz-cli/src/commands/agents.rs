@@ -1,5 +1,9 @@
-use buzz_core::kind::KIND_IA_ARCHIVED_LIST;
-use buzz_sdk::builders::{build_archive_identity_request, build_unarchive_identity_request};
+use buzz_core::hosted_agent_runtime::{AgentRuntimeAcknowledgment, ModelFamily, RuntimeModelId};
+use buzz_core::kind::{KIND_AGENT_PROFILE, KIND_IA_ARCHIVED_LIST};
+use buzz_sdk::builders::{
+    build_agent_profile_with_runtime, build_archive_identity_request,
+    build_unarchive_identity_request,
+};
 use nostr::PublicKey;
 use serde_json::json;
 
@@ -8,6 +12,90 @@ use crate::client::{normalize_write_response, BuzzClient};
 use crate::error::CliError;
 use crate::validate::{read_or_stdin, validate_hex64};
 use crate::{AgentsCmd, RespondToArg};
+
+struct ParsedPublishProfileRuntimeFields {
+    models: serde_json::Value,
+    model_families: Option<Vec<ModelFamily>>,
+    runtime: Option<AgentRuntimeAcknowledgment>,
+}
+
+fn parse_publish_profile_runtime_fields(
+    models_json: Option<&str>,
+    model_families_json: Option<&str>,
+    runtime_json: Option<&str>,
+) -> Result<ParsedPublishProfileRuntimeFields, CliError> {
+    let models = models_json
+        .map(serde_json::from_str::<serde_json::Value>)
+        .transpose()
+        .map_err(|error| CliError::Usage(format!("--models-json must be valid JSON: {error}")))?
+        .unwrap_or_else(|| serde_json::json!([]));
+    if !models.is_array() {
+        return Err(CliError::Usage(
+            "--models-json must be a JSON array".to_string(),
+        ));
+    }
+
+    let model_families = model_families_json
+        .map(serde_json::from_str::<Vec<ModelFamily>>)
+        .transpose()
+        .map_err(|error| {
+            CliError::Usage(format!(
+                "--model-families-json must be a strict JSON array: {error}"
+            ))
+        })?;
+    let runtime = runtime_json
+        .map(serde_json::from_str::<AgentRuntimeAcknowledgment>)
+        .transpose()
+        .map_err(|error| {
+            CliError::Usage(format!(
+                "--runtime-json must be a strict JSON object: {error}"
+            ))
+        })?;
+
+    Ok(ParsedPublishProfileRuntimeFields {
+        models,
+        model_families,
+        runtime,
+    })
+}
+
+fn parse_runtime_model_id(model: Option<&str>) -> Result<Option<RuntimeModelId>, CliError> {
+    model
+        .map(|value| {
+            serde_json::from_value(serde_json::Value::String(value.to_owned())).map_err(|error| {
+                CliError::Usage(format!("--model must be a valid base model id: {error}"))
+            })
+        })
+        .transpose()
+}
+
+async fn fetch_existing_agent_profile(
+    client: &BuzzClient,
+) -> Result<serde_json::Map<String, serde_json::Value>, CliError> {
+    let signer = client.keys().public_key().to_hex();
+    let response = client
+        .query(&serde_json::json!({
+            "kinds": [KIND_AGENT_PROFILE],
+            "authors": [signer],
+            "limit": 1
+        }))
+        .await?;
+    let events: Vec<serde_json::Value> = serde_json::from_str(&response).map_err(|error| {
+        CliError::Other(format!("invalid agent profile query response: {error}"))
+    })?;
+    let Some(event) = events.first() else {
+        return Ok(serde_json::Map::new());
+    };
+    let content = event
+        .get("content")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| CliError::Other("current agent profile has no string content".into()))?;
+    serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(content).map_err(|error| {
+        CliError::Other(format!(
+            "current agent profile is not a JSON object: {error}"
+        ))
+    })
+}
 
 pub async fn dispatch(command: AgentsCmd, client: &BuzzClient) -> Result<(), CliError> {
     match command {
@@ -22,6 +110,8 @@ pub async fn dispatch(command: AgentsCmd, client: &BuzzClient) -> Result<(), Cli
             access_tier,
             channel_add_policy,
             models_json,
+            model_families_json,
+            runtime_json,
             model,
         } => {
             let display_name = display_name.trim();
@@ -102,40 +192,32 @@ pub async fn dispatch(command: AgentsCmd, client: &BuzzClient) -> Result<(), Cli
             if let Some(pubkey) = owner_pubkey {
                 validate_hex64(pubkey)?;
             }
-            let models = models_json
-                .as_deref()
-                .map(serde_json::from_str::<serde_json::Value>)
-                .transpose()
-                .map_err(|error| {
-                    CliError::Usage(format!("--models-json must be valid JSON: {error}"))
-                })?
-                .unwrap_or_else(|| serde_json::json!([]));
-            if !models.is_array() {
-                return Err(CliError::Usage(
-                    "--models-json must be a JSON array".to_string(),
-                ));
-            }
-            let content = serde_json::json!({
-                "name": display_name,
-                "display_name": display_name,
-                "aliases": aliases,
-                "about": about,
-                "resources": resources,
-                "avatar_url": avatar,
-                "agent_type": "agent",
-                "status": "online",
-                "audience": audience,
-                "owner_pubkey": owner_pubkey,
-                "access_tier": access_tier,
-                "channel_add_policy": channel_add_policy,
-                "models": models,
-                "model": model,
-            })
-            .to_string();
-            let builder = nostr::EventBuilder::new(
-                nostr::Kind::Custom(buzz_core::kind::KIND_AGENT_PROFILE as u16),
-                content,
-            );
+            let runtime_fields = parse_publish_profile_runtime_fields(
+                models_json.as_deref(),
+                model_families_json.as_deref(),
+                runtime_json.as_deref(),
+            )?;
+            let model = parse_runtime_model_id(model.as_deref())?;
+            let mut existing = fetch_existing_agent_profile(client).await?;
+            existing.insert("aliases".into(), json!(aliases));
+            existing.insert("about".into(), json!(about));
+            existing.insert("resources".into(), json!(resources));
+            existing.insert("avatar_url".into(), json!(avatar));
+            existing.insert("agent_type".into(), json!("agent"));
+            existing.insert("status".into(), json!("online"));
+            existing.insert("audience".into(), json!(audience));
+            existing.insert("owner_pubkey".into(), json!(owner_pubkey));
+            existing.insert("access_tier".into(), json!(access_tier));
+            existing.insert("channel_add_policy".into(), json!(channel_add_policy));
+            let builder = build_agent_profile_with_runtime(
+                &existing,
+                display_name,
+                model.as_ref(),
+                &runtime_fields.models,
+                runtime_fields.model_families.as_deref(),
+                runtime_fields.runtime.as_ref(),
+            )
+            .map_err(|error| CliError::Usage(error.to_string()))?;
             let event = client.sign_event(builder)?;
             let response = client.submit_event(event).await?;
             println!("{}", normalize_write_response(&response));
@@ -670,6 +752,84 @@ mod tests {
 
     fn hex128(c: char) -> String {
         std::iter::repeat_n(c, 128).collect()
+    }
+
+    #[test]
+    fn publish_profile_accepts_separate_model_families_and_runtime_json() {
+        use crate::Cli;
+        use clap::Parser;
+
+        let families = serde_json::json!([{
+            "id": "gpt-5.6-sol",
+            "name": "GPT-5.6-Sol",
+            "description": "Latest frontier agentic coding model.",
+            "default_effort": "medium",
+            "efforts": ["low", "medium", "high"]
+        }])
+        .to_string();
+        let runtime = serde_json::json!({
+            "schema": "buzz.agent-runtime.v1",
+            "controller_pubkey": "b".repeat(64),
+            "revision": 4,
+            "model": "gpt-5.6-sol",
+            "effort": "high",
+            "effective_name": "Market Intelligence",
+            "catalog_digest": "c".repeat(64)
+        })
+        .to_string();
+
+        assert!(Cli::try_parse_from([
+            "buzz",
+            "agents",
+            "publish-profile",
+            "--display-name",
+            "Market Intelligence",
+            "--models-json",
+            "[]",
+            "--model-families-json",
+            &families,
+            "--runtime-json",
+            &runtime,
+        ])
+        .is_ok());
+    }
+
+    #[test]
+    fn publish_profile_runtime_fields_are_strict_and_keep_flat_models() {
+        let flat_models = r#"[{"id":"gpt-5.6-sol[high]","name":"GPT-5.6-Sol (high)"}]"#;
+        let families = r#"[{"id":"gpt-5.6-sol","name":"GPT-5.6-Sol","description":"Latest frontier agentic coding model.","default_effort":"medium","efforts":["low","medium","high"]}]"#;
+        let runtime = format!(
+            r#"{{"schema":"buzz.agent-runtime.v1","controller_pubkey":"{}","revision":4,"model":"gpt-5.6-sol","effort":"high","effective_name":"Market Intelligence","catalog_digest":"{}"}}"#,
+            "b".repeat(64),
+            "c".repeat(64)
+        );
+
+        let parsed =
+            parse_publish_profile_runtime_fields(Some(flat_models), Some(families), Some(&runtime))
+                .expect("strict runtime fields");
+        assert_eq!(
+            parsed.models,
+            serde_json::from_str::<serde_json::Value>(flat_models).expect("flat models")
+        );
+        let model_families = parsed.model_families.expect("model families");
+        assert_eq!(model_families.len(), 1);
+        assert_eq!(model_families[0].id.as_str(), "gpt-5.6-sol");
+        assert_eq!(parsed.runtime.expect("runtime").revision.get(), 4);
+
+        assert!(parse_publish_profile_runtime_fields(None, Some("{}"), None).is_err());
+        assert!(parse_publish_profile_runtime_fields(None, None, Some("[]")).is_err());
+
+        let runtime_with_unknown = format!(
+            r#"{{"schema":"buzz.agent-runtime.v1","controller_pubkey":"{}","revision":4,"model":"gpt-5.6-sol","effort":"high","effective_name":"Market Intelligence","catalog_digest":"{}","unexpected":true}}"#,
+            "b".repeat(64),
+            "c".repeat(64)
+        );
+        assert!(parse_publish_profile_runtime_fields(
+            None,
+            Some(families),
+            Some(&runtime_with_unknown)
+        )
+        .is_err());
     }
 
     // --- (b) auth-selection matrix: extract_owner_auth_tag ---

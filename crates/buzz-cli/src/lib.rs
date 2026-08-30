@@ -295,6 +295,12 @@ pub enum AgentsCmd {
         /// JSON array of runtime-advertised model objects (`id`, optional `name`)
         #[arg(long)]
         models_json: Option<String>,
+        /// JSON array of normalized base model families and supported efforts
+        #[arg(long)]
+        model_families_json: Option<String>,
+        /// Strict JSON runtime acknowledgment previously applied by the controller
+        #[arg(long)]
+        runtime_json: Option<String>,
         /// Model selected by this hosted runtime
         #[arg(long)]
         model: Option<String>,
