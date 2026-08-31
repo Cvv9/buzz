@@ -1,5 +1,9 @@
 # Changelog
 
+## relay-v0.2.15
+
+- Ensure hosted agents using an organization OpenAI API key discard any stale copied personal Codex session before starting.
+
 ## relay-v0.2.14
 
 - Add an authenticated hosted-agent runtime controller: owner-only, per-agent model and effort changes are acknowledged by the live runner and deferred until an active task finishes.
