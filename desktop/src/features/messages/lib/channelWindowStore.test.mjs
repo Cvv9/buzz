@@ -178,6 +178,28 @@ test("same-second live rows enter an exhausted short window regardless of id ord
   );
 });
 
+test("local sends overlay an open dense-second boundary regardless of id order", () => {
+  const store = replaceNewestChannelWindow(
+    emptyChannelWindowStore(),
+    page(null, [event("a", 100), event("m", 100)]),
+  );
+  const localAcknowledgement = event("z", 100);
+  const withLocalAcknowledgement = mergeLiveChannelWindowEvent(
+    store,
+    localAcknowledgement,
+    true,
+    true,
+  );
+
+  assert.notEqual(withLocalAcknowledgement, store);
+  assert.deepEqual(
+    flattenChannelWindowEvents(withLocalAcknowledgement).map(
+      (item) => item.content,
+    ),
+    ["z", "m", "a"],
+  );
+});
+
 test("older live rows stay below an exhausted window", () => {
   const store = replaceNewestChannelWindow(
     emptyChannelWindowStore(),

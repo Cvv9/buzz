@@ -650,6 +650,8 @@ export function useSendMessageMutation(
       const nextWindow = mergeLiveChannelWindowEvent(
         previousWindow ?? emptyChannelWindowStore(),
         optimisticMessage,
+        true,
+        true,
       );
       queryClient.setQueryData(windowKey, nextWindow);
       projectChannelWindowMessages(queryClient, effectiveChannel.id);
@@ -695,10 +697,15 @@ export function useSendMessageMutation(
           (event) => event.id !== context.optimisticId,
         ),
       };
-      const next = mergeLiveChannelWindowEvent(withoutPending, {
-        ...message,
-        localKey: context.optimisticId,
-      });
+      const next = mergeLiveChannelWindowEvent(
+        withoutPending,
+        {
+          ...message,
+          localKey: context.optimisticId,
+        },
+        true,
+        true,
+      );
       queryClient.setQueryData(windowKey, next);
       projectChannelWindowMessages(queryClient, context.channelId);
     },

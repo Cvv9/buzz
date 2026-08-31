@@ -206,12 +206,15 @@ export function mergeLiveThreadSummary(
  * Merge a live timeline event without mutating authoritative page boundaries.
  * Replies stay in the source projection for thread summaries and typing,
  * while the timeline renderer decides whether to display them inline.
- * Events below an open oldest boundary wait for ordinary relay pagination.
+ * Events below an open oldest boundary wait for ordinary relay pagination,
+ * except a locally acknowledged send which must remain visible even when a
+ * dense-second ID falls below the current page cursor.
  */
 export function mergeLiveChannelWindowEvent(
   current: ChannelWindowStore,
   event: RelayEvent,
   isTimelineRow = true,
+  forceOverlay = false,
 ): ChannelWindowStore {
   if (!isTimelineRow) {
     if (
@@ -234,6 +237,7 @@ export function mergeLiveChannelWindowEvent(
   const oldestPage = current.pages[current.pages.length - 1];
   const oldest = oldestPage?.rows[oldestPage.rows.length - 1]?.event;
   if (
+    !forceOverlay &&
     oldest &&
     (event.created_at < oldest.created_at ||
       (oldestPage.hasMore && compareRelayOrder(event, oldest) >= 0))

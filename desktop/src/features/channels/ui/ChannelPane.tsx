@@ -346,6 +346,16 @@ export const ChannelPane = React.memo(function ChannelPane({
       onSendMessage,
     ],
   );
+  const handleSendToChannel = React.useCallback(
+    async (...args: Parameters<typeof onSendToChannel>) => {
+      // This action emits the current user's top-level message outside the
+      // composer path, so it must still release any buffered tail and pin the
+      // main timeline before the acknowledged row arrives.
+      messageTimelineRef.current?.scrollToBottomOnNextUpdate();
+      await onSendToChannel(...args);
+    },
+    [onSendToChannel],
+  );
   const canDropInMainColumn =
     hasMainComposerOverlay &&
     !isComposerDisabled &&
@@ -817,7 +827,7 @@ export const ChannelPane = React.memo(function ChannelPane({
                 onSelectReplyTarget={onSelectThreadReplyTarget}
                 onSend={onSendThreadReply}
                 onSendToChannel={
-                  isComposerDisabled ? undefined : onSendToChannel
+                  isComposerDisabled ? undefined : handleSendToChannel
                 }
                 onScrollTargetResolved={() => resolveScrollTarget()}
                 onScrollTargetSettled={resolveScrollTarget}
