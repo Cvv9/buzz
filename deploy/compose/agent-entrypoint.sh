@@ -71,10 +71,19 @@ case "${BUZZ_ACP_PROFILE_AUDIENCE}" in
 esac
 
 codex_auth_source=/run/secrets/varvik-codex-auth.json
+# An organization API key is authoritative for unattended agents. Never let a
+# copied personal subscription session in the durable Codex state volume take
+# precedence over that non-interactive credential.
+if [ -n "${OPENAI_API_KEY:-}" ]; then
+  use_openai_api_key=true
+else
+  use_openai_api_key=false
+fi
+
 # Subscription credentials rotate independently of persistent agent state. A
-# mounted source is authoritative on every start; stale volume copies must not
-# shadow it.
-if [ -e "${codex_auth_source}" ] &&
+# mounted source is authoritative only when the process is not using the API
+# path; stale volume copies must not shadow either credential mode.
+if [ "${use_openai_api_key}" = false ] && [ -e "${codex_auth_source}" ] &&
   { [ ! -f "${codex_auth_source}" ] || [ ! -s "${codex_auth_source}" ]; }; then
   echo "Mounted Codex authentication must be a non-empty file" >&2
   exit 1
@@ -83,20 +92,26 @@ fi
 if [ "$(id -u)" -eq 0 ]; then
   mkdir -p /home/node/.codex
   chown node:node /home/node/.codex
-  if [ -s "${codex_auth_source}" ]; then
+  if [ "${use_openai_api_key}" = true ]; then
+    rm -f /home/node/.codex/auth.json
+  elif [ -s "${codex_auth_source}" ]; then
     install -o node -g node -m 600 "${codex_auth_source}" /home/node/.codex/auth.json
   fi
   export HOME=/home/node
   # The mounted source is deliberately root-only. Tell the re-executed,
-  # unprivileged phase that this start already refreshed the writable copy so
-  # it does not try to read the source again after privileges are dropped.
+  # unprivileged phase that the selected credential path was already prepared
+  # so it does not try to read the source again after privileges are dropped.
   export BUZZ_CODEX_AUTH_PREPARED=true
   exec setpriv --reuid=node --regid=node --init-groups "$0" "$@"
 fi
 
-if [ "${BUZZ_CODEX_AUTH_PREPARED:-false}" != "true" ] && [ -s "${codex_auth_source}" ]; then
-  mkdir -p "${HOME}/.codex"
-  install -m 600 "${codex_auth_source}" "${HOME}/.codex/auth.json"
+if [ "${BUZZ_CODEX_AUTH_PREPARED:-false}" != "true" ]; then
+  if [ "${use_openai_api_key}" = true ]; then
+    rm -f "${HOME}/.codex/auth.json"
+  elif [ -s "${codex_auth_source}" ]; then
+    mkdir -p "${HOME}/.codex"
+    install -m 600 "${codex_auth_source}" "${HOME}/.codex/auth.json"
+  fi
 fi
 unset BUZZ_CODEX_AUTH_PREPARED
 
