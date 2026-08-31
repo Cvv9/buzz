@@ -71,6 +71,13 @@ case "${BUZZ_ACP_PROFILE_AUDIENCE}" in
 esac
 
 codex_auth_source=/run/secrets/varvik-codex-auth.json
+# Codex consumes OPENAI_API_KEY. Keep CODEX_API_KEY as the documented
+# deployment-facing alias, without changing the precedence of an explicit
+# OPENAI_API_KEY when both are set.
+if [ -z "${OPENAI_API_KEY:-}" ] && [ -n "${CODEX_API_KEY:-}" ]; then
+  export OPENAI_API_KEY="${CODEX_API_KEY}"
+fi
+
 # An organization API key is authoritative for unattended agents. Never let a
 # copied personal subscription session in the durable Codex state volume take
 # precedence over that non-interactive credential.
