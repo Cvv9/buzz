@@ -1,5 +1,9 @@
 # Changelog
 
+## relay-v0.2.16
+
+- Preserve durable runtime model identifiers when their display labels use an alias, preventing duplicate model-family labels from disabling hosted-agent model and effort controls.
+
 ## relay-v0.2.15
 
 - Ensure hosted agents using an organization OpenAI API key discard any stale copied personal Codex session before starting.
