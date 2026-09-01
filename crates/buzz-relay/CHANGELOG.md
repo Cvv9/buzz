@@ -3,6 +3,8 @@
 ## relay-v0.2.16
 
 - Preserve durable runtime model identifiers when their display labels use an alias, preventing duplicate model-family labels from disabling hosted-agent model and effort controls.
+- Publish only the final logical agent message for a task, replacing superseded progress output instead of combining it with the final result.
+- Read workflow-run history from the relay's durable workflow record rather than an event stream that does not contain it.
 
 ## relay-v0.2.15
 
