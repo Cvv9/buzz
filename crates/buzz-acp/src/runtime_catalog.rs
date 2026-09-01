@@ -303,7 +303,7 @@ fn parse_selection(
     // `gpt-daybreak-blue-latest` displayed as `Daybreak Blue`. The unstable
     // list can use opaque legacy IDs, so it continues to canonicalize from its
     // label when no explicit effort suffix supplies a base model ID.
-    let canonical_source = id_base.unwrap_or_else(|| {
+    let canonical_source = id_base.unwrap_or({
         if prefer_exact_id {
             exact_id
         } else {
