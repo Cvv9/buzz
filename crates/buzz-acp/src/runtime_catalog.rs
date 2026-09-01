@@ -214,7 +214,7 @@ fn stable_candidates(options: &[Value]) -> Result<Vec<Candidate>, RuntimeCatalog
                 .get("description")
                 .and_then(Value::as_str)
                 .unwrap_or(config_description);
-            if let Some((model, effort, name)) = parse_selection(exact_id, label)? {
+            if let Some((model, effort, name)) = parse_selection(exact_id, label, true)? {
                 candidates.push(Candidate {
                     model,
                     effort,
@@ -255,7 +255,7 @@ fn unstable_candidates(state: Option<&Value>) -> Result<Vec<Candidate>, RuntimeC
             .get("description")
             .and_then(Value::as_str)
             .unwrap_or_default();
-        if let Some((model, effort, name)) = parse_selection(exact_id, label)? {
+        if let Some((model, effort, name)) = parse_selection(exact_id, label, false)? {
             candidates.push(Candidate {
                 model,
                 effort,
@@ -275,6 +275,7 @@ fn unstable_candidates(state: Option<&Value>) -> Result<Vec<Candidate>, RuntimeC
 fn parse_selection(
     exact_id: &str,
     label: &str,
+    prefer_exact_id: bool,
 ) -> Result<Option<(RuntimeModelId, ReasoningEffort, String)>, RuntimeCatalogError> {
     if is_runtime_default(exact_id) || is_runtime_default(label) {
         return Ok(None);
@@ -297,7 +298,18 @@ fn parse_selection(
     let effort = id_effort
         .or(label_effort)
         .unwrap_or(ReasoningEffort::Medium);
-    let canonical_source = id_base.unwrap_or(label_base);
+    // Stable config options expose the adapter's durable selection IDs. Keep
+    // that ID even when its presentation label is a shorter alias, such as
+    // `gpt-daybreak-blue-latest` displayed as `Daybreak Blue`. The unstable
+    // list can use opaque legacy IDs, so it continues to canonicalize from its
+    // label when no explicit effort suffix supplies a base model ID.
+    let canonical_source = id_base.unwrap_or({
+        if prefer_exact_id {
+            exact_id
+        } else {
+            label_base
+        }
+    });
     let canonical = slug_model_id(canonical_source);
     if canonical.is_empty() {
         return Err(RuntimeCatalogError::InvalidModelId(exact_id.to_owned()));
@@ -463,6 +475,35 @@ mod tests {
             }
         );
         assert_eq!(conflict.discarded.len(), 2);
+    }
+
+    #[test]
+    fn preserves_stable_model_ids_when_the_display_label_is_an_alias() {
+        let stable = vec![json!({
+            "category": "model",
+            "id": "model",
+            "currentValue": "gpt-daybreak-blue-latest",
+            "options": [{
+                "value": "gpt-daybreak-blue-latest",
+                "name": "Daybreak Blue"
+            }]
+        })];
+        let unstable = json!({
+            "currentModelId": "gpt-daybreak-blue-latest[medium]",
+            "availableModels": [{
+                "modelId": "gpt-daybreak-blue-latest[medium]",
+                "name": "Daybreak Blue (medium)"
+            }]
+        });
+
+        let normalized = normalize_runtime_catalog(&stable, Some(&unstable)).expect("catalog");
+
+        assert_eq!(normalized.catalog.model_families.len(), 1);
+        assert_eq!(
+            normalized.catalog.model_families[0].id.as_str(),
+            "gpt-daybreak-blue-latest"
+        );
+        assert_eq!(normalized.catalog.bindings.len(), 1);
     }
 
     #[test]
