@@ -1,3 +1,4 @@
+import { useWorkspaceProfileSync } from "../useWorkspaceProfileSync";
 import {
   WorkspaceAgents,
   WorkspaceGuide,
@@ -67,11 +68,7 @@ import { useWorkspaceReadState } from "@/features/workspace/workspace-read-state
 import { maybeNotifyChannelMessage } from "@/features/workspace/workspace-notification";
 import { workspaceInvalidationTargets } from "../workspace-realtime-sync-policy";
 import { resolveActiveChannelId } from "../workspace-active-channel-policy";
-import {
-  listUserStatuses,
-  subscribeToProfiles,
-  subscribeToUserStatuses,
-} from "@/features/profiles/profile-api";
+import { listUserStatuses } from "@/features/profiles/profile-api";
 
 type WorkspaceView = "agents" | "alerts" | "channel" | "inbox";
 
@@ -401,20 +398,7 @@ export function WorkspacePage({
     [channels],
   );
 
-  React.useEffect(() => {
-    const renderedPubkeys = profilePubkeyKey ? profilePubkeyKey.split(",") : [];
-    if (!renderedPubkeys.length) return;
-    const stopProfiles = subscribeToProfiles(renderedPubkeys, () => {
-      void queryClient.invalidateQueries({ queryKey: ["workspace-profiles"] });
-    });
-    const stopStatuses = subscribeToUserStatuses(renderedPubkeys, () => {
-      void queryClient.invalidateQueries({ queryKey: ["user-status"] });
-    });
-    return () => {
-      stopProfiles();
-      stopStatuses();
-    };
-  }, [profilePubkeyKey, queryClient]);
+  useWorkspaceProfileSync(profilePubkeyKey);
 
   React.useEffect(() => {
     if (!identity || !channelIdsKey) return;
