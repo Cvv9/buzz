@@ -256,7 +256,8 @@ export function WorkspaceComposer({
           onRetry={retry}
         />
         <input
-          className="sr-only"
+          aria-label="Files to attach"
+          className="hidden"
           multiple
           ref={fileInputRef}
           type="file"

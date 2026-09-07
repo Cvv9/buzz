@@ -451,6 +451,14 @@ export async function installWorkspaceRelayMock(
           }
           if (envelope[0] !== "REQ") return;
           const subscriptionId = String(envelope[1]);
+          const heldKind = Number(
+            sessionStorage.getItem("buzz.e2e.hold-query-kind"),
+          );
+          if (
+            heldKind &&
+            (envelope[2] as { kinds?: number[] })?.kinds?.includes(heldKind)
+          )
+            return;
           const failedKind = Number(
             sessionStorage.getItem("buzz.e2e.fail-query-kind"),
           );

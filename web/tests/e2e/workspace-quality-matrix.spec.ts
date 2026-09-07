@@ -68,6 +68,29 @@ for (const [theme, palette] of Object.entries(DESKTOP_THEME_CATALOG)) {
       page.getByRole("dialog", { name: "Create a channel", exact: true }),
     ).toBeVisible();
     await scan("empty-form-disabled-submit");
+    await page.keyboard.press("Tab");
+    await scan("keyboard-focus");
+    await page.keyboard.press("Escape");
+    await page
+      .getByRole("button", { name: "Create channel", exact: true })
+      .hover();
+    await scan("hover");
+    await page.evaluate(() =>
+      sessionStorage.setItem("buzz.e2e.fail-query-kind", "9"),
+    );
+    await page.goto("/");
+    await expect(
+      page.getByRole("button", { name: "Retry messages" }),
+    ).toBeVisible();
+    await scan("message-error");
+    await page.evaluate(() => {
+      sessionStorage.removeItem("buzz.e2e.fail-query-kind");
+      sessionStorage.setItem("buzz.e2e.hold-query-kind", "9");
+    });
+    await page.reload();
+    await expect(page.getByTestId("workspace-shell")).toBeVisible();
+    await expect(page.locator(".animate-pulse").first()).toBeVisible();
+    await scan("message-loading");
     await testInfo.attach("accessibility-findings", {
       body: JSON.stringify(findings, null, 2),
       contentType: "application/json",
