@@ -306,3 +306,153 @@ test("startup retries relay admission hints without losing identity", async ({
     await page.evaluate(() => window.__BUZZ_WEB_E2E_TRANSPORT__()),
   ).toEqual({ socketCount: 1, authCount: 1, open: 1 });
 });
+
+test("mobile navigation contains focus and dialogs restore it", async ({
+  page,
+}) => {
+  await signIn(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  const sidebar = page.getByTestId("workspace-sidebar");
+  await expect(sidebar).toHaveAttribute("inert", "");
+  const open = page.getByRole("button", {
+    name: "Open navigation",
+    exact: true,
+  });
+  await open.click();
+  await expect(sidebar).not.toHaveAttribute("inert", "");
+  await expect(
+    page.getByTestId("workspace-shell").locator("main"),
+  ).toHaveAttribute("inert", "");
+  for (let index = 0; index < 35; index += 1) {
+    await page.keyboard.press("Tab");
+    expect(
+      await sidebar.evaluate((element) =>
+        element.contains(document.activeElement),
+      ),
+    ).toBe(true);
+  }
+  await page.keyboard.press("Escape");
+  await expect(open).toBeFocused();
+  await expect(sidebar).toHaveAttribute("inert", "");
+  await expect(
+    page.getByTestId("workspace-shell").locator("main"),
+  ).not.toHaveAttribute("inert", "");
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const create = sidebar.getByRole("button", {
+    name: "Create channel",
+    exact: true,
+  });
+  await create.click();
+  const dialog = page.getByRole("dialog", {
+    name: "Create a channel",
+    exact: true,
+  });
+  await expect(dialog).toBeVisible();
+  for (let index = 0; index < 15; index += 1) {
+    await page.keyboard.press("Tab");
+    expect(
+      await dialog.evaluate((element) =>
+        element.contains(document.activeElement),
+      ),
+    ).toBe(true);
+  }
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await expect(create).toBeFocused();
+});
+
+test("agent controls remain usable at narrow widths and enlarged text", async ({
+  page,
+}) => {
+  await signIn(page);
+  await page.getByRole("button", { name: /^AI agents/ }).click();
+  for (const width of [320, 390, 768, 1440]) {
+    await page.setViewportSize({ width, height: 844 });
+    const newAgent = page.getByRole("button", {
+      name: "New agent",
+      exact: true,
+    });
+    await expect(newAgent).toBeVisible();
+    const bounds = await newAgent.boundingBox();
+    if (width < 768) {
+      expect(bounds?.height).toBeGreaterThanOrEqual(44);
+      expect(bounds?.width).toBeGreaterThanOrEqual(44);
+    }
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+  }
+  await page.setViewportSize({ width: 390, height: 400 });
+  await page.evaluate(() => {
+    document.documentElement.style.fontSize = "200%";
+  });
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= window.innerWidth,
+    ),
+  ).toBe(true);
+  await page.getByRole("button", { name: "New agent", exact: true }).click();
+  await expect(
+    page.getByRole("dialog", { name: "Connect a new agent" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Got it", exact: true }).click();
+});
+
+test("Inbox secondary text meets contrast in light and dark themes", async ({
+  page,
+}, testInfo) => {
+  await signIn(page);
+  const results: Record<string, number[]> = {};
+  for (const theme of ["buzz", "buzz-dark", "github-light", "github-dark"]) {
+    await page.goto("/settings");
+    await page
+      .getByTestId(
+        `appearance-mode-${theme.endsWith("dark") ? "dark" : "light"}`,
+      )
+      .click();
+    await page.getByTestId("workspace-theme-family").selectOption(theme);
+    await page.goto("/?view=inbox");
+    const inbox = page.getByTestId("workspace-inbox");
+    await expect(inbox).toBeVisible();
+    results[theme] = await inbox.locator("p").evaluateAll((paragraphs) => {
+      const luminance = (color: string) => {
+        const values = (color.match(/[\d.]+/g) ?? [])
+          .slice(0, 3)
+          .map(Number)
+          .map((value) => {
+            const channel = value / 255;
+            return channel <= 0.04045
+              ? channel / 12.92
+              : ((channel + 0.055) / 1.055) ** 2.4;
+          });
+        return values[0] * 0.2126 + values[1] * 0.7152 + values[2] * 0.0722;
+      };
+      return paragraphs.map((paragraph) => {
+        let element: Element | null = paragraph;
+        let background = "rgba(0, 0, 0, 0)";
+        while (element && background === "rgba(0, 0, 0, 0)") {
+          background = getComputedStyle(element).backgroundColor;
+          element = element.parentElement;
+        }
+        const foreground = luminance(getComputedStyle(paragraph).color);
+        const behind = luminance(background);
+        return (
+          (Math.max(foreground, behind) + 0.05) /
+          (Math.min(foreground, behind) + 0.05)
+        );
+      });
+    });
+    expect(results[theme].length).toBeGreaterThan(0);
+    for (const ratio of results[theme])
+      expect(ratio).toBeGreaterThanOrEqual(4.5);
+    await waitForAnimations(page);
+    await page.screenshot({ path: testInfo.outputPath(`inbox-${theme}.png`) });
+  }
+  await testInfo.attach("contrast-ratios", {
+    body: JSON.stringify(results),
+    contentType: "application/json",
+  });
+});

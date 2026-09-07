@@ -79,3 +79,34 @@ Recommended next batch: accessibility, touch targets, and semantic theme tokens 
 The server retains the exact source archive, web-only Dockerfile, and image under its existing build area. The deployment environment has a persistent image override. The prior environment and exact base image were retained for rollback. This locally built image is sufficient for the current host, but moving it to the normal registry pipeline is required for automatic recovery on a replacement host. Avoid a general image pull against this local-only tag.
 
 The implementation preserves the existing product identity and Nostr authentication model. No server-side username/password account system or new HTTP API was introduced. Name/password-only recovery on a fresh browser remains outside the current identity model.
+
+## Follow-up quality batch
+
+The next batch fixes the confirmed focus, touch-target, contrast, and release
+reproducibility findings together:
+
+- Native modal dialogs contain Tab/Shift+Tab, close with Escape, make the
+  background inert, and restore the invoking control. Channel creation,
+  membership, editing, settings, the guide, and agent provisioning share it.
+- Off-screen mobile navigation is inert. Opening it contains keyboard focus;
+  closing it restores focus and unlocks the workspace content.
+- Workspace secondary text and neutral surfaces use theme tokens. Inbox read
+  items keep readable text; dismiss controls remain visible on touch screens.
+- Mobile workspace/dialog controls have 44-pixel minimum targets; mobile form
+  text avoids automatic input zoom. Narrow layouts and enlarged text have
+  browser regression coverage.
+- Secondary workspace panels load on demand. Recipient profiles load only
+  when composing a direct message or adding members. Initial profile/status
+  queries wait for the first roster and message results, avoiding repeated
+  requests as the startup author set grows. Live invalidation remains intact.
+- macOS excludes unused Windows/Linux tray helpers, fixing the prior CI errors.
+- `Dockerfile.web` and the Browser release workflow publish a browser-only
+  image while retaining the explicitly pinned production relay binary. A
+  `web-<12-character source SHA>` tag produces `ghcr.io/cvv9/buzz:web-<full SHA>`;
+  production should reference the resulting registry digest. No mutable
+  `latest` tag or relay protocol upgrade is part of this release.
+
+React Doctor reports 71/100 on the complete branch diff: eight warnings about
+existing component complexity, related state, and channel reconciliation. It
+reports no errors. These maintainability warnings are retained as follow-up
+work rather than suppressed or used as proof of user-facing failures.

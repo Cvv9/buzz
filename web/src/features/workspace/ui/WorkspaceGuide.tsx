@@ -1,3 +1,4 @@
+import { Modal } from "@/shared/ui/modal";
 import {
   Bot,
   BookOpen,
@@ -62,36 +63,29 @@ export function WorkspaceGuide({
   const companion = agents.find((agent) => agent.accessTier === "personal");
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/35">
-      <button
-        aria-label="Close Buzz Guide"
-        className="absolute inset-0"
-        type="button"
-        onClick={onClose}
-      />
-      <section
-        aria-labelledby="buzz-guide-title"
-        aria-modal="true"
-        className="relative h-full w-full max-w-2xl overflow-y-auto bg-[#f7f8f2] p-6 shadow-2xl dark:bg-[#1b1e19]"
-        role="dialog"
-      >
+    <Modal
+      label="Using Buzz and its agents"
+      onClose={onClose}
+      className="max-w-2xl"
+    >
+      <section className="p-6" aria-labelledby="buzz-guide-title">
         <header className="flex items-start justify-between gap-4">
           <div>
-            <div className="flex items-center gap-2 text-xs font-medium text-black/40 dark:text-white/35">
+            <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
               <BookOpen className="size-3.5" />
               VarVik Studios rulebook
             </div>
             <h2 className="mt-1 text-xl font-semibold" id="buzz-guide-title">
               Using Buzz and its agents
             </h2>
-            <p className="mt-2 max-w-xl text-sm leading-6 text-black/50 dark:text-white/45">
+            <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
               A practical guide for asking agents for help, keeping work in the
               right place, and understanding when approval is required.
             </p>
           </div>
           <button
             aria-label="Close Buzz Guide"
-            className="rounded-lg p-2 hover:bg-black/5 dark:hover:bg-white/5"
+            className="rounded-lg p-2 hover:bg-accent"
             type="button"
             onClick={onClose}
           >
@@ -100,7 +94,7 @@ export function WorkspaceGuide({
         </header>
 
         <GuideSection icon={MessageSquareText} title="Call an agent">
-          <ol className="space-y-3 text-sm leading-6 text-black/60 dark:text-white/55">
+          <ol className="space-y-3 text-sm leading-6 text-muted-foreground">
             <li>
               <strong>1.</strong> Open the channel where the work belongs.
             </li>
@@ -119,7 +113,7 @@ export function WorkspaceGuide({
               deadline.
             </li>
           </ol>
-          <div className="mt-4 rounded-xl bg-[#d7d72e]/15 p-4 text-sm leading-6 text-black/65 dark:text-white/60">
+          <div className="mt-4 rounded-xl bg-[#d7d72e]/15 p-4 text-sm leading-6 text-foreground">
             <strong>Good request:</strong> “@Market Intelligence compare these
             three vendors, use sources from this year, and give me a short
             recommendation by 4 PM.”
@@ -133,16 +127,16 @@ export function WorkspaceGuide({
                 const help = AGENT_HELP[agent.name];
                 return (
                   <article
-                    className="rounded-xl border border-black/8 p-4 dark:border-white/8"
+                    className="rounded-xl border border-border p-4"
                     key={agent.pubkey}
                   >
                     <div className="flex items-start justify-between gap-3">
                       <h4 className="font-medium">{agent.name}</h4>
-                      <span className="shrink-0 rounded-full bg-black/5 px-2 py-1 text-xs text-black/45 dark:bg-white/6 dark:text-white/40">
+                      <span className="shrink-0 rounded-full bg-muted px-2 py-1 text-xs text-muted-foreground">
                         {accessLabel(agent)}
                       </span>
                     </div>
-                    <p className="mt-2 text-sm leading-5 text-black/50 dark:text-white/45">
+                    <p className="mt-2 text-sm leading-5 text-muted-foreground">
                       {help?.purpose ?? agent.about ?? "Hosted assistant"}
                     </p>
                     <Code className="mt-3 block">
@@ -154,7 +148,7 @@ export function WorkspaceGuide({
               })}
             </div>
           ) : (
-            <p className="text-sm text-black/50 dark:text-white/45">
+            <p className="text-sm text-muted-foreground">
               Hosted agents will appear here when their runners are connected.
             </p>
           )}
@@ -164,7 +158,7 @@ export function WorkspaceGuide({
           icon={LockKeyhole}
           title="Private companions and daily briefs"
         >
-          <p className="text-sm leading-6 text-black/55 dark:text-white/50">
+          <p className="text-sm leading-6 text-muted-foreground">
             {companion
               ? `${companion.name} works only for you. `
               : "Each team member has a private Companion. "}
@@ -176,7 +170,7 @@ export function WorkspaceGuide({
         </GuideSection>
 
         <GuideSection icon={ShieldCheck} title="Safety and approvals">
-          <ul className="space-y-3 text-sm leading-6 text-black/55 dark:text-white/50">
+          <ul className="space-y-3 text-sm leading-6 text-muted-foreground">
             <Rule>
               Agents begin with read-only investigation and explain what they
               want to do in simple language.
@@ -197,7 +191,7 @@ export function WorkspaceGuide({
           </ul>
         </GuideSection>
       </section>
-    </div>
+    </Modal>
   );
 }
 
@@ -211,7 +205,7 @@ function GuideSection({
   children: ReactNode;
 }) {
   return (
-    <section className="mt-8 border-t border-black/8 pt-6 dark:border-white/8">
+    <section className="mt-8 border-t border-border pt-6">
       <h3 className="mb-4 flex items-center gap-2 text-sm font-semibold">
         <Icon className="size-4 text-[#969600]" />
         {title}
@@ -230,7 +224,7 @@ function Code({
 }) {
   return (
     <code
-      className={`rounded-md bg-black/6 px-1.5 py-1 text-xs text-black/65 dark:bg-white/7 dark:text-white/60 ${className ?? ""}`}
+      className={`rounded-md bg-muted px-1.5 py-1 text-xs text-foreground ${className ?? ""}`}
     >
       {children}
     </code>

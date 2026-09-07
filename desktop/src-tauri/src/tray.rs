@@ -9,16 +9,20 @@
 
 use std::sync::atomic::Ordering;
 
-use tauri::{AppHandle, Manager, WindowEvent};
+#[cfg(not(target_os = "macos"))]
+use tauri::AppHandle;
+use tauri::{Manager, WindowEvent};
 
 use crate::app_state::AppState;
 
 /// Stable id for the close-to-tray icon, used to create and remove it.
+#[cfg(not(target_os = "macos"))]
 const TRAY_ID: &str = "main-tray";
 
 /// Show, unminimize, and focus the main window. Used by the tray menu,
 /// left-click, and the macOS dock-reopen handler to surface the window after
 /// close-to-tray has hidden it.
+#[cfg(not(target_os = "macos"))]
 pub fn show_main_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
@@ -54,6 +58,7 @@ fn should_hide_window(label: &str, keep_running: bool, quitting: bool) -> bool {
 /// reopens the window; "Quit Buzz" sets the `quitting` flag (so the close
 /// handler does not re-hide the window) and exits the app. Idempotent — a
 /// no-op if the tray icon already exists.
+#[cfg(not(target_os = "macos"))]
 pub fn build_tray_icon(app: &AppHandle) -> tauri::Result<()> {
     use tauri::menu::{Menu, MenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -106,6 +111,7 @@ pub fn build_tray_icon(app: &AppHandle) -> tauri::Result<()> {
 
 /// Remove the tray icon. Called when the user turns close-to-tray off so the
 /// icon does not linger after the feature is disabled.
+#[cfg(not(target_os = "macos"))]
 pub fn remove_tray_icon(app: &AppHandle) {
     app.remove_tray_by_id(TRAY_ID);
 }

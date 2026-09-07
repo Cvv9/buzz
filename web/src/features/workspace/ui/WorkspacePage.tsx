@@ -1,3 +1,10 @@
+import {
+  WorkspaceAgents,
+  WorkspaceGuide,
+  WorkspaceContentDialogs,
+  WorkspaceChannelSettings,
+  WorkspaceNewMessage,
+} from "./WorkspaceDeferred";
 import { Menu } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
@@ -6,12 +13,7 @@ import { truncatePubkey } from "@/shared/lib/pubkey";
 import { WorkspaceStartup } from "./WorkspaceStartup";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import { WorkspaceInbox } from "./WorkspaceInbox";
-import { WorkspaceAgents } from "./WorkspaceAgents";
-import { WorkspaceGuide } from "./WorkspaceGuide";
 import { WorkspaceConversation } from "./WorkspaceConversation";
-import { WorkspaceContentDialogs } from "./WorkspaceContentDialogs";
-import { WorkspaceChannelSettings } from "./WorkspaceChannelSettings";
-import { WorkspaceNewMessage } from "./WorkspaceNewMessage";
 import { useCustomEmojiPalette } from "@/features/custom-emoji/custom-emoji-api";
 import {
   addDirectMessageMembers,
@@ -133,7 +135,6 @@ export function WorkspacePage({
     toggleMute: toggleMutedChannel,
     toggleStar: toggleStarredChannel,
   } = useSyncedChannelState(identity?.pubkey);
-
   const channelsQuery = useQuery({
     queryKey: ["workspace-channels", identity?.pubkey],
     queryFn: () => listWorkspaceChannels(identity?.pubkey ?? ""),
@@ -152,7 +153,6 @@ export function WorkspacePage({
     enabled: Boolean(identity),
     retry: false,
   });
-
   const channels = channelsQuery.data ?? [];
   const visibleChannels = React.useMemo(
     () =>
@@ -173,7 +173,11 @@ export function WorkspacePage({
       listProfiles(
         communityMembersQuery.data?.map((member) => member.pubkey) ?? [],
       ),
-    enabled: Boolean(identity && communityMembersQuery.data?.length),
+    enabled: Boolean(
+      identity &&
+        communityMembersQuery.data?.length &&
+        (routeMode === "new-message" || addingDmMembers),
+    ),
   });
   React.useEffect(() => {
     // Only reconcile the active channel once the catalog has actually loaded.
@@ -211,7 +215,6 @@ export function WorkspacePage({
       localStorage.setItem("buzz.web.active-channel", activeChannelId);
     }
   }, [activeChannelId, channelsQuery.isSuccess]);
-
   const activeChannel =
     visibleChannels.find((channel) => channel.id === activeChannelId) ?? null;
   const presenceByPubkey = useWorkspacePresence(
@@ -362,19 +365,22 @@ export function WorkspacePage({
         .sort(),
     [agentsQuery.data, channels, identity, materialized, reactionActorPubkeys],
   );
+  const profilesReady =
+    !channelsQuery.isPending &&
+    !agentsQuery.isPending &&
+    (!activeChannel || !messagesQuery.isPending);
   const profilesQuery = useQuery({
     queryKey: ["workspace-profiles", profilePubkeys],
     queryFn: () => listProfiles(profilePubkeys),
-    enabled: profilePubkeys.length > 0,
+    enabled: profilesReady && profilePubkeys.length > 0,
   });
   const userStatusesQuery = useQuery({
     queryKey: ["user-status", ...profilePubkeys],
     queryFn: () => listUserStatuses(profilePubkeys),
-    enabled: profilePubkeys.length > 0,
+    enabled: profilesReady && profilePubkeys.length > 0,
     staleTime: 60_000,
   });
-  const profilePubkeyKey = profilePubkeys.join(",");
-
+  const profilePubkeyKey = profilesReady ? profilePubkeys.join(",") : "";
   const renameDm = useDmChannelRenamer({
     agents: agentsQuery.data,
     profiles: profilesQuery.data,
@@ -496,7 +502,6 @@ export function WorkspacePage({
         // Profile publishing is retried on the next load.
       });
   }, [channels.length, identity, queryClient]);
-
   const createChannelMutation = useMutation({
     mutationFn: () =>
       createWorkspaceChannel(channelName, channelAbout, {
@@ -619,7 +624,6 @@ export function WorkspacePage({
       />
     );
   }
-
   const profileFor = (pubkey: string): WorkspaceProfile =>
     agentsQuery.data?.find((profile) => profile.pubkey === pubkey) ??
     profilesQuery.data?.get(pubkey) ?? {
@@ -692,7 +696,6 @@ export function WorkspacePage({
       return next;
     });
   };
-
   const openWorkspaceView = (view: "agents" | "inbox" | "alerts") => {
     setWorkspaceView(view);
     setSidebarOpen(false);
@@ -931,41 +934,43 @@ export function WorkspacePage({
         )}
       </main>
 
-      <WorkspaceContentDialogs
-        activeChannel={activeChannel ? renameDm(activeChannel) : null}
-        addingDmMembers={addingDmMembers}
-        addDmMemberError={
-          addDmMemberMutation.error instanceof Error
-            ? addDmMemberMutation.error.message
-            : null
-        }
-        addDmMemberPending={addDmMemberMutation.isPending}
-        channelAbout={channelAbout}
-        channelCatalogSection={channelCatalogSection}
-        channelName={channelName}
-        channelVisibility={channelVisibility}
-        communityMembers={communityMembersQuery.data ?? []}
-        createChannelOpen={createChannelOpen}
-        creatingChannel={createChannelMutation.isPending}
-        dmMemberQuery={dmMemberQuery}
-        editingMessage={editingMessage}
-        recipientProfiles={recipientProfilesQuery.data}
-        onAddDmMember={(channelId, pubkey) =>
-          addDmMemberMutation.mutate({ channelId, pubkey })
-        }
-        onCloseAddDmMembers={() => setAddingDmMembers(false)}
-        onCloseCreateChannel={() => setCreateChannelOpen(false)}
-        onCloseEditMessage={() => setEditingMessage(null)}
-        onCreateChannel={() => createChannelMutation.mutate()}
-        onSaveEditMessage={(message, content) =>
-          editMutation.mutate({ message, content })
-        }
-        onSetChannelAbout={setChannelAbout}
-        onSetChannelCatalogSection={setChannelCatalogSection}
-        onSetChannelName={setChannelName}
-        onSetChannelVisibility={setChannelVisibility}
-        onSetDmMemberQuery={setDmMemberQuery}
-      />
+      {createChannelOpen || addingDmMembers || editingMessage ? (
+        <WorkspaceContentDialogs
+          activeChannel={activeChannel ? renameDm(activeChannel) : null}
+          addingDmMembers={addingDmMembers}
+          addDmMemberError={
+            addDmMemberMutation.error instanceof Error
+              ? addDmMemberMutation.error.message
+              : null
+          }
+          addDmMemberPending={addDmMemberMutation.isPending}
+          channelAbout={channelAbout}
+          channelCatalogSection={channelCatalogSection}
+          channelName={channelName}
+          channelVisibility={channelVisibility}
+          communityMembers={communityMembersQuery.data ?? []}
+          createChannelOpen={createChannelOpen}
+          creatingChannel={createChannelMutation.isPending}
+          dmMemberQuery={dmMemberQuery}
+          editingMessage={editingMessage}
+          recipientProfiles={recipientProfilesQuery.data}
+          onAddDmMember={(channelId, pubkey) =>
+            addDmMemberMutation.mutate({ channelId, pubkey })
+          }
+          onCloseAddDmMembers={() => setAddingDmMembers(false)}
+          onCloseCreateChannel={() => setCreateChannelOpen(false)}
+          onCloseEditMessage={() => setEditingMessage(null)}
+          onCreateChannel={() => createChannelMutation.mutate()}
+          onSaveEditMessage={(message, content) =>
+            editMutation.mutate({ message, content })
+          }
+          onSetChannelAbout={setChannelAbout}
+          onSetChannelCatalogSection={setChannelCatalogSection}
+          onSetChannelName={setChannelName}
+          onSetChannelVisibility={setChannelVisibility}
+          onSetDmMemberQuery={setDmMemberQuery}
+        />
+      ) : null}
       {channelSettingsOpen && activeChannel ? (
         <WorkspaceChannelSettings
           agents={agentsQuery.data ?? []}

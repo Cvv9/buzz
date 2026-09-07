@@ -1,3 +1,4 @@
+import { Modal } from "@/shared/ui/modal";
 import { X } from "lucide-react";
 import { truncatePubkey } from "@/shared/lib/pubkey";
 import { Button } from "@/shared/ui/button";
@@ -68,9 +69,13 @@ export function WorkspaceContentDialogs({
   return (
     <>
       {createChannelOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+        <Modal
+          label="Create a channel"
+          onClose={onCloseCreateChannel}
+          className="max-w-md"
+        >
           <form
-            className="w-full max-w-md rounded-2xl bg-[#fafbf6] p-6 shadow-xl dark:bg-[#20231e]"
+            className="p-6"
             onSubmit={(event) => {
               event.preventDefault();
               onCreateChannel();
@@ -78,14 +83,12 @@ export function WorkspaceContentDialogs({
           >
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-black/40 dark:text-white/35">
-                  VarVik Studios
-                </p>
+                <p className="text-xs text-muted-foreground">VarVik Studios</p>
                 <h2 className="mt-1 text-xl font-semibold">Create a channel</h2>
               </div>
               <button
                 aria-label="Close"
-                className="rounded-lg p-2 hover:bg-black/5 dark:hover:bg-white/5"
+                className="rounded-lg p-2 hover:bg-accent"
                 type="button"
                 onClick={onCloseCreateChannel}
               >
@@ -160,7 +163,7 @@ export function WorkspaceContentDialogs({
                 Cancel
               </Button>
               <Button
-                className="bg-[#d7d72e] text-[#171912] hover:bg-[#e5e54d]"
+                className="bg-primary text-primary-foreground hover:bg-primary/90"
                 disabled={!channelName.trim() || creatingChannel}
                 type="submit"
               >
@@ -168,13 +171,17 @@ export function WorkspaceContentDialogs({
               </Button>
             </div>
           </form>
-        </div>
+        </Modal>
       ) : null}
 
       {addingDmMembers && activeChannel?.type === "dm" ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+        <Modal
+          label="Add people"
+          onClose={onCloseAddDmMembers}
+          className="max-w-md"
+        >
           <form
-            className="w-full max-w-md rounded-2xl bg-[#fafbf6] p-6 shadow-xl dark:bg-[#20231e]"
+            className="p-6"
             onSubmit={(event) => {
               event.preventDefault();
               if (dmMemberQuery) onAddDmMember(activeChannel.id, dmMemberQuery);
@@ -182,14 +189,12 @@ export function WorkspaceContentDialogs({
           >
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs text-black/40 dark:text-white/35">
-                  Direct message
-                </p>
+                <p className="text-xs text-muted-foreground">Direct message</p>
                 <h2 className="mt-1 text-xl font-semibold">Add people</h2>
               </div>
               <button
                 aria-label="Close"
-                className="rounded-lg p-2 hover:bg-black/5 dark:hover:bg-white/5"
+                className="rounded-lg p-2 hover:bg-accent"
                 type="button"
                 onClick={onCloseAddDmMembers}
               >
@@ -245,13 +250,17 @@ export function WorkspaceContentDialogs({
               </Button>
             </div>
           </form>
-        </div>
+        </Modal>
       ) : null}
 
       {editingMessage ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
+        <Modal
+          label="Edit message"
+          onClose={onCloseEditMessage}
+          className="max-w-lg"
+        >
           <form
-            className="w-full max-w-lg rounded-2xl bg-[#fafbf6] p-6 shadow-xl dark:bg-[#20231e]"
+            className="p-6"
             onSubmit={(event) => {
               event.preventDefault();
               const data = new FormData(event.currentTarget);
@@ -263,7 +272,8 @@ export function WorkspaceContentDialogs({
           >
             <h2 className="text-lg font-semibold">Edit message</h2>
             <textarea
-              className="mt-4 min-h-32 w-full rounded-xl border border-black/12 bg-transparent p-3 text-sm outline-none focus:border-[#b6b71e] dark:border-white/12"
+              className="mt-4 min-h-32 w-full rounded-xl border border-border bg-transparent p-3 text-sm outline-none focus:border-[#b6b71e]"
+              aria-label="Message"
               defaultValue={editingMessage.content}
               name="content"
             />
@@ -276,14 +286,14 @@ export function WorkspaceContentDialogs({
                 Cancel
               </Button>
               <Button
-                className="bg-[#d7d72e] text-[#171912] hover:bg-[#e5e54d]"
+                className="bg-primary text-primary-foreground hover:bg-primary/90"
                 type="submit"
               >
                 Save
               </Button>
             </div>
           </form>
-        </div>
+        </Modal>
       ) : null}
     </>
   );

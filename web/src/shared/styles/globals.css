@@ -173,3 +173,35 @@ html[data-buzz-reduced-motion="true"] *::after {
   animation-iteration-count: 1;
   transition-duration: 0.01ms;
 }
+
+/* Keep keyboard focus visible even on controls with custom utility styles. */
+:where(
+  button,
+  a[href],
+  input,
+  textarea,
+  select,
+  summary,
+  [tabindex]
+):focus-visible {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 3px;
+}
+
+::selection {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
+
+@media (max-width: 767px) {
+  /* Touch targets grow without enlarging decorative icons or desktop chrome. */
+  :where([data-testid="workspace-shell"], dialog)
+    :where(button, a[href], select) {
+    min-height: 44px;
+    min-width: 44px;
+  }
+
+  :where(input, textarea, select) {
+    font-size: max(1rem, 16px);
+  }
+}

@@ -55,18 +55,18 @@ export function WorkspaceInbox({
       className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
       data-testid={isAlerts ? "workspace-alerts" : "workspace-inbox"}
     >
-      <header className="flex h-16 shrink-0 items-center justify-between gap-3 border-b border-black/8 px-4 dark:border-white/8 sm:px-6">
+      <header className="flex h-16 shrink-0 items-center justify-between gap-3 border-b border-border px-4 sm:px-6">
         <div className="flex min-w-0 items-center gap-2">
           {isAlerts ? (
-            <Bell className="size-4 shrink-0 text-black/40 dark:text-white/35" />
+            <Bell className="size-4 shrink-0 text-muted-foreground" />
           ) : (
-            <Inbox className="size-4 shrink-0 text-black/40 dark:text-white/35" />
+            <Inbox className="size-4 shrink-0 text-muted-foreground" />
           )}
           <div>
             <h1 className="text-sm font-semibold">
               {isAlerts ? "Alerts" : "Inbox"}
             </h1>
-            <p className="text-xs text-black/40 dark:text-white/35">
+            <p className="text-xs text-muted-foreground">
               {isAlerts
                 ? "Mentions and replies across every channel."
                 : "Only requests that explicitly need your approval."}
@@ -75,7 +75,7 @@ export function WorkspaceInbox({
         </div>
         {unreadCount ? (
           <button
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium text-black/55 hover:bg-black/5 dark:text-white/50 dark:hover:bg-white/5"
+            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium text-muted-foreground hover:bg-accent"
             type="button"
             onClick={onDismissAll}
           >
@@ -86,7 +86,7 @@ export function WorkspaceInbox({
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
         {items.length ? (
-          <div className="mx-auto max-w-3xl divide-y divide-black/8 overflow-hidden rounded-2xl border border-black/8 dark:divide-white/8 dark:border-white/8">
+          <div className="mx-auto max-w-3xl divide-y divide-border overflow-hidden rounded-2xl border border-border">
             {items.map((item) => {
               const profile = profileFor(item.pubkey);
               const channelExists =
@@ -94,7 +94,7 @@ export function WorkspaceInbox({
               return (
                 <div className="group relative flex" key={item.id}>
                   <button
-                    className={`flex min-w-0 flex-1 gap-3 px-4 py-3 pr-12 text-left hover:bg-black/[0.035] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#d36b27] dark:hover:bg-white/[0.04] ${item.isRead ? "opacity-65" : ""}`}
+                    className={`flex min-w-0 flex-1 gap-3 px-4 py-3 pr-12 text-left hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring ${item.isRead ? "bg-muted/40" : ""}`}
                     type="button"
                     onClick={() => {
                       if (channelExists) onSelectItem(item);
@@ -120,14 +120,14 @@ export function WorkspaceInbox({
                         <span className="rounded-full bg-orange-500/12 px-2 py-0.5 text-[0.6875rem] font-medium text-orange-700 dark:text-orange-300">
                           {categoryLabels[item.category]}
                         </span>
-                        <span className="ml-auto shrink-0 text-xs text-black/40 dark:text-white/35">
+                        <span className="ml-auto shrink-0 text-xs text-muted-foreground">
                           {relativeTime(item.createdAt)}
                         </span>
                       </span>
-                      <span className="mt-1 block text-sm leading-5 text-black/58 dark:text-white/55">
+                      <span className="mt-1 block text-sm leading-5 text-muted-foreground">
                         {preview(item.content) || "No message content"}
                       </span>
-                      <span className="mt-1 block text-xs text-black/40 dark:text-white/35">
+                      <span className="mt-1 block text-xs text-muted-foreground">
                         {channelExists
                           ? `#${channelNames.get(item.channelId ?? "")}`
                           : "Personal notification"}
@@ -138,7 +138,7 @@ export function WorkspaceInbox({
                     aria-label={
                       isAlerts ? "Dismiss alert" : "Dismiss from inbox"
                     }
-                    className="absolute right-3 top-3 inline-flex size-8 items-center justify-center rounded-lg text-black/35 opacity-0 transition hover:bg-black/5 hover:text-black/65 focus-visible:opacity-100 group-hover:opacity-100 dark:text-white/35 dark:hover:bg-white/5 dark:hover:text-white/70"
+                    className="absolute right-3 top-3 inline-flex size-8 items-center justify-center rounded-lg text-muted-foreground opacity-100 transition hover:bg-accent hover:text-foreground sm:opacity-0 focus-visible:opacity-100 group-hover:opacity-100"
                     data-testid={`workspace-inbox-dismiss-${item.id}`}
                     onClick={() => onDismissItem(item)}
                     type="button"
@@ -158,7 +158,7 @@ export function WorkspaceInbox({
               <h2 className="mt-4 font-semibold">
                 {isAlerts ? "No alerts yet" : "Your inbox is clear"}
               </h2>
-              <p className="mt-2 text-sm leading-6 text-black/45 dark:text-white/40">
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
                 {isAlerts
                   ? "Mentions and replies will appear here without getting lost in channel traffic."
                   : "Requests appear only when they explicitly require your approval."}
