@@ -36,6 +36,7 @@ async function signIn(page: Page, enforceAdmission = false) {
   await page.getByRole("button", { name: "Sign in with recovery key" }).click();
   await expect(page.getByTestId("workspace-shell")).toBeVisible();
   await expect(page.getByLabel("Message general")).toBeVisible();
+  return secret;
 }
 
 test("reload shares one authenticated connection and reconnects live updates", async ({
@@ -455,4 +456,99 @@ test("Inbox secondary text meets contrast in light and dark themes", async ({
     body: JSON.stringify(results),
     contentType: "application/json",
   });
+});
+
+test("loss of IndexedDB retains existing-password sign-in through the encrypted backup", async ({
+  page,
+}) => {
+  await signIn(page);
+  const backupFields = await page.evaluate(() =>
+    Object.keys(
+      JSON.parse(
+        localStorage.getItem("buzz.web.identity.password-backup.v1") ?? "{}",
+      ),
+    ).sort(),
+  );
+  expect(backupFields).toEqual([
+    "displayName",
+    "encryptedSecret",
+    "id",
+    "iterations",
+    "iv",
+    "pubkey",
+    "salt",
+    "version",
+  ]);
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        const request = indexedDB.deleteDatabase("buzz-web-identity");
+        request.onsuccess = () => resolve();
+        request.onerror = () => reject(request.error);
+      }),
+  );
+  await page.reload();
+  await expect(
+    page.getByRole("heading", { name: "Welcome back, Audit user" }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Recovery key", { exact: true })).toHaveCount(0);
+  await page.getByLabel("Password", { exact: true }).fill("wrong-password");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Welcome back, Audit user" }),
+  ).toBeVisible();
+  await page
+    .getByLabel("Password", { exact: true })
+    .fill("audit-test-password");
+  await page.getByRole("button", { name: "Sign in", exact: true }).click();
+  await expect(page.getByLabel("Message general")).toBeVisible();
+  await page.reload();
+  await expect(page.getByLabel("Message general")).toBeVisible();
+});
+
+test("existing password identities receive a backup without resetting their password", async ({
+  page,
+}) => {
+  await signIn(page);
+  await page.evaluate(() =>
+    localStorage.removeItem("buzz.web.identity.password-backup.v1"),
+  );
+  await page.reload();
+  await expect(page.getByLabel("Message general")).toBeVisible();
+  expect(
+    await page.evaluate(
+      () =>
+        localStorage.getItem("buzz.web.identity.password-backup.v1") !== null,
+    ),
+  ).toBe(true);
+});
+
+test("a damaged password backup offers explicit recovery without silently replacing the account", async ({
+  page,
+}) => {
+  const secret = await signIn(page);
+  await page.evaluate(async () => {
+    localStorage.setItem("buzz.web.identity.password-backup.v1", "damaged");
+    await new Promise<void>((resolve, reject) => {
+      const request = indexedDB.deleteDatabase("buzz-web-identity");
+      request.onsuccess = () => resolve();
+      request.onerror = () => reject(request.error);
+    });
+  });
+  await page.reload();
+  await expect(
+    page.getByRole("heading", { name: "Could not open your saved account" }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Recovery key", { exact: true })).toHaveCount(0);
+  await page
+    .getByRole("button", { name: "Use recovery key", exact: true })
+    .click();
+  await page.getByLabel("Display name").fill("Audit user");
+  await page.getByLabel("Recovery key").fill(nsecEncode(secret));
+  await page
+    .getByLabel("Password", { exact: true })
+    .fill("audit-test-password");
+  await page.getByLabel("Confirm password").fill("audit-test-password");
+  await page.getByRole("button", { name: "Sign in with recovery key" }).click();
+  await expect(page.getByLabel("Message general")).toBeVisible();
 });

@@ -1,5 +1,10 @@
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure";
 import { decode, nsecEncode } from "nostr-tools/nip19";
+import {
+  readPasswordBackup,
+  savePasswordBackup,
+  removePasswordBackup,
+} from "./identity-password-backup";
 
 const DATABASE_NAME = "buzz-web-identity";
 const DATABASE_VERSION = 1;
@@ -93,16 +98,23 @@ function openDatabase(): Promise<IDBDatabase> {
 async function readStoredIdentity(): Promise<StoredBrowserIdentity | null> {
   const database = await openDatabase();
   try {
-    return await new Promise((resolve, reject) => {
-      const transaction = database.transaction(STORE_NAME, "readonly");
-      const request = transaction
-        .objectStore(STORE_NAME)
-        .get(PRIMARY_IDENTITY_KEY);
-      request.onsuccess = () =>
-        resolve((request.result as StoredBrowserIdentity | undefined) ?? null);
-      request.onerror = () =>
-        reject(request.error ?? new Error("Could not read browser identity."));
-    });
+    const stored = await new Promise<StoredBrowserIdentity | null>(
+      (resolve, reject) => {
+        const transaction = database.transaction(STORE_NAME, "readonly");
+        const request = transaction
+          .objectStore(STORE_NAME)
+          .get(PRIMARY_IDENTITY_KEY);
+        request.onsuccess = () =>
+          resolve(
+            (request.result as StoredBrowserIdentity | undefined) ?? null,
+          );
+        request.onerror = () =>
+          reject(
+            request.error ?? new Error("Could not read browser identity."),
+          );
+      },
+    );
+    return stored ?? readPasswordBackup();
   } finally {
     database.close();
   }
@@ -129,6 +141,17 @@ async function writeStoredIdentity(
     });
   } finally {
     database.close();
+  }
+  if (identity.version !== 1) {
+    // The IndexedDB copy remains usable if Web Storage is unavailable/full.
+    try {
+      savePasswordBackup(identity);
+    } catch {
+      /* Best-effort redundancy. */
+    }
+  }
+  if (typeof navigator.storage?.persist === "function") {
+    void navigator.storage.persist().catch(() => false);
   }
 }
 
@@ -297,6 +320,16 @@ export async function getStoredBrowserIdentity(): Promise<StoredBrowserIdentityS
     localStorage.removeItem(IDENTITY_MARKER_KEY);
     return null;
   }
+  if (
+    stored.version !== 1 &&
+    localStorage.getItem(IDENTITY_MARKER_KEY) === stored.pubkey
+  ) {
+    try {
+      savePasswordBackup(stored);
+    } catch {
+      /* Keep the authoritative database usable. */
+    }
+  }
   localStorage.setItem(IDENTITY_MARKER_KEY, stored.pubkey);
   return {
     pubkey: stored.pubkey,
@@ -442,6 +475,7 @@ export function lockBrowserIdentity(): void {
 
 export async function removeBrowserIdentity(): Promise<void> {
   await deleteStoredIdentity();
+  removePasswordBackup();
   lockBrowserIdentity();
   localStorage.removeItem(IDENTITY_MARKER_KEY);
 }

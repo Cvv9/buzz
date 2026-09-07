@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { WorkspaceLoadError } from "@/features/access/WorkspaceLoadError";
 import type {
@@ -30,12 +31,14 @@ export function WorkspaceStartup({
   onReady: (identity: BrowserIdentity) => void;
 }) {
   const navigate = useNavigate();
-  if (identityError)
+  const [recoverAccount, setRecoverAccount] = useState(false);
+  if (identityError && !recoverAccount)
     return (
       <WorkspaceLoadError
         title="Could not open your saved account"
         description="Buzz could not read this browser’s account storage. Your account has not been removed. Close other Buzz tabs and try again; you do not need to create a new account."
         onRetry={onRetryIdentity}
+        onRecovery={() => setRecoverAccount(true)}
       />
     );
   if (identityLoading)
@@ -47,8 +50,9 @@ export function WorkspaceStartup({
     return (
       <IdentityGate
         pendingInvite={Boolean(pendingInvitePath)}
-        storedIdentity={storedIdentity}
+        storedIdentity={recoverAccount ? null : storedIdentity}
         onReady={(readyIdentity) => {
+          setRecoverAccount(false);
           onReady(readyIdentity);
           if (pendingInvitePath) {
             sessionStorage.removeItem("buzz.web.pending-invite-path");

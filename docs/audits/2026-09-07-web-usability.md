@@ -2,6 +2,33 @@
 
 Scope: live `https://buzz.varvikstudios.com/` in the existing Chrome session, desktop and 390 × 844 viewport; source review and local regression tests. All eight initial issue groups below are fixed and deployed. Production verification caught an additional relay-admission regression; the first release was rolled back, then the corrected release was deployed and verified. No production messages, invitations, agent permissions, or credentials were changed.
 
+## Latest storage finding
+
+After the theme release deployed, a desktop tab initially restored its account,
+then reached recovery-key setup during the next reload. A read-only count found
+zero identity records in `buzz-web-identity`; other Buzz localStorage keys
+remained. The constrained-network run had no authenticated requests and is
+**invalid as a performance result**. Chrome reported `persisted() === false`;
+the Mac had about 9.8 GiB free on a 460 GiB volume. Storage pressure is a
+possible cause, not a proven explanation for the deletion. No deployed code
+path or response header was found that clears identity data on redeploy.
+
+The follow-up keeps a password-encrypted fallback in localStorage, excluding
+the device decryption key and plaintext recovery key. If IndexedDB alone is
+lost, the existing password unlocks that fallback and rebuilds normal device
+protection. Existing stored accounts receive the fallback when read, and new
+saves request persistent browser storage. A damaged fallback produces an
+explicit error with an opt-in recovery-key action. Forgetting an account also
+removes its fallback. Neither copy can recover an account after all site data
+is deleted. This cannot retroactively recover the already-missing record;
+direct sign-in is required before further authenticated desktop/phone checks.
+
+Storage behavior reference: [Chrome persistent storage](https://web.dev/articles/persistent-storage).
+The isolated browser regression deletes IndexedDB, rejects a wrong password,
+accepts the existing password, and confirms the next reload restores sign-in.
+A second regression covers existing-account migration; a third covers explicit
+recovery of a damaged fallback. No user credentials were copied or entered.
+
 ## Follow-up findings and deployment drift
 
 The 7 September follow-up found that the Suite deployment at 07:00 UTC
@@ -30,7 +57,7 @@ This automated result does not substitute for screen-reader testing.
 Validation: all 64 matrix/reduced-motion tests and all 43 separate workflow
 regressions passed. Full repository `just ci` passed before the final two
 markup-only fixes; fresh web checks/build and browser regressions validate
-those fixes. React Doctor reports 70/100 with no errors and nine existing
+those fixes. React Doctor reports 66/100 with no errors and nine existing
 complexity/state/dependency warnings.
 
 Reduced motion replaces spinning/pulsing status animation with a static state
