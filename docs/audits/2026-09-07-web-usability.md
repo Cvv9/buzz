@@ -2,6 +2,24 @@
 
 Scope: live `https://buzz.varvikstudios.com/` in the existing Chrome session, desktop and 390 × 844 viewport; source review and local regression tests. All eight initial issue groups below are fixed and deployed. Production verification caught an additional relay-admission regression; the first release was rolled back, then the corrected release was deployed and verified. No production messages, invitations, agent permissions, or credentials were changed.
 
+## Consolidated release preparation
+
+PR #79 merged the startup preload, parked starter-channel retry, and two
+reviewed upstream desktop fixes into main at `62d8d1b2ccc2`. Both former local
+feature branches were verified as ancestors and removed; the repository then
+had one local branch, one origin branch, and one worktree. Full `just ci` passed.
+The immutable browser image built successfully in run `34111484569`; Suite
+PR #143 holds its pin until the concurrent production maintenance is verified.
+The native desktop fixes require a separate desktop release to reach users.
+
+Additional desktop E2E coverage exposed JavaScript asset connection resets
+under the Python static server, producing a blank onboarding page. Serving the
+same E2E build with Vite preview passed all 31 identity recovery, configuration
+bridge, and deep-link invite scenarios. The Playwright-managed server now uses
+Vite preview and independently passed those same 31 scenarios. This is a test
+harness correction; no application behavior changed. Its follow-up branch must
+also be merged and removed before the pending browser promotion.
+
 ## Cold-start follow-up
 
 The production cold-load resource trace showed the 518 kB entry finishing at
