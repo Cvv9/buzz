@@ -21,6 +21,7 @@ export default defineConfig({
       testMatch: [
         "**/smoke.spec.ts",
         "**/workspace-startup-audit.spec.ts",
+        "**/workspace-quality-matrix.spec.ts",
         "**/browser-local-devices.smoke.spec.ts",
         "**/workspace-identity-and-agents.spec.ts",
         "**/workspace-hosted-agent-runtime.spec.ts",

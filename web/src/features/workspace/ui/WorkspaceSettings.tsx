@@ -465,7 +465,7 @@ function SettingsNavigation({ identity }: { identity: BrowserIdentity }) {
             {group.entries.map((entry) =>
               entry.href.startsWith("#") ? (
                 <a
-                  className="block rounded-lg px-2 py-2 text-sm text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                  className="block rounded-lg px-2 py-2 text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
                   href={entry.href}
                   key={entry.href}
                 >
@@ -473,7 +473,7 @@ function SettingsNavigation({ identity }: { identity: BrowserIdentity }) {
                 </a>
               ) : (
                 <Link
-                  className="block rounded-lg px-2 py-2 text-sm text-sidebar-foreground/75 hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                  className="block rounded-lg px-2 py-2 text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
                   key={entry.href}
                   to={entry.href}
                 >

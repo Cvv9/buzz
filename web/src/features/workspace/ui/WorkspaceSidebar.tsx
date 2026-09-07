@@ -287,7 +287,7 @@ export function WorkspaceSidebar({
           <div className="mb-4 space-y-0.5">
             <Link
               aria-label="Search workspace"
-              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent"
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-sidebar-foreground transition-colors hover:bg-sidebar-accent"
               to="/search"
               onClick={onClose}
             >
@@ -304,7 +304,7 @@ export function WorkspaceSidebar({
                 "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
                 selectedView === "inbox"
                   ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
-                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent",
+                  : "text-sidebar-foreground hover:bg-sidebar-accent",
               )}
               data-testid="workspace-inbox-button"
               type="button"
@@ -331,7 +331,7 @@ export function WorkspaceSidebar({
                 "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
                 selectedView === "alerts"
                   ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
-                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent",
+                  : "text-sidebar-foreground hover:bg-sidebar-accent",
               )}
               data-testid="workspace-alerts-button"
               type="button"
@@ -444,7 +444,7 @@ export function WorkspaceSidebar({
               <div className="space-y-0.5">
                 {hiddenDirectMessages.map((channel) => (
                   <button
-                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-sidebar-foreground/70 hover:bg-sidebar-accent"
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-sidebar-foreground hover:bg-sidebar-accent"
                     key={channel.id}
                     type="button"
                     onClick={() => onReopenDirectMessage(channel)}
@@ -544,7 +544,7 @@ export function WorkspaceSidebar({
 
         <footer className="border-t border-sidebar-border p-3">
           <button
-            className="mb-1 flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left text-sm text-sidebar-foreground/70 hover:bg-sidebar-accent"
+            className="mb-1 flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left text-sm text-sidebar-foreground hover:bg-sidebar-accent"
             type="button"
             onClick={onOpenGuide}
           >
@@ -635,7 +635,7 @@ function AgentGroup({
                 <p className="truncate text-sm">
                   {agent.name} — {agentRoleLabel(agent)}
                 </p>
-                <p className="text-[0.6875rem] text-emerald-700 dark:text-emerald-400">
+                <p className="text-[0.6875rem] text-emerald-800 dark:text-emerald-400">
                   {agent.accessTier === "personal"
                     ? "Personal assistant"
                     : agent.accessTier === "admin"
@@ -647,7 +647,7 @@ function AgentGroup({
                 activeChannelMemberPubkeys.includes(agent.pubkey) ? (
                   <span
                     aria-label={`${agent.name} is already in the current channel`}
-                    className="rounded-md p-1.5 text-emerald-700 dark:text-emerald-400"
+                    className="rounded-md p-1.5 text-emerald-800 dark:text-emerald-400"
                     role="img"
                     title="Already in current channel"
                   >
@@ -772,7 +772,7 @@ function ChannelButton({
         "group/channel flex w-full items-center rounded-lg text-sm transition-colors",
         active
           ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
-          : "text-sidebar-foreground/70 hover:bg-sidebar-accent",
+          : "text-sidebar-foreground hover:bg-sidebar-accent",
       )}
     >
       <button

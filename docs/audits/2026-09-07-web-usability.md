@@ -2,10 +2,37 @@
 
 Scope: live `https://buzz.varvikstudios.com/` in the existing Chrome session, desktop and 390 × 844 viewport; source review and local regression tests. All eight initial issue groups below are fixed and deployed. Production verification caught an additional relay-admission regression; the first release was rolled back, then the corrected release was deployed and verified. No production messages, invitations, agent permissions, or credentials were changed.
 
-## Latest outcome
+## Follow-up findings and deployment drift
 
-The confirmed fixes are deployed at web revision
-`b41a44b7b2ba4b95550d150a095c112f4b603dbd`. Production is healthy on registry
+The 7 September follow-up found that the Suite deployment at 07:00 UTC
+restored its source-controlled Buzz 0.2.16 image. The live container was created
+at 07:04 UTC and serves `index-DVCeg6hA.js`, revision
+`15cdf064085c20e86f0b5d5cfba68714cece0aa0`. The previous browser-only image
+was only pinned in the server environment, which Suite replaces on deployment.
+The Suite source-controlled `config/suite.env.example` pin must be updated;
+an environment override is not a durable release fix. Slower-network traces
+with 25+ sockets therefore describe this older deployment, not a regression
+in the current shared-subscription implementation.
+
+The new accessibility matrix initially exposed failures in 13 of 62 supported
+themes. Fixes now make dark utilities follow the selected root theme, select
+primary-button text using WCAG luminance, preserve full-opacity sidebar labels,
+and minimally adjust semantic text lightness against its theme surfaces.
+Theme hues, saturation, and backgrounds remain shared with desktop; browser UI
+text intentionally gains a contrast floor. All 62 themes pass axe WCAG A/AA
+checks across empty Inbox, populated agents, agent dialogs, and disabled empty
+forms. This automated result does not substitute for screen-reader testing.
+
+Reduced motion replaces spinning/pulsing status animation with a static state
+and uses short fades for entering dialogs. The connected Pixel 6 (Android 17)
+is authorized via ADB but Chrome has no saved Buzz account; authenticated
+keyboard/rotation and TalkBack checks await sign-in directly on the phone.
+No credentials were transferred from the desktop.
+
+## Previous verified outcome (superseded by deployment drift)
+
+The confirmed fixes were previously deployed at web revision
+`b41a44b7b2ba4b95550d150a095c112f4b603dbd`. That verification observed a healthy container on registry
 digest `sha256:ef0fe23041f1feffecdcb65998ebe32e5b2cbce914e62fd2bc5629fbf8bb06e1`.
 The served entry is `/assets/index-CB2IrDk2.js`. The full repository CI gate and
 all 43 browser smoke tests passed; later web-only adjustments passed fresh web

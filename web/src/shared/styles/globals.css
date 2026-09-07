@@ -3,6 +3,8 @@
 @plugin "@tailwindcss/typography";
 @config "../../../tailwind.config.js";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @layer base {
   :root {
     /* Catppuccin Latte (mauve accent) */
@@ -162,16 +164,62 @@ html[data-buzz-font-scale="larger"] {
   font-size: 125%;
 }
 
-html[data-buzz-reduced-motion="true"] {
-  scroll-behavior: auto;
+/* Reduced motion retains status text and state changes. Navigation and
+   skeletons stop moving; transient overlays use a short opacity fade. */
+@keyframes buzz-reduced-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes buzz-reduced-exit {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+    & .animate-spin,
+    & .animate-pulse {
+      animation: none;
+      opacity: 1;
+    }
+    & .transition-transform {
+      transition-property: opacity;
+      transition-duration: 120ms;
+    }
+    & .animate-in {
+      animation: buzz-reduced-enter 120ms ease-out both;
+    }
+    & [data-state="closed"].animate-in {
+      animation: buzz-reduced-exit 120ms ease-out both;
+    }
+  }
 }
 
-html[data-buzz-reduced-motion="true"] *,
-html[data-buzz-reduced-motion="true"] *::before,
-html[data-buzz-reduced-motion="true"] *::after {
-  animation-duration: 0.01ms;
-  animation-iteration-count: 1;
-  transition-duration: 0.01ms;
+html[data-buzz-reduced-motion="true"] {
+  scroll-behavior: auto;
+  & .animate-spin,
+  & .animate-pulse {
+    animation: none;
+    opacity: 1;
+  }
+  & .transition-transform {
+    transition-property: opacity;
+    transition-duration: 120ms;
+  }
+  & .animate-in {
+    animation: buzz-reduced-enter 120ms ease-out both;
+  }
+  & [data-state="closed"].animate-in {
+    animation: buzz-reduced-exit 120ms ease-out both;
+  }
 }
 
 /* Keep keyboard focus visible even on controls with custom utility styles. */
