@@ -2,6 +2,43 @@
 
 Scope: live `https://buzz.varvikstudios.com/` in the existing Chrome session, desktop and 390 × 844 viewport; source review and local regression tests. All eight initial issue groups below are fixed and deployed. Production verification caught an additional relay-admission regression; the first release was rolled back, then the corrected release was deployed and verified. No production messages, invitations, agent permissions, or credentials were changed.
 
+## Desktop verification blocker resolved
+
+A reset browser-automation session with fresh Chrome tabs and the supported
+`tab.reload()` navigation operation completed six consecutive constrained
+network trials. Raw `Page.reload` was not used. Both tabs restored the existing
+signed-in account without credential entry. No Chrome restart, extension
+reinstallation, site-data deletion, or permission change was necessary.
+This establishes a working verification procedure; it does not prove the exact
+internal cause of the earlier browser block or recorder failures.
+
+The profile matched the earlier desktop test: 150 ms latency, 1.5 Mbps down,
+0.75 Mbps up, two simultaneous populated-account tabs. Each run collected
+WebSocket events for 15 seconds using a pre-reload cursor, 100 ms reads and
+1,000-event pages, draining every `hasMore` page. Every buffer reported
+`truncated: false`. Composer readiness was the first observed textarea after
+the document time origin changed; it is not a paint metric.
+
+| Run | Composer ready, tab 1 / tab 2 | REQ count | Rate-limit responses |
+| --- | --- | --- | --- |
+| Cold 1 | 4.538 s / 4.505 s | 44 / 46 | 0 / 0 |
+| Warm 1 | 2.416 s / 2.669 s | 46 / 46 | 0 / 0 |
+| Cold 2 | 4.533 s / 4.444 s | 44 / 47 | 0 / 0 |
+| Warm 2 | 2.321 s / 2.768 s | 45 / 47 | 0 / 0 |
+| Cold 3 | 4.471 s / 4.569 s | 46 / 46 | 0 / 0 |
+| Warm 3 | 2.543 s / 2.734 s | 47 / 47 | 0 / 0 |
+
+Every tab used exactly one WebSocket and one AUTH in every run. There were no
+browser blocks, recorder timeouts, or missing test tabs. Network emulation and
+cache disabling were restored after each trial. Test tabs are temporary.
+
+**The desktop constrained-network verification gate now passes for reliable
+startup without throttling or connection fan-out.** These measurements
+supersede the earlier invalid desktop recordings retained below. Cold startup
+still costs 4.44–4.57 seconds on this profile; that is an optimization target,
+not instant loading. A complete spoken TalkBack walkthrough remains unverified,
+so this does not establish a blanket 20/20 assessment.
+
 ## Verified final release
 
 The final storage-recovery release is deployed from Buzz source
@@ -72,8 +109,8 @@ Desktop constrained-network attempts encountered Chrome
 are invalid; normal network/cache settings were restored. An ordinary desktop
 pair subsequently loaded both composers at 4.97 / 4.76 seconds under recording,
 but event buffers reported truncation. Do not infer zero throttling from that
-incomplete desktop trace. Repeat desktop constrained-network testing with a
-stable browser automation connection before claiming that specific gate passed.
+incomplete desktop trace. The later six-run desktop verification above supersedes this blocker; these
+earlier incomplete traces remain invalid.
 
 ## Signed-in verification follow-up
 
@@ -110,9 +147,9 @@ sign-in page had no horizontal overflow. Authenticated keyboard, rotation, and
 TalkBack checks remain pending direct phone sign-in. No phone settings changed.
 
 **20/20 remains unverified.** The later section above records the deployed
-admission correction and successful physical-phone checks. Repeatable desktop
-constrained-network evidence and a complete spoken TalkBack walkthrough remain
-open. The initial desktop figures in this section precede the configuration fix.
+admission correction and successful physical-phone checks. The latest desktop
+verification above closes the recording gap. Cold-start optimization and a
+complete spoken TalkBack walkthrough remain open. The initial desktop figures in this section precede the configuration fix.
 
 ## Latest storage finding
 
