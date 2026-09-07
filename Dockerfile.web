@@ -9,6 +9,7 @@ COPY patches/ patches/
 COPY web/package.json web/
 COPY admin-web/package.json admin-web/
 RUN pnpm install --frozen-lockfile --filter buzz-web
+COPY biome.json ./
 COPY web/ web/
 ENV VITE_BUZZ_RELEASES_REPOSITORY=Cvv9/buzz
 RUN pnpm -C web exec biome check . && pnpm -C web test:unit && pnpm -C web build
