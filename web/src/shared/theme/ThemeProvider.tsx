@@ -7,6 +7,7 @@ import {
   useMemo,
   useState,
 } from "react";
+import { readableThemeVariables } from "./theme-contrast";
 import type { CommunityAppearance } from "./community-theme";
 import {
   DESKTOP_THEME_VARIABLE_NAMES,
@@ -80,12 +81,15 @@ function hexToHsl(hex: string): string | null {
 function contrastForeground(hex: string): string {
   const match = /^#([\da-f]{2})([\da-f]{2})([\da-f]{2})$/i.exec(hex);
   if (!match) return "#ffffff";
-  const [red, green, blue] = match
-    .slice(1)
-    .map((part) => Number.parseInt(part, 16));
-  return (red * 0.299 + green * 0.587 + blue * 0.114) / 255 > 0.5
-    ? "#000000"
-    : "#ffffff";
+  const channels = match.slice(1).map((part) => {
+    const value = Number.parseInt(part, 16) / 255;
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  });
+  const luminance =
+    channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+  const blackContrast = (luminance + 0.05) / 0.05;
+  const whiteContrast = 1.05 / (luminance + 0.05);
+  return blackContrast >= whiteContrast ? "#000000" : "#ffffff";
 }
 
 function applyAccent(
@@ -116,11 +120,13 @@ function applyRootAppearance(themeName: string, accent: string) {
   const root = document.documentElement;
   const palette = desktopThemePalette(themeName);
   const isDark = palette.isDark;
+  const vars = readableThemeVariables(palette.vars, isDark);
   root.classList.remove("light", "dark");
   root.classList.add(isDark ? "dark" : "light");
+  root.style.colorScheme = isDark ? "dark" : "light";
 
   for (const name of DESKTOP_THEME_VARIABLE_NAMES) {
-    const value = palette.vars[name];
+    const value = vars[name];
     root.style.setProperty(name, value);
   }
   if (isBuzzDesktopTheme(themeName)) {
@@ -128,7 +134,7 @@ function applyRootAppearance(themeName: string, accent: string) {
   } else {
     root.removeAttribute("data-buzz-theme");
   }
-  applyAccent(root, accent, palette.vars, isBuzzDesktopTheme(themeName));
+  applyAccent(root, accent, vars, isBuzzDesktopTheme(themeName));
   return isDark;
 }
 

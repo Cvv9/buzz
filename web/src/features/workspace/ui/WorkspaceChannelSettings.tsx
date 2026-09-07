@@ -1,3 +1,4 @@
+import { Modal } from "@/shared/ui/modal";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import * as React from "react";
 import { truncatePubkey } from "@/shared/lib/pubkey";
@@ -208,8 +209,8 @@ export function WorkspaceChannelSettings({
     deleteMutation.error;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
-      <div className="max-h-[90dvh] w-full max-w-2xl overflow-y-auto rounded-2xl bg-background p-6 shadow-xl">
+    <Modal label="Channel settings" onClose={onClose} className="max-w-2xl">
+      <div className="p-6">
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-xs text-muted-foreground">
@@ -407,7 +408,7 @@ export function WorkspaceChannelSettings({
           <p className="mt-4 text-sm text-destructive">{error.message}</p>
         ) : null}
       </div>
-    </div>
+    </Modal>
   );
 }
 

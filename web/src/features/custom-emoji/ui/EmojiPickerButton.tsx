@@ -1,26 +1,10 @@
-import data from "@emoji-mart/data";
-import Picker from "@emoji-mart/react";
-import { init } from "emoji-mart";
 import { Smile, X } from "lucide-react";
 import * as React from "react";
 import { cn } from "@/shared/lib/cn";
 import { Button } from "@/shared/ui/button";
 
-// emoji-mart builds its searchable index synchronously inside `init`, which
-// `<Picker>` calls on mount. Warm the index once at idle so the first popover
-// open does not pay the full ~1.8k-emoji build; `init` is a no-op afterwards.
-let warmStarted = false;
-function warmEmojiIndex() {
-  if (warmStarted) return;
-  warmStarted = true;
-  const warm = () => void init({ data });
-  if (typeof window !== "undefined" && "requestIdleCallback" in window) {
-    window.requestIdleCallback(warm, { timeout: 1_500 });
-  } else {
-    globalThis.setTimeout(warm, 250);
-  }
-}
-warmEmojiIndex();
+// Keep the emoji dataset and search index off the startup path.
+const EmojiPalette = React.lazy(() => import("./EmojiPalette"));
 
 /**
  * Full Unicode emoji palette for composing and reacting. Custom workspace
@@ -42,11 +26,13 @@ export function EmojiPickerButton({
     if (!open) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
       setOpen(false);
       triggerRef.current?.focus();
     };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
+    window.addEventListener("keydown", closeOnEscape, true);
+    return () => window.removeEventListener("keydown", closeOnEscape, true);
   }, [open]);
 
   return (
@@ -85,23 +71,21 @@ export function EmojiPickerButton({
               <X className="size-3.5" />
             </button>
           </div>
-          <Picker
-            autoFocus
-            data={data}
-            maxFrequentRows={2}
-            onEmojiSelect={(emoji: { native?: string }) => {
-              if (emoji.native) {
-                onSelect(emoji.native);
+          <React.Suspense
+            fallback={
+              <p className="p-4 text-sm text-muted-foreground" role="status">
+                Loading emoji…
+              </p>
+            }
+          >
+            <EmojiPalette
+              onSelect={(value) => {
+                onSelect(value);
                 setOpen(false);
                 triggerRef.current?.focus();
-              }
-            }}
-            perLine={8}
-            previewPosition="none"
-            set="native"
-            skinTonePosition="search"
-            theme="auto"
-          />
+              }}
+            />
+          </React.Suspense>
         </div>
       ) : null}
     </div>

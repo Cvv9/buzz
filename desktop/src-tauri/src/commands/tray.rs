@@ -23,6 +23,8 @@ pub fn set_close_to_tray(
             crate::tray::remove_tray_icon(&app);
         }
     }
+    #[cfg(target_os = "macos")]
+    let _ = app;
     state.close_to_tray.store(enabled, Ordering::SeqCst);
     Ok(())
 }

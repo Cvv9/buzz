@@ -1,0 +1,21 @@
+# Browser-only release: preserve the deployed relay and its protocol version.
+# Advance this digest deliberately when the relay is upgraded.
+ARG RELAY_BASE=ghcr.io/cvv9/buzz@sha256:e4bad0c502667d56b8f66a3eebdb78f43623fcfd892cf5e640885c11f5adf5a2
+FROM node:24-bookworm-slim AS web-builder
+WORKDIR /build
+RUN corepack enable
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY patches/ patches/
+COPY web/package.json web/
+COPY admin-web/package.json admin-web/
+RUN pnpm install --frozen-lockfile --filter buzz-web
+COPY biome.json ./
+COPY web/ web/
+ENV VITE_BUZZ_RELEASES_REPOSITORY=Cvv9/buzz
+RUN pnpm -C web exec biome check . && pnpm -C web test:unit && pnpm -C web build
+
+FROM ${RELAY_BASE}
+ARG SOURCE_REVISION
+# Retain older hashed assets from the base for clients still on an older shell.
+COPY --from=web-builder /build/web/dist /srv/buzz/web
+LABEL org.opencontainers.image.revision=${SOURCE_REVISION}

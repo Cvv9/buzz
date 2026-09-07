@@ -30,15 +30,15 @@ export function EmptyMembership({
       ),
   });
   return (
-    <div className="flex min-h-[100dvh] items-center justify-center bg-[#f4f5ee] px-5 dark:bg-[#151713]">
+    <div className="flex min-h-[100dvh] items-center justify-center bg-background px-5">
       <div className="w-full max-w-md">
-        <div className="flex size-12 items-center justify-center rounded-2xl border border-black/10 bg-white p-2 dark:border-white/10 dark:bg-white/[0.06]">
+        <div className="flex size-12 items-center justify-center rounded-2xl border border-border bg-white p-2 dark:bg-white/[0.06]">
           <img alt="" className="size-full object-contain" src={varvikMark} />
         </div>
         <h1 className="mt-7 text-3xl font-semibold tracking-tight">
           Open VarVik Studios
         </h1>
-        <p className="mt-3 leading-7 text-black/55 dark:text-white/50">
+        <p className="mt-3 leading-7 text-muted-foreground">
           If this is the owner identity, create the first channel. Otherwise,
           enter the invite code supplied by an administrator.
         </p>
@@ -57,7 +57,7 @@ export function EmptyMembership({
             onChange={(event) => setFirstChannelName(event.target.value)}
           />
           <Button
-            className="h-12 w-full bg-[#d7d72e] text-[#171912] hover:bg-[#e5e54d]"
+            className="h-12 w-full bg-primary text-primary-foreground hover:bg-primary/90"
             disabled={!firstChannelName.trim() || createFirstChannel.isPending}
             type="submit"
           >
@@ -66,10 +66,10 @@ export function EmptyMembership({
               : "Create first channel"}
           </Button>
         </form>
-        <div className="my-6 flex items-center gap-3 text-xs text-black/35 dark:text-white/30">
-          <span className="h-px flex-1 bg-black/10 dark:bg-white/10" />
+        <div className="my-6 flex items-center gap-3 text-xs text-muted-foreground">
+          <span className="h-px flex-1 bg-muted" />
           or join an existing workspace
-          <span className="h-px flex-1 bg-black/10 dark:bg-white/10" />
+          <span className="h-px flex-1 bg-muted" />
         </div>
         <form
           className="space-y-3"
@@ -87,7 +87,7 @@ export function EmptyMembership({
             onChange={(event) => setCode(event.target.value)}
           />
           <Button
-            className="h-12 w-full bg-[#d7d72e] text-[#171912] hover:bg-[#e5e54d]"
+            className="h-12 w-full bg-primary text-primary-foreground hover:bg-primary/90"
             disabled={!code.trim() || claim.isPending}
             type="submit"
           >

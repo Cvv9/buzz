@@ -1,3 +1,4 @@
+import { Modal } from "@/shared/ui/modal";
 import {
   Bot,
   ChevronRight,
@@ -75,11 +76,11 @@ export function WorkspaceAgents({
       className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
       data-testid="workspace-agents"
     >
-      <header className="flex min-h-16 shrink-0 items-center gap-3 border-b border-black/8 px-4 py-3 dark:border-white/8 sm:px-6">
-        <Bot className="size-4 shrink-0 text-black/40 dark:text-white/35" />
+      <header className="flex min-h-16 shrink-0 items-center gap-3 border-b border-border px-4 py-3 sm:px-6">
+        <Bot className="size-4 shrink-0 text-muted-foreground" />
         <div className="min-w-0 flex-1">
           <h1 className="text-sm font-semibold">Agents</h1>
-          <p className="truncate text-xs text-black/40 dark:text-white/35">
+          <p className="truncate text-xs text-muted-foreground">
             Understand responsibilities, resources, and channel access.
           </p>
         </div>
@@ -93,7 +94,7 @@ export function WorkspaceAgents({
 
       {agents.length && selected ? (
         <div className="grid min-h-0 flex-1 md:grid-cols-[minmax(15rem,0.72fr)_minmax(24rem,1.28fr)]">
-          <div className="min-h-0 overflow-y-auto border-b border-black/8 p-3 dark:border-white/8 md:border-r md:border-b-0">
+          <div className="min-h-0 overflow-y-auto border-b border-border p-3 md:border-r md:border-b-0">
             <div className="space-y-1">
               {agents.map((agent) => {
                 const isSelected = agent.pubkey === selected.pubkey;
@@ -101,9 +102,7 @@ export function WorkspaceAgents({
                   <button
                     className={cn(
                       "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors",
-                      isSelected
-                        ? "bg-black/7 dark:bg-white/8"
-                        : "hover:bg-black/4 dark:hover:bg-white/5",
+                      isSelected ? "bg-muted" : "hover:bg-accent",
                     )}
                     data-testid={`agent-row-${agent.name.toLowerCase().replace(/ /g, "-")}`}
                     key={agent.pubkey}
@@ -118,7 +117,7 @@ export function WorkspaceAgents({
                       <span className="block truncate text-sm font-medium">
                         {agent.name} — {agentRoleLabel(agent)}
                       </span>
-                      <span className="block truncate text-xs text-black/40 dark:text-white/35">
+                      <span className="block truncate text-xs text-muted-foreground">
                         {accessLabel(agent)}
                       </span>
                     </span>
@@ -126,8 +125,8 @@ export function WorkspaceAgents({
                       className={cn(
                         "size-4",
                         isSelected
-                          ? "text-black/55 dark:text-white/55"
-                          : "text-black/20 dark:text-white/20",
+                          ? "text-muted-foreground"
+                          : "text-muted-foreground",
                       )}
                     />
                   </button>
@@ -168,7 +167,7 @@ export function WorkspaceAgents({
               <Users className="size-5" />
             </div>
             <h2 className="mt-4 font-semibold">No hosted agents connected</h2>
-            <p className="mt-2 text-sm leading-6 text-black/45 dark:text-white/40">
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">
               A hosted runner must connect and publish its signed profile before
               it can be managed here.
             </p>
@@ -226,7 +225,7 @@ function AgentDetails({
           <h2 className="truncate text-xl font-semibold tracking-tight">
             {agent.name} — {agentRoleLabel(agent)}
           </h2>
-          <p className="mt-1 text-xs text-black/45 dark:text-white/40">
+          <p className="mt-1 text-xs text-muted-foreground">
             {accessLabel(agent)}
             {currentRuntime
               ? ` · ${currentFamily?.name ?? currentRuntime.model} · ${effortLabel(currentRuntime.effort)}`
@@ -247,25 +246,25 @@ function AgentDetails({
 
       {agent.runtime ? <AgentRuntimeStatus agent={agent} /> : null}
       {!canManage ? (
-        <p className="mt-4 rounded-xl border border-black/8 bg-black/2 p-3 text-xs leading-5 text-black/50 dark:border-white/8 dark:bg-white/3 dark:text-white/45">
+        <p className="mt-4 rounded-xl border border-border bg-muted p-3 text-xs leading-5 text-muted-foreground">
           Only the current community owner can change hosted agents.
         </p>
       ) : null}
 
-      <section className="mt-7 border-t border-black/8 pt-5 dark:border-white/8">
-        <h3 className="text-xs font-semibold uppercase tracking-wide text-black/45 dark:text-white/40">
+      <section className="mt-7 border-t border-border pt-5">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
           What this agent does
         </h3>
-        <p className="mt-2 text-sm leading-6 text-black/70 dark:text-white/68">
+        <p className="mt-2 text-sm leading-6 text-foreground">
           {agent.about ||
             "This agent has not published a responsibility description yet."}
         </p>
       </section>
 
-      <section className="mt-6 border-t border-black/8 pt-5 dark:border-white/8">
+      <section className="mt-6 border-t border-border pt-5">
         <div className="flex items-center gap-2">
-          <Database className="size-4 text-black/40 dark:text-white/35" />
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-black/45 dark:text-white/40">
+          <Database className="size-4 text-muted-foreground" />
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Connected resources
           </h3>
         </div>
@@ -273,7 +272,7 @@ function AgentDetails({
           <div className="mt-3 flex flex-wrap gap-2">
             {agent.resources.map((resource) => (
               <span
-                className="rounded-full border border-black/8 bg-black/3 px-2.5 py-1 text-xs dark:border-white/8 dark:bg-white/5"
+                className="rounded-full border border-border bg-muted px-2.5 py-1 text-xs"
                 key={resource}
               >
                 {resource}
@@ -281,24 +280,24 @@ function AgentDetails({
             ))}
           </div>
         ) : (
-          <p className="mt-2 text-sm text-black/45 dark:text-white/40">
+          <p className="mt-2 text-sm text-muted-foreground">
             No external resources have been declared by this agent runtime.
           </p>
         )}
-        <p className="mt-3 text-xs leading-5 text-black/38 dark:text-white/35">
+        <p className="mt-3 text-xs leading-5 text-muted-foreground">
           External credentials are granted by the agent runner, never by profile
           editing.
         </p>
       </section>
 
-      <section className="mt-6 border-t border-black/8 pt-5 dark:border-white/8">
+      <section className="mt-6 border-t border-border pt-5">
         <div className="flex items-center gap-2">
-          <LockKeyhole className="size-4 text-black/40 dark:text-white/35" />
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-black/45 dark:text-white/40">
+          <LockKeyhole className="size-4 text-muted-foreground" />
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Channel access
           </h3>
         </div>
-        <p className="mt-2 text-xs leading-5 text-black/45 dark:text-white/40">
+        <p className="mt-2 text-xs leading-5 text-muted-foreground">
           Membership is shared with the channel catalog. Search by channel,
           description, or catalog section.
         </p>
@@ -311,7 +310,7 @@ function AgentDetails({
           onChange={(event) => setChannelSearch(event.target.value)}
         />
         {agent.accessTier === "personal" ? (
-          <p className="mt-3 rounded-xl border border-black/8 bg-black/2 p-3 text-xs leading-5 text-black/50 dark:border-white/8 dark:bg-white/3 dark:text-white/45">
+          <p className="mt-3 rounded-xl border border-border bg-muted p-3 text-xs leading-5 text-muted-foreground">
             Personal agents are private to their owner, so their channel access
             cannot be changed here.
           </p>
@@ -319,10 +318,10 @@ function AgentDetails({
           <div className="mt-3 space-y-4">
             {accessGroups.map((group) => (
               <section key={group.label}>
-                <h4 className="px-1 text-xs font-semibold text-black/50 dark:text-white/45">
+                <h4 className="px-1 text-xs font-semibold text-muted-foreground">
                   {group.label}
                 </h4>
-                <div className="mt-1 divide-y divide-black/6 overflow-hidden rounded-xl border border-black/8 dark:divide-white/6 dark:border-white/8">
+                <div className="mt-1 divide-y divide-black/6 overflow-hidden rounded-xl border border-border dark:divide-white/6">
                   {group.channels.map((channel) => {
                     const enabled = channel.memberPubkeys.includes(
                       agent.pubkey,
@@ -337,7 +336,7 @@ function AgentDetails({
                             #{channel.name}
                           </span>
                           {channel.about ? (
-                            <span className="mt-0.5 block truncate text-xs text-black/40 dark:text-white/35">
+                            <span className="mt-0.5 block truncate text-xs text-muted-foreground">
                               {channel.about}
                             </span>
                           ) : null}
@@ -364,7 +363,7 @@ function AgentDetails({
             ))}
           </div>
         ) : (
-          <p className="mt-3 rounded-xl border border-dashed border-black/10 p-4 text-sm text-black/45 dark:border-white/10 dark:text-white/40">
+          <p className="mt-3 rounded-xl border border-dashed border-border p-4 text-sm text-muted-foreground">
             No channels match “{channelSearch.trim()}”.
           </p>
         )}
@@ -445,7 +444,7 @@ function AgentEditForm({
       <div className="flex items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold">Edit {agent.name}</h2>
-          <p className="mt-1 text-xs text-black/45 dark:text-white/40">
+          <p className="mt-1 text-xs text-muted-foreground">
             Changes are signed and shared across web and desktop.
           </p>
         </div>
@@ -664,7 +663,7 @@ function AgentRuntimeStatus({ agent }: { agent: WorkspaceProfile }) {
         "mt-4 rounded-xl border p-3 text-xs leading-5",
         runtime.state === "failed"
           ? "border-red-500/25 bg-red-500/8 text-red-700 dark:text-red-300"
-          : "border-black/8 bg-black/2 text-black/55 dark:border-white/8 dark:bg-white/3 dark:text-white/50",
+          : "border-border bg-muted text-muted-foreground",
       )}
       data-testid="agent-runtime-status"
     >
@@ -678,16 +677,8 @@ function AgentRuntimeStatus({ agent }: { agent: WorkspaceProfile }) {
 
 function ProvisioningDialog({ onClose }: { onClose: () => void }) {
   return (
-    <div
-      className="absolute inset-0 z-50 flex items-center justify-center bg-black/45 p-4"
-      role="presentation"
-    >
-      <div
-        aria-labelledby="new-agent-title"
-        aria-modal="true"
-        className="w-full max-w-md rounded-2xl border border-black/10 bg-background p-6 shadow-2xl dark:border-white/10"
-        role="dialog"
-      >
+    <Modal label="Connect a new agent" onClose={onClose}>
+      <div className="p-6">
         <div className="flex items-start gap-3">
           <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-[#d7d72e]/25 text-[#727300]">
             <Bot className="size-5" />
@@ -696,14 +687,14 @@ function ProvisioningDialog({ onClose }: { onClose: () => void }) {
             <h2 className="font-semibold" id="new-agent-title">
               Connect a new agent
             </h2>
-            <p className="mt-2 text-sm leading-6 text-black/55 dark:text-white/50">
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">
               Agent runtimes hold credentials and tools, so they must first be
               provisioned by the hosted runner. Once its signed profile appears
               here, you can edit its identity and assign channel access.
             </p>
           </div>
         </div>
-        <div className="mt-5 rounded-xl border border-black/8 bg-black/3 p-4 text-xs leading-5 text-black/55 dark:border-white/8 dark:bg-white/4 dark:text-white/50">
+        <div className="mt-5 rounded-xl border border-border bg-muted p-4 text-xs leading-5 text-muted-foreground">
           The Opportunity Scout, Bid &amp; Partnerships Desk, and GTM &amp;
           Customer Discovery runners are included in the deployment
           configuration.
@@ -712,6 +703,6 @@ function ProvisioningDialog({ onClose }: { onClose: () => void }) {
           <Button onClick={onClose}>Got it</Button>
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }

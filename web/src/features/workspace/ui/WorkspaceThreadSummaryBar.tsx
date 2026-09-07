@@ -25,7 +25,7 @@ export function WorkspaceThreadSummaryBar({
 }: WorkspaceThreadSummaryBarProps) {
   return (
     <button
-      className="group/thread mb-2 ml-10 flex w-fit items-center gap-2 rounded-lg py-1 pl-1 pr-2 text-left transition-colors hover:bg-black/5 sm:ml-14 dark:hover:bg-white/5"
+      className="group/thread mb-2 ml-10 flex w-fit items-center gap-2 rounded-lg py-1 pl-1 pr-2 text-left transition-colors hover:bg-accent sm:ml-14"
       data-testid={`thread-summary-${messageId}`}
       type="button"
       onClick={onOpen}
@@ -50,11 +50,11 @@ export function WorkspaceThreadSummaryBar({
         {replyCount} {replyCount === 1 ? "reply" : "replies"}
       </span>
       {lastReplyAt !== null ? (
-        <span className="text-xs text-black/40 dark:text-white/35">
+        <span className="text-xs text-muted-foreground">
           {relativeTime(lastReplyAt)}
         </span>
       ) : null}
-      <span className="hidden text-xs text-black/40 group-hover/thread:inline dark:text-white/35">
+      <span className="hidden text-xs text-muted-foreground group-hover/thread:inline">
         View thread
       </span>
     </button>

@@ -5,6 +5,8 @@
  * page-lifetime identity as the fallback for read-only queries on open relays.
  */
 
+import { getUnlockedBrowserIdentity } from "@/shared/lib/browser-identity";
+import { RelaySendQueue } from "@/shared/lib/relay-send-queue";
 import { makeAuthEvent } from "nostr-tools/nip42";
 import {
   type SignedNostrEvent,
@@ -70,14 +72,30 @@ type SharedOkResult = {
 
 type SharedConnection = {
   url: string;
+  viewer: string | null;
   ws: WebSocket;
   ready: Promise<void>;
   subscriptions: Map<string, SharedSubscription>;
   okWaiters: Map<string, (result: SharedOkResult) => void>;
+  sendQueue: RelaySendQueue;
+  requests: Map<string, { filter: NostrFilter; retries: number }>;
 };
 
 let activeSharedConnection: SharedConnection | null = null;
 let sharedUnavailableUntil = 0;
+
+// A socket authenticated as the previous account must not survive sign-out.
+if (typeof window !== "undefined") {
+  window.addEventListener("buzz-browser-identity-changed", () => {
+    const viewer = getUnlockedBrowserIdentity()?.pubkey ?? null;
+    if (activeSharedConnection && activeSharedConnection.viewer !== viewer) {
+      const previous = activeSharedConnection;
+      activeSharedConnection = null;
+      previous.ws.close();
+    }
+    sharedUnavailableUntil = 0;
+  });
+}
 
 function createSharedConnection(wsUrl: string): SharedConnection {
   const ws = new WebSocket(wsUrl);
@@ -92,10 +110,13 @@ function createSharedConnection(wsUrl: string): SharedConnection {
 
   const connection: SharedConnection = {
     url: wsUrl,
+    viewer: getUnlockedBrowserIdentity()?.pubkey ?? null,
     ws,
     ready,
     subscriptions: new Map(),
     okWaiters: new Map(),
+    sendQueue: new RelaySendQueue(),
+    requests: new Map(),
   };
 
   let readySettled = false;
@@ -106,15 +127,27 @@ function createSharedConnection(wsUrl: string): SharedConnection {
     if (readySettled) return;
     readySettled = true;
     if (authTimer !== null) window.clearTimeout(authTimer);
+    window.clearTimeout(connectionTimer);
     if (error) {
-      sharedUnavailableUntil = Date.now() + SHARED_RETRY_COOLDOWN_MS;
+      if (
+        connection.viewer === (getUnlockedBrowserIdentity()?.pubkey ?? null)
+      ) {
+        sharedUnavailableUntil = Date.now() + SHARED_RETRY_COOLDOWN_MS;
+      }
       readyReject(error);
     } else {
       readyResolve();
     }
   };
 
+  const connectionTimer = window.setTimeout(() => {
+    settleReady(new Error("Connecting to the relay timed out."));
+    ws.close();
+  }, QUERY_TIMEOUT_MS);
+
   const dropConnection = () => {
+    connection.sendQueue.close();
+    connection.requests.clear();
     settleReady(new Error("The relay connection closed."));
     for (const subscription of connection.subscriptions.values()) {
       subscription.onDisconnect();
@@ -146,6 +179,7 @@ function createSharedConnection(wsUrl: string): SharedConnection {
         const signed = await signNostrEvent(makeAuthEvent(wsUrl, data[1]), {
           requireNip07: true,
         });
+        if (ws.readyState !== WebSocket.OPEN) return;
         authEventId = signed.id;
         ws.send(JSON.stringify(["AUTH", signed]));
       } catch (error) {
@@ -189,6 +223,20 @@ function createSharedConnection(wsUrl: string): SharedConnection {
     } else if (type === "EOSE" && typeof data[1] === "string") {
       connection.subscriptions.get(data[1])?.onEose();
     } else if (type === "CLOSED" && typeof data[1] === "string") {
+      const request = connection.requests.get(data[1]);
+      const retry =
+        typeof data[2] === "string"
+          ? /^rate-limited:.*retry in (\d+)s/.exec(data[2])
+          : null;
+      if (retry && request && request.retries < 2) {
+        request.retries += 1;
+        connection.sendQueue.pause(
+          Math.max(1_050, Number(retry[1]) * 1_000 + 100),
+        );
+        sendSharedRequest(connection, data[1], request.filter);
+        return;
+      }
+      connection.requests.delete(data[1]);
       const subscription = connection.subscriptions.get(data[1]);
       connection.subscriptions.delete(data[1]);
       subscription?.onClosed(
@@ -202,6 +250,25 @@ function createSharedConnection(wsUrl: string): SharedConnection {
   return connection;
 }
 
+function sendSharedRequest(
+  connection: SharedConnection,
+  subId: string,
+  filter: NostrFilter,
+) {
+  if (!connection.requests.has(subId)) {
+    connection.requests.set(subId, { filter, retries: 0 });
+  }
+  connection.sendQueue.enqueue(() => {
+    if (!connection.subscriptions.has(subId)) {
+      connection.requests.delete(subId);
+      return false;
+    }
+    if (connection.ws.readyState === WebSocket.OPEN) {
+      connection.ws.send(JSON.stringify(["REQ", subId, filter]));
+    }
+  }, subId.startsWith("q-"));
+}
+
 async function acquireSharedConnection(
   wsUrl: string,
 ): Promise<SharedConnection> {
@@ -212,9 +279,11 @@ async function acquireSharedConnection(
   if (
     !connection ||
     connection.url !== wsUrl ||
+    connection.viewer !== (getUnlockedBrowserIdentity()?.pubkey ?? null) ||
     (connection.ws.readyState !== WebSocket.OPEN &&
       connection.ws.readyState !== WebSocket.CONNECTING)
   ) {
+    connection?.ws.close();
     connection = createSharedConnection(wsUrl);
     activeSharedConnection = connection;
   }
@@ -243,6 +312,7 @@ function runSharedQuery(
       settled = true;
       window.clearTimeout(timeout);
       connection.subscriptions.delete(subId);
+      connection.requests.delete(subId);
       if (outcome.kind === "error") reject(outcome.error);
       else resolve({ events, connectionLost: outcome.kind === "disconnect" });
     };
@@ -274,7 +344,7 @@ function runSharedQuery(
       onClosed: (reason) => finish({ kind: "error", error: new Error(reason) }),
       onDisconnect: () => finish({ kind: "disconnect" }),
     });
-    connection.ws.send(JSON.stringify(["REQ", subId, filter]));
+    sendSharedRequest(connection, subId, filter);
   });
 }
 
@@ -287,17 +357,37 @@ export async function queryEvents(
   wsUrl: string,
   filter: NostrFilter,
 ): Promise<NostrEvent[]> {
+  const viewer = getUnlockedBrowserIdentity()?.pubkey ?? null;
+  const checkViewer = () => {
+    if (viewer !== (getUnlockedBrowserIdentity()?.pubkey ?? null)) {
+      throw new Error(
+        "The signed-in account changed. Retry from the current account.",
+      );
+    }
+  };
+  const fallback = async () => {
+    checkViewer();
+    const events = await queryEventsWithDedicatedSocket(wsUrl, filter);
+    checkViewer();
+    return events;
+  };
   let connection: SharedConnection;
   try {
     connection = await acquireSharedConnection(wsUrl);
   } catch {
-    return queryEventsWithDedicatedSocket(wsUrl, filter);
+    return fallback();
   }
+  checkViewer();
   const result = await runSharedQuery(connection, filter);
-  if (result.connectionLost) {
-    return queryEventsWithDedicatedSocket(wsUrl, filter);
-  }
-  return result.events;
+  checkViewer();
+  if (!result.connectionLost) return result.events;
+  const restored = await acquireSharedConnection(wsUrl);
+  checkViewer();
+  const retried = await runSharedQuery(restored, filter);
+  checkViewer();
+  if (retried.connectionLost)
+    throw new Error("The relay disconnected while loading messages.");
+  return retried.events;
 }
 
 /**
@@ -437,8 +527,10 @@ function queryEventsWithDedicatedSocket(
     ws.addEventListener("close", () => {
       if (!settled) {
         settled = true;
-        clearTimeout(timeout);
-        resolve(events);
+        cleanup();
+        reject(
+          new Error("The relay disconnected before messages finished loading."),
+        );
       }
     });
   });
@@ -462,13 +554,23 @@ export async function publishEventWithReceipt(
   wsUrl: string,
   template: Parameters<typeof signNostrEvent>[0],
 ): Promise<PublishedEvent> {
+  const viewer = getUnlockedBrowserIdentity()?.pubkey ?? null;
+  const checkViewer = () => {
+    if (viewer !== (getUnlockedBrowserIdentity()?.pubkey ?? null)) {
+      throw new Error(
+        "The signed-in account changed before the message was sent.",
+      );
+    }
+  };
   const event = await signNostrEvent(template, { requireNip07: true });
+  checkViewer();
   let connection: SharedConnection | null = null;
   try {
     connection = await acquireSharedConnection(wsUrl);
   } catch {
     connection = null;
   }
+  checkViewer();
   if (connection) {
     const shared = connection;
     const result = await new Promise<SharedOkResult>((resolve) => {
@@ -485,7 +587,14 @@ export async function publishEventWithReceipt(
         resolve(outcome);
       });
       try {
-        shared.ws.send(JSON.stringify(["EVENT", event]));
+        shared.sendQueue.enqueue(() => {
+          if (
+            shared.okWaiters.has(event.id) &&
+            shared.ws.readyState === WebSocket.OPEN
+          ) {
+            shared.ws.send(JSON.stringify(["EVENT", event]));
+          }
+        }, true);
       } catch {
         window.clearTimeout(timeout);
         shared.okWaiters.delete(event.id);
@@ -500,6 +609,7 @@ export async function publishEventWithReceipt(
     }
     // Connection dropped before the acknowledgement — retry below.
   }
+  checkViewer();
   return publishSignedEventWithDedicatedSocket(wsUrl, event);
 }
 
@@ -591,6 +701,7 @@ function publishSignedEventWithDedicatedSocket(
   });
 }
 
+/** Subscribe over the shared transport, retaining live updates across reconnects. */
 export function subscribeEvents(
   wsUrl: string,
   filter: NostrFilter,
@@ -600,126 +711,74 @@ export function subscribeEvents(
   let stopped = false;
   let reconnectAttempt = 0;
   let reconnectTimer: number | null = null;
-  let ws: WebSocket | null = null;
-  let activeSubId: string | null = null;
+  let connection: SharedConnection | null = null;
+  const subId = `live-${crypto.randomUUID()}`;
+  const viewer = getUnlockedBrowserIdentity()?.pubkey ?? null;
 
-  const close = () => {
-    if (stopped) return;
-    stopped = true;
-    if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
-    if (ws?.readyState === WebSocket.OPEN && activeSubId) {
-      ws.send(JSON.stringify(["CLOSE", activeSubId]));
+  const detach = () => {
+    if (!connection) return;
+    connection.subscriptions.delete(subId);
+    connection.requests.delete(subId);
+    if (connection.ws.readyState === WebSocket.OPEN) {
+      try {
+        connection.ws.send(JSON.stringify(["CLOSE", subId]));
+      } catch {
+        /* Already disconnected. */
+      }
     }
-    ws?.close();
+    connection = null;
   };
-
-  const scheduleReconnect = (error?: Error) => {
+  const scheduleReconnect = (error: Error) => {
     if (stopped || reconnectTimer !== null) return;
+    detach();
     onStatus?.("closed", error);
     const delay = Math.min(1_000 * 2 ** reconnectAttempt, 15_000);
     reconnectAttempt += 1;
     reconnectTimer = window.setTimeout(() => {
       reconnectTimer = null;
-      connect();
+      void connect();
     }, delay);
   };
-
-  const connect = () => {
-    if (stopped) return;
-    const socket = new WebSocket(wsUrl);
-    const subId = `live-${crypto.randomUUID()}`;
-    let authEventId: string | null = null;
-    let reqSent = false;
-    let terminalClose = false;
-    ws = socket;
-    activeSubId = subId;
+  const connect = async () => {
+    if (stopped || viewer !== (getUnlockedBrowserIdentity()?.pubkey ?? null))
+      return;
     onStatus?.("connecting");
-
-    const sendReq = () => {
-      if (
-        stopped ||
-        reqSent ||
-        socket.readyState !== WebSocket.OPEN ||
-        ws !== socket
-      ) {
+    try {
+      const shared = await acquireSharedConnection(wsUrl);
+      if (stopped || viewer !== (getUnlockedBrowserIdentity()?.pubkey ?? null))
         return;
-      }
-      reqSent = true;
-      socket.send(JSON.stringify(["REQ", subId, filter]));
-    };
-
-    socket.addEventListener("message", async (message) => {
-      const data = parseEnvelope(message.data);
-      if (!data || stopped || ws !== socket) return;
-      if (data[0] === "AUTH" && typeof data[1] === "string") {
-        try {
-          const auth = await signNostrEvent(makeAuthEvent(wsUrl, data[1]), {
-            requireNip07: true,
-          });
-          authEventId = auth.id;
-          socket.send(JSON.stringify(["AUTH", auth]));
-        } catch (error) {
-          terminalClose = true;
-          onStatus?.(
-            "closed",
-            error instanceof Error
-              ? error
-              : new Error("Authentication failed."),
-          );
-          socket.close();
-        }
-        return;
-      }
-      if (data[0] === "OK" && data[1] === authEventId) {
-        if (data[2] === true) sendReq();
-        else {
-          terminalClose = true;
-          onStatus?.(
-            "closed",
-            new Error(
-              typeof data[3] === "string"
-                ? data[3]
-                : "Relay authentication failed.",
-            ),
-          );
-          socket.close();
-        }
-        return;
-      }
-      if (data[0] === "EVENT" && data[1] === subId && data[2]) {
-        onEvent(data[2] as NostrEvent);
-      } else if (data[0] === "EOSE" && data[1] === subId) {
-        reconnectAttempt = 0;
-        onStatus?.("live");
-      } else if (data[0] === "CLOSED" && data[1] === subId) {
-        terminalClose = true;
-        onStatus?.(
-          "closed",
-          new Error(
-            typeof data[2] === "string"
-              ? data[2]
-              : "The relay closed the subscription.",
+      connection = shared;
+      shared.subscriptions.set(subId, {
+        onEvent: (event) => {
+          if (!stopped) onEvent(event);
+        },
+        onEose: () => {
+          reconnectAttempt = 0;
+          if (!stopped) onStatus?.("live");
+        },
+        onClosed: (reason) => {
+          // Permission/filter rejection is terminal; do not retry denied reads.
+          detach();
+          if (!stopped) onStatus?.("closed", new Error(reason));
+        },
+        onDisconnect: () =>
+          scheduleReconnect(
+            new Error("The realtime connection was interrupted."),
           ),
-        );
-        socket.close();
-      }
-    });
-    socket.addEventListener("error", () => {
-      if (!stopped && ws === socket) socket.close();
-    });
-    socket.addEventListener("close", () => {
-      if (ws === socket) {
-        ws = null;
-        activeSubId = null;
-      }
-      if (!stopped && !terminalClose) {
-        scheduleReconnect(
-          new Error("The realtime connection was interrupted."),
-        );
-      }
-    });
+      });
+      sendSharedRequest(shared, subId, filter);
+    } catch (cause) {
+      scheduleReconnect(
+        cause instanceof Error
+          ? cause
+          : new Error("Could not connect to the relay."),
+      );
+    }
   };
-
-  connect();
-  return close;
+  void connect();
+  return () => {
+    stopped = true;
+    if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+    detach();
+  };
 }

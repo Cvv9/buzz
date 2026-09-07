@@ -586,3 +586,13 @@ The following seams remain intentionally visible here until removed:
 Do not hide these gaps with surface-specific fallbacks. Either use the
 canonical helper named above or update this map as part of consolidating the
 source of truth.
+
+### Browser profile refresh batching
+
+`useWorkspaceProfileSync` preserves the profile/status subscription boundaries
+while coalescing incoming heads for 100 ms before invalidating their existing
+React Query caches. Initial roster replay therefore triggers a bounded refresh
+instead of one refresh per author. Cleanup cancels the timer and subscriptions;
+no in-flight query result is shared across invalidations. Workspace startup
+waits for the initial roster/message author set before mounting this sync.
+The web profile and hosted-agent E2E tests cover live projection after updates.

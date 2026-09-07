@@ -167,11 +167,11 @@ export function WorkspaceMessageRow({
               AGENT
             </span>
           ) : null}
-          <time className="text-[0.6875rem] text-black/35 dark:text-white/30">
+          <time className="text-[0.6875rem] text-muted-foreground">
             {timestamp}
           </time>
           {message.edited ? (
-            <span className="text-[0.6875rem] text-black/30 dark:text-white/25">
+            <span className="text-[0.6875rem] text-muted-foreground">
               edited
             </span>
           ) : null}

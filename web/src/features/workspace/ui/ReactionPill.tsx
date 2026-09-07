@@ -43,7 +43,7 @@ export function ReactionPill({
             "rounded-lg border px-2 py-0.5 text-xs transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#b6b71e]/70",
             ownReaction
               ? "border-[#b6b71e] bg-[#d7d72e]/20 hover:bg-[#d7d72e]/30"
-              : "border-black/10 bg-black/[0.025] hover:bg-black/5 dark:border-white/10 dark:bg-white/[0.03] dark:hover:bg-white/[0.06]",
+              : "border-border bg-black/[0.025] hover:bg-accent dark:bg-white/[0.03] dark:hover:bg-white/[0.06]",
           )}
           type="button"
           onClick={() => onToggle(reaction.emoji)}

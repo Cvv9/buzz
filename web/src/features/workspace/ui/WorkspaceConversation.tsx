@@ -64,6 +64,8 @@ type WorkspaceConversationProps = {
   hideDirectMessagePending: boolean;
   members: WorkspaceProfile[];
   messagesPending: boolean;
+  messagesError: boolean;
+  onRetryMessages: () => void;
   mutedChannelIds: Set<string>;
   onlineMemberCount: number;
   ownPubkey: string;
@@ -113,6 +115,8 @@ export function WorkspaceConversation({
   hideDirectMessagePending,
   members,
   messagesPending,
+  messagesError,
+  onRetryMessages,
   mutedChannelIds,
   onlineMemberCount,
   ownPubkey,
@@ -196,10 +200,10 @@ export function WorkspaceConversation({
         className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
         data-testid="workspace-chat-pane"
       >
-        <header className="flex h-16 shrink-0 items-center gap-3 border-b border-black/8 px-4 dark:border-white/8 sm:px-6">
+        <header className="flex h-16 shrink-0 items-center gap-3 border-b border-border px-4 sm:px-6">
           <button
             aria-label="Open navigation"
-            className="rounded-lg p-2 hover:bg-black/5 md:hidden dark:hover:bg-white/5"
+            className="rounded-lg p-2 hover:bg-accent md:hidden"
             type="button"
             onClick={onOpenNavigation}
           >
@@ -209,16 +213,16 @@ export function WorkspaceConversation({
             <>
               <div className="flex min-w-0 flex-1 items-center gap-2">
                 {activeChannel.visibility === "private" ? (
-                  <Lock className="size-4 shrink-0 text-black/40 dark:text-white/35" />
+                  <Lock className="size-4 shrink-0 text-muted-foreground" />
                 ) : (
-                  <Hash className="size-4 shrink-0 text-black/40 dark:text-white/35" />
+                  <Hash className="size-4 shrink-0 text-muted-foreground" />
                 )}
                 <div className="min-w-0">
                   <h1 className="truncate text-sm font-semibold">
                     {activeChannel.name}
                   </h1>
                   {activeChannel.topic || activeChannel.about ? (
-                    <p className="truncate text-xs text-black/40 dark:text-white/35">
+                    <p className="truncate text-xs text-muted-foreground">
                       {activeChannel.topic || activeChannel.about}
                     </p>
                   ) : null}
@@ -226,7 +230,7 @@ export function WorkspaceConversation({
                 {activeChannel.type !== "dm" ? (
                   <button
                     aria-label={`${starredChannelIds.has(activeChannel.id) ? "Remove" : "Add"} ${activeChannel.name} ${starredChannelIds.has(activeChannel.id) ? "from" : "to"} favorites`}
-                    className="rounded-lg p-2 text-black/35 hover:bg-black/5 hover:text-black/65 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a5a500] dark:text-white/30 dark:hover:bg-white/5 dark:hover:text-white/65"
+                    className="rounded-lg p-2 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a5a500] dark:hover:text-white/65"
                     type="button"
                     onClick={() => onToggleStar(activeChannel.id)}
                   >
@@ -238,7 +242,7 @@ export function WorkspaceConversation({
                 {activeChannel.type !== "dm" ? (
                   <button
                     aria-label={`${mutedChannelIds.has(activeChannel.id) ? "Unmute" : "Mute"} ${activeChannel.name}`}
-                    className={`rounded-lg p-2 text-black/35 hover:bg-black/5 hover:text-black/65 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a5a500] dark:text-white/30 dark:hover:bg-white/5 dark:hover:text-white/65 ${mutedChannelIds.has(activeChannel.id) ? "text-[#8b8c00] dark:text-[#e4e55e]" : ""}`}
+                    className={`rounded-lg p-2 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a5a500] dark:hover:text-white/65 ${mutedChannelIds.has(activeChannel.id) ? "text-[#8b8c00] dark:text-[#e4e55e]" : ""}`}
                     type="button"
                     onClick={() => onToggleMute(activeChannel.id)}
                   >
@@ -255,7 +259,7 @@ export function WorkspaceConversation({
                   <>
                     <button
                       aria-label={`Add people to ${activeChannel.name}`}
-                      className="rounded-lg p-2 text-black/35 hover:bg-black/5 hover:text-black/65 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a5a500] dark:text-white/30 dark:hover:bg-white/5 dark:hover:text-white/65"
+                      className="rounded-lg p-2 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a5a500] dark:hover:text-white/65"
                       type="button"
                       onClick={onAddDmMembers}
                     >
@@ -263,7 +267,7 @@ export function WorkspaceConversation({
                     </button>
                     <button
                       aria-label={`Hide ${activeChannel.name}`}
-                      className="rounded-lg p-2 text-black/35 hover:bg-black/5 hover:text-black/65 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a5a500] dark:text-white/30 dark:hover:bg-white/5 dark:hover:text-white/65"
+                      className="rounded-lg p-2 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a5a500] dark:hover:text-white/65"
                       disabled={hideDirectMessagePending}
                       type="button"
                       onClick={onHideDirectMessage}
@@ -275,7 +279,7 @@ export function WorkspaceConversation({
                 {activeChannel.type !== "dm" ? (
                   <button
                     aria-label={`Manage ${activeChannel.name}`}
-                    className="rounded-lg p-2 text-black/35 hover:bg-black/5 hover:text-black/65 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a5a500] dark:text-white/30 dark:hover:bg-white/5 dark:hover:text-white/65"
+                    className="rounded-lg p-2 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a5a500] dark:hover:text-white/65"
                     type="button"
                     onClick={onSetChannelSettingsOpen}
                   >
@@ -283,10 +287,10 @@ export function WorkspaceConversation({
                   </button>
                 ) : null}
               </div>
-              <div className="flex items-center gap-1 text-black/40 dark:text-white/35">
+              <div className="flex items-center gap-1 text-muted-foreground">
                 <button
                   aria-label="View members"
-                  className="hidden items-center gap-1 rounded-lg px-2 py-1 text-xs hover:bg-black/5 hover:text-black/65 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a5a500] sm:flex dark:hover:bg-white/5 dark:hover:text-white/65"
+                  className="hidden items-center gap-1 rounded-lg px-2 py-1 text-xs hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a5a500] sm:flex dark:hover:text-white/65"
                   type="button"
                   title={
                     onlineMemberCount
@@ -317,14 +321,31 @@ export function WorkspaceConversation({
           data-testid="workspace-timeline"
           ref={timelineRef}
         >
+          {messagesError ? (
+            <div
+              className="m-4 space-y-2 rounded-lg border border-border p-4 text-sm"
+              role="alert"
+            >
+              <p>
+                Could not load messages. Check your connection and try again.
+              </p>
+              <button
+                className="underline underline-offset-4"
+                type="button"
+                onClick={onRetryMessages}
+              >
+                Retry messages
+              </button>
+            </div>
+          ) : null}
           {messagesPending ? (
             <div className="space-y-4 px-6 py-4">
               {[0, 1, 2, 3].map((item) => (
                 <div className="flex animate-pulse gap-3" key={item}>
-                  <div className="size-9 rounded-xl bg-black/8 dark:bg-white/8" />
+                  <div className="size-9 rounded-xl bg-muted" />
                   <div className="flex-1 space-y-2">
-                    <div className="h-3 w-32 rounded bg-black/8 dark:bg-white/8" />
-                    <div className="h-3 w-2/3 rounded bg-black/6 dark:bg-white/6" />
+                    <div className="h-3 w-32 rounded bg-muted" />
+                    <div className="h-3 w-2/3 rounded bg-muted" />
                   </div>
                 </div>
               ))}
@@ -372,7 +393,7 @@ export function WorkspaceConversation({
                 </div>
               );
             })
-          ) : (
+          ) : messagesError ? null : (
             <div className="flex h-full min-h-72 items-center justify-center px-6 text-center">
               <div className="max-w-sm">
                 <div className="mx-auto flex size-12 items-center justify-center rounded-2xl bg-[#d7d72e]/25 text-[#7d7e00]">
@@ -381,7 +402,7 @@ export function WorkspaceConversation({
                 <h2 className="mt-4 font-semibold">
                   Start the conversation in #{activeChannel?.name}
                 </h2>
-                <p className="mt-2 text-sm leading-6 text-black/45 dark:text-white/40">
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
                   Share an update or mention a hosted agent to give it work.
                 </p>
               </div>
@@ -418,10 +439,10 @@ export function WorkspaceConversation({
 
       {threadRoot ? (
         <aside className="fixed inset-0 z-40 flex flex-col bg-[#f8f9f4] dark:bg-[#171916] md:static md:w-[24rem] md:border-l md:border-black/8 md:dark:border-white/8">
-          <header className="flex h-16 shrink-0 items-center gap-3 border-b border-black/8 px-4 dark:border-white/8">
+          <header className="flex h-16 shrink-0 items-center gap-3 border-b border-border px-4">
             <button
               aria-label="Close thread"
-              className="rounded-lg p-2 hover:bg-black/5 dark:hover:bg-white/5"
+              className="rounded-lg p-2 hover:bg-accent"
               type="button"
               onClick={() => onSetThreadRoot(null)}
             >
@@ -430,7 +451,7 @@ export function WorkspaceConversation({
             </button>
             <div>
               <h2 className="text-sm font-semibold">Thread</h2>
-              <p className="text-xs text-black/40 dark:text-white/35">
+              <p className="text-xs text-muted-foreground">
                 #{activeChannel?.name}
               </p>
             </div>

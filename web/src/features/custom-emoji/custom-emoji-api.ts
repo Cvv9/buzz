@@ -130,9 +130,20 @@ export function useCustomEmojiPalette(memberPubkeys: readonly string[]) {
   React.useEffect(() => {
     const members = membersKey ? membersKey.split(",") : [];
     if (members.length === 0) return;
-    return subscribeToCustomEmoji(members, () => {
-      void queryClient.invalidateQueries({ queryKey: key });
+    // Both list/set subscriptions become live together. Coalesce their replay
+    // and reconnect notifications without skipping recovery refreshes.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const stop = subscribeToCustomEmoji(members, () => {
+      if (timer !== undefined) return;
+      timer = setTimeout(() => {
+        timer = undefined;
+        void queryClient.invalidateQueries({ queryKey: key });
+      }, 100);
     });
+    return () => {
+      clearTimeout(timer);
+      stop();
+    };
   }, [key, membersKey, queryClient]);
   return query;
 }

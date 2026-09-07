@@ -1,3 +1,4 @@
+import { useMobileNavigation } from "@/shared/ui/use-mobile-navigation";
 import {
   Bell,
   Bot,
@@ -94,7 +95,7 @@ export function ProfileAvatar({
   return (
     <div
       className={cn(
-        "relative flex shrink-0 items-center justify-center overflow-hidden rounded-xl bg-[#d7d72e]/18 font-semibold text-[#969600]",
+        "relative flex shrink-0 items-center justify-center overflow-hidden rounded-xl bg-accent font-semibold text-accent-foreground",
         size === "sm" ? "size-7 text-[0.6875rem]" : "size-9 text-xs",
       )}
     >
@@ -226,6 +227,8 @@ export function WorkspaceSidebar({
     }));
   };
 
+  const navigation = useMobileNavigation(open, onClose);
+
   const selectChannel = (channelId: string) => {
     onSelectChannel(channelId);
     onClose();
@@ -242,6 +245,9 @@ export function WorkspaceSidebar({
         />
       ) : null}
       <aside
+        ref={navigation.ref}
+        inert={navigation.inert}
+        aria-label="Workspace navigation"
         data-testid="workspace-sidebar"
         className={cn(
           "fixed inset-y-0 left-0 z-40 flex h-dvh min-h-0 w-[17rem] flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-transform md:static md:h-full md:translate-x-0",
@@ -281,7 +287,7 @@ export function WorkspaceSidebar({
           <div className="mb-4 space-y-0.5">
             <Link
               aria-label="Search workspace"
-              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-sidebar-foreground/70 transition-colors hover:bg-sidebar-accent"
+              className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-sm text-sidebar-foreground transition-colors hover:bg-sidebar-accent"
               to="/search"
               onClick={onClose}
             >
@@ -298,7 +304,7 @@ export function WorkspaceSidebar({
                 "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
                 selectedView === "inbox"
                   ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
-                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent",
+                  : "text-sidebar-foreground hover:bg-sidebar-accent",
               )}
               data-testid="workspace-inbox-button"
               type="button"
@@ -325,7 +331,7 @@ export function WorkspaceSidebar({
                 "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm transition-colors",
                 selectedView === "alerts"
                   ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
-                  : "text-sidebar-foreground/70 hover:bg-sidebar-accent",
+                  : "text-sidebar-foreground hover:bg-sidebar-accent",
               )}
               data-testid="workspace-alerts-button"
               type="button"
@@ -438,7 +444,7 @@ export function WorkspaceSidebar({
               <div className="space-y-0.5">
                 {hiddenDirectMessages.map((channel) => (
                   <button
-                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-sidebar-foreground/70 hover:bg-sidebar-accent"
+                    className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm text-sidebar-foreground hover:bg-sidebar-accent"
                     key={channel.id}
                     type="button"
                     onClick={() => onReopenDirectMessage(channel)}
@@ -457,7 +463,7 @@ export function WorkspaceSidebar({
           ) : null}
 
           <section>
-            <div className="mb-2 flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs font-semibold text-black/45 hover:bg-black/4 hover:text-black/65 dark:text-white/40 dark:hover:bg-white/5 dark:hover:text-white/60">
+            <div className="mb-2 flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs font-semibold text-muted-foreground hover:bg-accent hover:text-foreground dark:hover:text-white/60">
               <button
                 aria-controls="hosted-agents-content"
                 aria-expanded={!collapsedSections.hostedAgents}
@@ -486,7 +492,7 @@ export function WorkspaceSidebar({
                 onClick={onOpenAgents}
               >
                 <span className="min-w-0 flex-1 truncate">AI agents</span>
-                <span className="text-[0.6875rem] font-normal tabular-nums text-black/35 dark:text-white/30">
+                <span className="text-[0.6875rem] font-normal tabular-nums text-muted-foreground">
                   {agents.length}
                 </span>
               </button>
@@ -529,7 +535,7 @@ export function WorkspaceSidebar({
                 ) : null}
               </div>
             ) : !collapsedSections.hostedAgents && !agents.length ? (
-              <p className="px-2 text-xs leading-5 text-black/40 dark:text-white/35">
+              <p className="px-2 text-xs leading-5 text-muted-foreground">
                 Agents appear here after the hosted runner connects.
               </p>
             ) : null}
@@ -538,7 +544,7 @@ export function WorkspaceSidebar({
 
         <footer className="border-t border-sidebar-border p-3">
           <button
-            className="mb-1 flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left text-sm text-sidebar-foreground/70 hover:bg-sidebar-accent"
+            className="mb-1 flex w-full items-center gap-3 rounded-xl px-2 py-2 text-left text-sm text-sidebar-foreground hover:bg-sidebar-accent"
             type="button"
             onClick={onOpenGuide}
           >
@@ -599,7 +605,7 @@ function AgentGroup({
       <button
         aria-controls={contentId}
         aria-expanded={!collapsed}
-        className="mb-1 flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-[0.6875rem] font-semibold uppercase tracking-[0.08em] text-black/35 hover:bg-black/4 hover:text-black/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a5a500] dark:text-white/30 dark:hover:bg-white/5 dark:hover:text-white/55"
+        className="mb-1 flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-[0.6875rem] font-semibold uppercase tracking-[0.08em] text-muted-foreground hover:bg-accent hover:text-black/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a5a500] dark:hover:text-white/55"
         data-testid={`agent-group-${id}-toggle`}
         type="button"
         onClick={onToggle}
@@ -629,7 +635,7 @@ function AgentGroup({
                 <p className="truncate text-sm">
                   {agent.name} — {agentRoleLabel(agent)}
                 </p>
-                <p className="text-[0.6875rem] text-emerald-700 dark:text-emerald-400">
+                <p className="text-[0.6875rem] text-emerald-800 dark:text-emerald-400">
                   {agent.accessTier === "personal"
                     ? "Personal assistant"
                     : agent.accessTier === "admin"
@@ -641,7 +647,7 @@ function AgentGroup({
                 activeChannelMemberPubkeys.includes(agent.pubkey) ? (
                   <span
                     aria-label={`${agent.name} is already in the current channel`}
-                    className="rounded-md p-1.5 text-emerald-700 dark:text-emerald-400"
+                    className="rounded-md p-1.5 text-emerald-800 dark:text-emerald-400"
                     role="img"
                     title="Already in current channel"
                   >
@@ -650,7 +656,7 @@ function AgentGroup({
                 ) : (
                   <button
                     aria-label={`Add ${agent.name} to the current channel`}
-                    className="rounded-md p-1.5 text-black/35 hover:bg-black/6 hover:text-black/70 dark:text-white/30 dark:hover:bg-white/7 dark:hover:text-white/70"
+                    className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-black/70"
                     title="Add to current channel"
                     type="button"
                     onClick={() => onAddAgent(agent)}
@@ -709,7 +715,7 @@ function ChannelSection({
             ? `${label}, ${collapsedUnreadCount} unread message${collapsedUnreadCount === 1 ? "" : "s"}`
             : undefined
         }
-        className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-[0.6875rem] font-semibold uppercase tracking-[0.08em] text-black/40 hover:bg-black/4 hover:text-black/60 dark:text-white/35 dark:hover:bg-white/5 dark:hover:text-white/55"
+        className="flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left text-[0.6875rem] font-semibold uppercase tracking-[0.08em] text-muted-foreground hover:bg-accent hover:text-black/60 dark:hover:text-white/55"
         type="button"
         onClick={onToggle}
       >
@@ -766,7 +772,7 @@ function ChannelButton({
         "group/channel flex w-full items-center rounded-lg text-sm transition-colors",
         active
           ? "bg-sidebar-accent font-medium text-sidebar-accent-foreground"
-          : "text-sidebar-foreground/70 hover:bg-sidebar-accent",
+          : "text-sidebar-foreground hover:bg-sidebar-accent",
       )}
     >
       <button
@@ -796,7 +802,7 @@ function ChannelButton({
             "mr-1 rounded-md p-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#a5a500]",
             starred
               ? "text-[#8b8c00] dark:text-[#e4e55e]"
-              : "text-black/25 opacity-0 hover:text-black/60 group-hover/channel:opacity-100 focus-visible:opacity-100 dark:text-white/20 dark:hover:text-white/60",
+              : "text-muted-foreground opacity-0 hover:text-black/60 group-hover/channel:opacity-100 focus-visible:opacity-100 dark:hover:text-white/60",
           )}
           type="button"
           onClick={onToggleStar}
