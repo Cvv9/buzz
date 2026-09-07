@@ -10,7 +10,9 @@ export function useMobileNavigation(open: boolean, onClose: () => void) {
     () => window.matchMedia("(max-width: 767px)").matches,
   );
   const closeRef = useRef(onClose);
-  closeRef.current = onClose;
+  useEffect(() => {
+    closeRef.current = onClose;
+  }, [onClose]);
   useEffect(() => {
     const media = window.matchMedia("(max-width: 767px)");
     const update = () => setMobile(media.matches);
