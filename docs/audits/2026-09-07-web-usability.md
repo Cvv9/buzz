@@ -1,6 +1,6 @@
 # Web usability audit — 7 September 2026
 
-Scope: live `https://buzz.varvikstudios.com/` in the existing Chrome session, desktop and 390 × 844 viewport; source review and local regression tests. All eight initial issue groups below are fixed. The first production verification caught a relay-admission regression and the release was rolled back; the follow-up adds admission-aware retries before redeployment. No production messages, invitations, agent permissions, or credentials were changed.
+Scope: live `https://buzz.varvikstudios.com/` in the existing Chrome session, desktop and 390 × 844 viewport; source review and local regression tests. All eight initial issue groups below are fixed and deployed. Production verification caught an additional relay-admission regression; the first release was rolled back, then the corrected release was deployed and verified. No production messages, invitations, agent permissions, or credentials were changed.
 
 ## Confirmed findings
 
@@ -15,7 +15,7 @@ Scope: live `https://buzz.varvikstudios.com/` in the existing Chrome session, de
 | WEB-07 | P1 | Sidebar handlers only changed component state: from `/messages/new`, selecting a channel retained the new-message route; view/channel URLs also failed to track navigation and reload. Local regression exercises the actual clicks and browser Back. | Route-aware channel/view navigation; preserve Inbox on reload, leave new-message mode, clear stale thread state. |
 | WEB-08 | P2 | Opening the emoji search box and pressing Escape left its dialog open in the browser test: the picker consumed the key before the window listener. | Capture Escape while the dialog is open, close it and restore trigger focus. |
 
-All rows are **fixed and validated locally**. WEB-01 is a confirmed implementation failure path reproduced with storage fault injection; it does not establish why the user's original browser storage was unavailable after deployment.
+All rows are **fixed, locally tested, and deployed**. WEB-01 is a confirmed implementation failure path reproduced with storage fault injection; it does not establish why the user's original browser storage was unavailable after deployment.
 
 ## Runtime observations
 
@@ -44,21 +44,38 @@ All rows are **fixed and validated locally**. WEB-01 is a confirmed implementati
 
 The first release served the expected split assets and retained the saved account, but channel discovery failed with `rate-limited: quota exceeded; retry in 1s`. The relay limit is principal-scoped (shared by the signed-in account), not a separate allowance per socket. Production was rolled back to the previous healthy image.
 
-The follow-up honors bounded relay retry hints for query and live subscriptions, pauses pending sends for that deadline, and reconnects interrupted reads on the shared socket rather than opening a dedicated socket per read. Normal requests have no fixed pacing delay. A new browser regression enforces the relay's 50 requests per five seconds budget and injects a throttle response during startup. Full smoke coverage is rerun before redeploying.
+The follow-up honors bounded relay retry hints for query and live subscriptions, pauses pending sends for that deadline, and reconnects interrupted reads on the shared socket rather than opening a dedicated socket per read. Normal requests have no fixed pacing delay. A new browser regression enforces the relay's 50 requests per five seconds budget and injects a throttle response during startup. Full smoke coverage passed: 40/40 tests, including the admission regression (36.9 seconds total).
 
-## Focused quality assessment
+## Post-deployment verification
 
-Scores describe this bounded audit, not a whole-product accessibility certification.
+- Running source: `e0992e693f3d1c5640b522e0bd40b0de577171cb`; draft [PR #79](https://github.com/Cvv9/buzz/pull/79). The source is published on `codex/web-startup-quality`; it is not merged into protected `main`.
+- Production image: `buzz-web-audit:e0992e693`, local image digest `sha256:a911462bf644ca7415911c3f32f27aa3a9d32c89b3774c7d6816fa663eec0448`. Built on the exact previously running 0.2.16 relay digest; only bundled web files changed. Health check passed. Database, Redis, bridge, controller, and agent containers remained running.
+- Served entry: `/assets/index-BYjCIJF4.js`. HTTP-cache-disabled startup requested **1,027,341 decoded JS bytes**, **342,804 transferred bytes** (including resource overhead): **51.5% less decoded startup JavaScript** than the original 2,118,385-byte entry bundle. The emoji palette remained deferred until opened.
+- In one cache-disabled navigation, TTFB was **69 ms**, DOMContentLoaded **262 ms**, load **328 ms**, and first contentful paint **424 ms**. In a separate completely captured cache-disabled run, the composer was observed at **1,028 ms**, with **one WebSocket and one AUTH**. These are lab observations in the existing Chrome profile, with browser identity retained, not field percentiles or a new-device benchmark. The readiness observation is an upper bound, not an exact rendering timestamp.
+- That fully captured run received **eight background throttle responses** and recovered automatically. No failed-connection screen remained. This is a remaining request-efficiency gap, even though retry handling now prevents the observed failure.
+- The saved Varun identity restored without entering a recovery key or new password after deployment. This demonstrates this release preserves that browser's account; it does not establish the root cause of the original report or guarantee behavior after clearing browser storage.
+- Inbox persisted at `/?view=inbox` across reload. Mobile Inbox, Alerts, and Agents retained a working navigation control. Emoji search Escape closed the loaded picker. Search returned **17 results** for VarVik.
+- Agents had no document horizontal overflow at **320, 390, 768, and 1440 px**. Mobile controls still measured **110 × 32 px** (New agent) and **112 × 32 px** (Edit profile).
+- Inbox secondary text uses white at 35% and 40% opacity over the observed `rgb(16,16,16)` background: approximately **3.20:1** and **3.82:1** contrast after compositing. These are confirmed gaps for ordinary text under this audit's 4.5:1 target.
+- No console errors were captured in the final UI pass. HTTP-cache and viewport overrides were reset; the workspace returned to market-intelligence. No production test messages or account-setting changes were made.
 
-| Dimension | Score / 4 | Finding |
-|---|---|---|
-| Accessibility | 2 | Escape and retry controls verified; contrast and the full keyboard surface were not exhaustively measured. |
-| Performance | 3 | Startup payload and connection fan-out reduced; a cold production-network timing comparison remains outstanding. |
-| Responsive design | 3 | Confirmed mobile navigation trap fixed and exercised at 390 × 844. |
-| Theming | 2 | New controls use existing theme tokens; older hard-coded colors remain elsewhere. |
-| Implementation integrity | 3 | Failed reads no longer pretend to be successful empty/account-setup states; existing workspace complexity remains. |
-| Total | 13 / 20 | Acceptable within the audited scope; significant broader quality work is not claimed complete. |
+## Reassessment and path to 20/20
+
+The rubric totals five dimensions at four points each. Full marks mean **4/4 in every dimension**, not an arbitrary score increase after deployment. This remains a bounded web assessment, not a whole-product accessibility certification.
+
+| Dimension | Current / 4 | Work required for 4/4 | Acceptance evidence |
+|---|---|---|---|
+| Accessibility | 2 | Replace low-contrast secondary text; audit keyboard focus, mobile off-canvas navigation, form labels/errors, dialogs, and reduced motion. The off-canvas sidebar currently uses translation without an explicit inert/focus boundary in source. | Text meets the audit's 4.5:1 target; critical flows complete with keyboard and a screen reader; hidden navigation cannot receive focus; dialogs close and restore focus; reduced-motion behavior is verified. |
+| Performance | 3 | Consolidate redundant startup queries and subscriptions so ordinary startup does not depend on throttle retries. Further defer nonessential code from the still roughly 1 MB decoded startup payload. | Repeated cold and warm runs under an agreed mobile/network profile, including a populated account and two tabs; no startup throttle rejections or connection fan-out; preserve the observed fast composer readiness with measured results, not just smaller files. |
+| Responsive design | 3 | Increase 32 px agent buttons and other undersized controls to the audit's 44 px touch target. Validate forms, dialogs, composer, and navigation beyond the Agents page. | No overflow or unreachable controls at 320/390/768/1440 px, landscape, and 200% zoom; mobile keyboard does not obscure the composer or actions; touch targets meet 44 px. |
+| Theming | 2 | Replace hard-coded translucent white/black text and surfaces with semantic foreground, muted, border, and status tokens across Inbox, sidebar, agent panels, and related flows. | Light, dark, and supported custom themes tested on populated, empty, loading, disabled, error, hover, and focus states; contrast remains readable after switching. |
+| Implementation integrity | 3 | Resolve the existing desktop tray CI diagnostics; add production-like admission coverage to release validation; automate release/rollback verification with retained browser identity. Investigate repeated setup if it recurs without ever logging private keys. | Full repository gate is green; release workflow checks account preservation, relay quotas, reconnect, and URL history; the reproducible web image is published through the normal registry/release pipeline. |
+| **Total** | **13 / 20** | **Significant work remains before full marks.** | **Do not claim 20/20 until these checks pass.** |
+
+Recommended next batch: accessibility, touch targets, and semantic theme tokens together, because the same components are involved. Follow with request consolidation and production-like release tests. Reassess each completed batch against these acceptance checks.
+
+### Release reproducibility and rollback
+
+The server retains the exact source archive, web-only Dockerfile, and image under its existing build area. The deployment environment has a persistent image override. The prior environment and exact base image were retained for rollback. This locally built image is sufficient for the current host, but moving it to the normal registry pipeline is required for automatic recovery on a replacement host. Avoid a general image pull against this local-only tag.
 
 The implementation preserves the existing product identity and Nostr authentication model. No server-side username/password account system or new HTTP API was introduced. Name/password-only recovery on a fresh browser remains outside the current identity model.
-
-This audit is bounded to the workflows above. It does not certify all features or external agent services.
