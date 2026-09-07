@@ -1,5 +1,14 @@
 # Buzz upstream merge review — 7 September 2026
 
+The user approved the recommended selective consolidation. The local quality
+branch now includes the rebased starter-channel retry and upstream backports
+`6e8d078ffe` and `e5a7e26a10`. The retry was adapted to `fetch_channels`, retains
+accepted-but-pending IDs, and does not claim ownership after a duplicate
+rejection. Seven additional policy tests cover bounded IDs and pending creates;
+all 29 channel tests passed before the policy-module extraction. The combined
+repository gate is being rerun before merging to main and deployment. The
+wholesale upstream/database integration below remains deferred.
+
 Deployment is paused at the user's request pending consolidation and safe-merge review. The preliminary browser image from `54c676ebf3fb3b221807ce7642aeb9ea2a2923c6` built successfully in [run 34108505019](https://github.com/Cvv9/buzz/actions/runs/34108505019), but has not been promoted.
 
 ## Exact comparison

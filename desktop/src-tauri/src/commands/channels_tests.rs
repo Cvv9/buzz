@@ -433,6 +433,7 @@ fn starter_match_requires_open_unarchived_stream_by_normalized_name() {
 /// A visible, joinable starter channel as `get_channels` would report it.
 fn starter_channel_fixture(id: &str, name: &str) -> ChannelInfo {
     ChannelInfo {
+        catalog_section: None,
         id: id.to_string(),
         name: name.to_string(),
         channel_type: "stream".to_string(),
