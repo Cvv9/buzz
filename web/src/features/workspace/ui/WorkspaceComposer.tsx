@@ -217,7 +217,7 @@ export function WorkspaceComposer({
       <fieldset
         aria-label="Message composer"
         className={cn(
-          "overflow-visible rounded-2xl border border-border bg-card shadow-sm focus-within:border-primary",
+          "overflow-visible rounded-2xl border border-border bg-card shadow-sm",
           draggingFiles && "border-primary ring-2 ring-primary/20",
         )}
         onDragEnter={(event) => {

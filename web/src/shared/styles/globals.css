@@ -222,18 +222,20 @@ html[data-buzz-reduced-motion="true"] {
   }
 }
 
-/* Keep keyboard focus visible even on controls with custom utility styles. */
-:where(
-  button,
-  a[href],
-  input,
-  textarea,
-  select,
-  summary,
-  [tabindex]
-):focus-visible {
-  outline: 2px solid hsl(var(--ring));
-  outline-offset: 3px;
+/* Fallback for unstyled controls; component focus styles take precedence. */
+@layer base {
+  :where(
+    button,
+    a[href],
+    input,
+    textarea,
+    select,
+    summary,
+    [tabindex]
+  ):focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 3px;
+  }
 }
 
 ::selection {

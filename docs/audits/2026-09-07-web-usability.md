@@ -2,6 +2,18 @@
 
 Scope: live `https://buzz.varvikstudios.com/` in the existing Chrome session, desktop and 390 × 844 viewport; source review and local regression tests. All eight initial issue groups below are fixed and deployed. Production verification caught an additional relay-admission regression; the first release was rolled back, then the corrected release was deployed and verified. No production messages, invitations, agent permissions, or credentials were changed.
 
+## Composer focus cleanup
+
+The global focus-visible fallback was outside the CSS cascade layers, so it
+overrode the composer's `outline-none` and the toolbar's compact focus styling.
+Text fields match focus-visible even after a pointer click, exposing a second
+rectangular outline inside the composer. Move the fallback into the base layer
+and remove the composer's focus-within accent border. The focused text area now
+shows only its caret; keyboard toolbar focus retains its component ring.
+Desktop/light and phone-width/dark main and thread composer checks pass, along
+with mobile dialog/navigation focus restoration. React Doctor reports no issues
+in the changed code. The fix does not change sending, mentions, or attachments.
+
 ## Consolidated release preparation
 
 PR #79 merged the startup preload, parked starter-channel retry, and two
