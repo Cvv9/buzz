@@ -5,6 +5,49 @@ import { generateSecretKey, getPublicKey } from "nostr-tools/pure";
 import { nsecEncode } from "nostr-tools/nip19";
 import { installWorkspaceRelayMock } from "./helpers/workspaceRelayMock";
 
+test("workspace code downloads before the application entry finishes", async ({
+  page,
+}) => {
+  let releaseEntry: () => void = () => {};
+  const entryGate = new Promise<void>((resolve) => {
+    releaseEntry = resolve;
+  });
+  await page.route(/\/assets\/index-[^/]+\.js$/, async (route) => {
+    await entryGate;
+    await route.continue();
+  });
+  const workspaceRequest = page.waitForRequest(
+    /\/assets\/WorkspacePage-[^/]+\.js$/,
+  );
+  try {
+    await page.goto("/", { waitUntil: "commit" });
+    await workspaceRequest;
+    // The sign-in surface can only render after the held entry executes.
+    await expect(page.getByLabel("Display name")).toHaveCount(0);
+  } finally {
+    releaseEntry();
+  }
+  await expect(page.getByLabel("Display name")).toBeVisible();
+  const preloads = await page
+    .locator('link[rel="modulepreload"]')
+    .evaluateAll((links) =>
+      links.map((link) => (link as HTMLLinkElement).href),
+    );
+  expect(preloads.join("\n")).not.toMatch(
+    /EmojiPalette|workflow-api|use-repo-refs/,
+  );
+});
+
+test("other routes do not preload the messaging surface", async ({ page }) => {
+  await page.goto("/settings");
+  const preloads = await page
+    .locator('link[rel="modulepreload"]')
+    .evaluateAll((links) =>
+      links.map((link) => (link as HTMLLinkElement).href),
+    );
+  expect(preloads.join("\n")).not.toMatch(/WorkspacePage-/);
+});
+
 declare global {
   interface Window {
     __BUZZ_WEB_E2E_TRANSPORT__: () => {

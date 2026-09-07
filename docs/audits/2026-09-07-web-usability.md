@@ -2,6 +2,31 @@
 
 Scope: live `https://buzz.varvikstudios.com/` in the existing Chrome session, desktop and 390 × 844 viewport; source review and local regression tests. All eight initial issue groups below are fixed and deployed. Production verification caught an additional relay-admission regression; the first release was rolled back, then the corrected release was deployed and verified. No production messages, invitations, agent permissions, or credentials were changed.
 
+## Cold-start follow-up
+
+The production cold-load resource trace showed the 518 kB entry finishing at
+1.493 s, followed by workspace discovery at 1.515 s and markdown dependencies
+finishing at 2.620 s. The populated composer was first observed at 4.420 s.
+The build now emits an early, messaging-route-only preload for the workspace's
+static import graph. Hashed URLs come from the build output. Dynamic imports,
+including emoji, workflow and repository screens, remain deferred. This only
+downloads code; it does not restore credentials or query channel data earlier.
+
+Three controlled local comparisons used gzip, disabled cache, 150 ms latency,
+1.5 Mbps down and 0.75 Mbps up. The unsigned-in surface was ready at
+2.928 / 2.730 / 2.747 s before and 2.559 / 2.572 / 2.611 s after. Workspace
+requests moved from approximately 1.4 s to 0.17–0.18 s. These are local browser
+measurements, not evidence of authenticated production performance.
+
+Regression coverage holds the entry script pending and verifies workspace
+downloads still start; it also checks that Settings does not preload the
+workspace and optional feature chunks remain deferred. Full `just ci` passed,
+including 155 web unit tests; all 112 browser smoke tests passed, including
+496 theme-state scans. The build configuration also passed explicit TypeScript
+checking. Production remeasurement
+will follow the tracked image promotion. The phone was absent from `adb devices`
+at this follow-up, so the complete TalkBack walkthrough still needs the device.
+
 ## Desktop verification blocker resolved
 
 A reset browser-automation session with fresh Chrome tabs and the supported
