@@ -595,3 +595,59 @@ test("a damaged password backup offers explicit recovery without silently replac
   await page.getByRole("button", { name: "Sign in with recovery key" }).click();
   await expect(page.getByLabel("Message general")).toBeVisible();
 });
+
+for (const width of [1280, 390]) {
+  test(`composer focus stays caret-only at ${width}px`, async ({
+    page,
+  }, testInfo) => {
+    await page.setViewportSize({ width, height: 844 });
+    await signIn(page);
+    if (width === 390) {
+      await page.goto("/settings");
+      await page.getByTestId("appearance-mode-dark").click();
+      await page.goto("/");
+    }
+    const mainComposer = page
+      .getByRole("group", { name: "Message composer", exact: true })
+      .first();
+    const restingBorder = await mainComposer.evaluate(
+      (element) => getComputedStyle(element).borderColor,
+    );
+    const input = mainComposer.locator("textarea");
+    await input.click();
+    await expect(input).toBeFocused();
+    await expect(input).toHaveCSS("outline-style", "none");
+    await expect(mainComposer).toHaveCSS("border-color", restingBorder);
+    await waitForAnimations(page);
+    await mainComposer.screenshot({
+      path: testInfo.outputPath("main-composer.png"),
+    });
+
+    // Toolbar controls keep their own compact keyboard indicator, without
+    // the global rectangular outline overriding the rounded component ring.
+    await page.keyboard.press("Tab");
+    const attach = mainComposer.getByRole("button", { name: "Attach files" });
+    await expect(attach).toBeFocused();
+    await expect(attach).toHaveCSS("outline-style", "none");
+    expect(
+      await attach.evaluate((element) => getComputedStyle(element).boxShadow),
+    ).not.toBe("none");
+
+    await page.getByTestId(`thread-summary-${"6".padStart(64, "0")}`).click();
+    await expect(
+      page.getByRole("heading", { name: "Thread", exact: true }),
+    ).toBeVisible();
+    const threadComposer = page
+      .getByRole("group", { name: "Message composer", exact: true })
+      .last();
+    const threadInput = threadComposer.locator("textarea");
+    await threadInput.click();
+    await expect(threadInput).toBeFocused();
+    await expect(threadInput).toHaveCSS("outline-style", "none");
+    await expect(threadComposer).toHaveCSS("border-color", restingBorder);
+    await waitForAnimations(page);
+    await threadComposer.screenshot({
+      path: testInfo.outputPath("thread-composer.png"),
+    });
+  });
+}
