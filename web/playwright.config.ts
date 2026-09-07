@@ -20,6 +20,7 @@ export default defineConfig({
       name: "smoke",
       testMatch: [
         "**/smoke.spec.ts",
+        "**/workspace-startup-audit.spec.ts",
         "**/browser-local-devices.smoke.spec.ts",
         "**/workspace-identity-and-agents.spec.ts",
         "**/workspace-hosted-agent-runtime.spec.ts",

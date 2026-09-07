@@ -1,3 +1,4 @@
+import { WorkspaceLoadError } from "@/features/access/WorkspaceLoadError";
 import { useQueryClient } from "@tanstack/react-query";
 import type * as React from "react";
 import { useWorkspaceIdentity } from "@/features/workspace/useWorkspaceIdentity";
@@ -18,11 +19,22 @@ export function WorkspaceIdentityGate({
   const {
     identity,
     identityLoading,
+    identityError,
+    retryIdentity,
     setIdentity,
     setStoredIdentity,
     storedIdentity,
   } = useWorkspaceIdentity();
 
+  if (identityError) {
+    return (
+      <WorkspaceLoadError
+        title="Could not open your saved account"
+        description="Buzz could not read this browser’s account storage. Your account has not been removed. Close other Buzz tabs and try again; you do not need to create a new account."
+        onRetry={retryIdentity}
+      />
+    );
+  }
   if (identityLoading) {
     return (
       <div className="flex min-h-[100dvh] items-center justify-center bg-[#151713] text-white/55">

@@ -5,6 +5,7 @@ type WorkspaceSearch = {
   channel?: string;
   thread?: string;
   forum?: string;
+  view?: "agents" | "alerts" | "inbox";
 };
 
 function optionalSearchValue(value: unknown): string | undefined {
@@ -16,6 +17,12 @@ export const Route = createFileRoute("/")({
     channel: optionalSearchValue(search.channel),
     thread: optionalSearchValue(search.thread),
     forum: optionalSearchValue(search.forum),
+    view:
+      search.view === "agents" ||
+      search.view === "alerts" ||
+      search.view === "inbox"
+        ? search.view
+        : undefined,
   }),
   component: WorkspaceRoute,
 });
@@ -24,6 +31,7 @@ function WorkspaceRoute() {
   const search = Route.useSearch();
   return (
     <WorkspacePage
+      requestedView={search.view}
       channelPermalink={search.channel}
       threadPermalink={search.thread}
     />

@@ -64,6 +64,8 @@ type WorkspaceConversationProps = {
   hideDirectMessagePending: boolean;
   members: WorkspaceProfile[];
   messagesPending: boolean;
+  messagesError: boolean;
+  onRetryMessages: () => void;
   mutedChannelIds: Set<string>;
   onlineMemberCount: number;
   ownPubkey: string;
@@ -113,6 +115,8 @@ export function WorkspaceConversation({
   hideDirectMessagePending,
   members,
   messagesPending,
+  messagesError,
+  onRetryMessages,
   mutedChannelIds,
   onlineMemberCount,
   ownPubkey,
@@ -317,6 +321,23 @@ export function WorkspaceConversation({
           data-testid="workspace-timeline"
           ref={timelineRef}
         >
+          {messagesError ? (
+            <div
+              className="m-4 space-y-2 rounded-lg border border-border p-4 text-sm"
+              role="alert"
+            >
+              <p>
+                Could not load messages. Check your connection and try again.
+              </p>
+              <button
+                className="underline underline-offset-4"
+                type="button"
+                onClick={onRetryMessages}
+              >
+                Retry messages
+              </button>
+            </div>
+          ) : null}
           {messagesPending ? (
             <div className="space-y-4 px-6 py-4">
               {[0, 1, 2, 3].map((item) => (
@@ -372,7 +393,7 @@ export function WorkspaceConversation({
                 </div>
               );
             })
-          ) : (
+          ) : messagesError ? null : (
             <div className="flex h-full min-h-72 items-center justify-center px-6 text-center">
               <div className="max-w-sm">
                 <div className="mx-auto flex size-12 items-center justify-center rounded-2xl bg-[#d7d72e]/25 text-[#7d7e00]">

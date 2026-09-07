@@ -1,9 +1,9 @@
+import { Menu } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import * as React from "react";
 import { truncatePubkey } from "@/shared/lib/pubkey";
-import { IdentityGate } from "./IdentityGate";
-import { EmptyMembership } from "./EmptyMembership";
+import { WorkspaceStartup } from "./WorkspaceStartup";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import { WorkspaceInbox } from "./WorkspaceInbox";
 import { WorkspaceAgents } from "./WorkspaceAgents";
@@ -75,10 +75,12 @@ type WorkspaceView = "agents" | "alerts" | "channel" | "inbox";
 
 export function WorkspacePage({
   routeMode = "workspace",
+  requestedView,
   channelPermalink,
   threadPermalink,
 }: {
   routeMode?: "workspace" | "new-message";
+  requestedView?: "agents" | "alerts" | "inbox";
   channelPermalink?: string;
   threadPermalink?: string;
 }) {
@@ -87,6 +89,8 @@ export function WorkspacePage({
   const {
     identity,
     identityLoading,
+    identityError,
+    retryIdentity,
     setIdentity,
     setStoredIdentity,
     storedIdentity,
@@ -99,15 +103,11 @@ export function WorkspacePage({
     messageId: string;
   } | null>(null);
   const [workspaceView, setWorkspaceView] = React.useState<WorkspaceView>(
-    () => {
-      const requested = new URLSearchParams(window.location.search).get("view");
-      return requested === "agents" ||
-        requested === "alerts" ||
-        requested === "inbox"
-        ? requested
-        : "channel";
-    },
+    requestedView ?? "channel",
   );
+  React.useEffect(() => {
+    setWorkspaceView(requestedView ?? "channel");
+  }, [requestedView]);
   const [sidebarOpen, setSidebarOpen] = React.useState(false);
   const [threadRootId, setThreadRootId] = React.useState<string | null>(null);
   const [expandedThreadIds, setExpandedThreadIds] = React.useState<Set<string>>(
@@ -196,9 +196,12 @@ export function WorkspacePage({
     }
   }, [channelPermalink, visibleChannels]);
   React.useEffect(() => {
-    if (!threadPermalink || !/^[0-9a-f]{64}$/i.test(threadPermalink)) return;
-    setThreadRootId(threadPermalink);
-    setWorkspaceView("channel");
+    const thread =
+      threadPermalink && /^[0-9a-f]{64}$/i.test(threadPermalink)
+        ? threadPermalink
+        : null;
+    setThreadRootId(thread);
+    if (thread) setWorkspaceView("channel");
   }, [threadPermalink]);
   React.useEffect(() => {
     // Persist only after the catalog has loaded so a transient fallback chosen
@@ -285,13 +288,13 @@ export function WorkspacePage({
   const messagesQuery = useQuery({
     queryKey: ["channel-messages", activeChannelId],
     queryFn: () => listChannelMessages(activeChannelId ?? ""),
-    enabled: Boolean(activeChannelId),
+    enabled: Boolean(identity && activeChannel),
   });
   const permalinkThreadQuery = useQuery({
     queryKey: ["channel-thread", activeChannelId, threadRootId],
     queryFn: () =>
       listChannelThreadMessages(activeChannelId ?? "", threadRootId ?? ""),
-    enabled: Boolean(activeChannelId && threadRootId),
+    enabled: Boolean(identity && activeChannel && threadRootId),
   });
   const channelEvents = React.useMemo(() => {
     const byId = new Map<string, WorkspaceMessage>();
@@ -588,56 +591,32 @@ export function WorkspacePage({
       await channelsQuery.refetch();
     },
   });
-  if (identityLoading) {
+  if (
+    identityError ||
+    identityLoading ||
+    !identity ||
+    channelsQuery.isPending ||
+    channelsQuery.isError ||
+    channels.length === 0
+  ) {
     return (
-      <div className="flex min-h-[100dvh] items-center justify-center bg-[#151713] text-white/55">
-        Opening VarVik Studios…
-      </div>
-    );
-  }
-  if (!identity) {
-    const pendingInvitePath = sessionStorage.getItem(
-      "buzz.web.pending-invite-path",
-    );
-    return (
-      <IdentityGate
-        pendingInvite={Boolean(pendingInvitePath)}
+      <WorkspaceStartup
+        identity={identity}
+        identityError={identityError}
+        identityLoading={identityLoading}
         storedIdentity={storedIdentity}
+        onRetryIdentity={retryIdentity}
+        channelsPending={channelsQuery.isPending}
+        channelsError={channelsQuery.isError}
+        onRetryChannels={async () => {
+          await channelsQuery.refetch();
+        }}
         onReady={(readyIdentity) => {
           queryClient.clear();
           setIdentity(readyIdentity);
           setStoredIdentity({ ...readyIdentity, protection: "password" });
-          if (pendingInvitePath) {
-            sessionStorage.removeItem("buzz.web.pending-invite-path");
-            const inviteMatch = pendingInvitePath.match(/^\/invite\/([^/]+)$/);
-            if (inviteMatch?.[1]) {
-              void navigate({
-                to: "/invite/$code",
-                params: { code: decodeURIComponent(inviteMatch[1]) },
-              });
-            }
-          }
         }}
       />
-    );
-  }
-  if (
-    channelsQuery.isError ||
-    (!channelsQuery.isPending && channels.length === 0)
-  ) {
-    return (
-      <EmptyMembership
-        onJoined={async () => {
-          await channelsQuery.refetch();
-        }}
-      />
-    );
-  }
-  if (channelsQuery.isPending) {
-    return (
-      <div className="flex min-h-[100dvh] items-center justify-center bg-[#f4f5ee] text-black/45 dark:bg-[#151713] dark:text-white/40">
-        Connecting to VarVik Studios…
-      </div>
     );
   }
 
@@ -714,6 +693,11 @@ export function WorkspacePage({
     });
   };
 
+  const openWorkspaceView = (view: "agents" | "inbox" | "alerts") => {
+    setWorkspaceView(view);
+    setSidebarOpen(false);
+    void navigate({ to: "/", search: { view } });
+  };
   return (
     <div
       className="flex h-dvh min-h-0 overflow-hidden bg-background text-foreground"
@@ -741,10 +725,10 @@ export function WorkspacePage({
         onClose={() => setSidebarOpen(false)}
         onCreateChannel={() => setCreateChannelOpen(true)}
         onAddAgent={(agent) => addAgentMutation.mutate(agent)}
-        onOpenAgents={() => setWorkspaceView("agents")}
+        onOpenAgents={() => openWorkspaceView("agents")}
         onOpenGuide={() => setGuideOpen(true)}
-        onOpenInbox={() => setWorkspaceView("inbox")}
-        onOpenAlerts={() => setWorkspaceView("alerts")}
+        onOpenInbox={() => openWorkspaceView("inbox")}
+        onOpenAlerts={() => openWorkspaceView("alerts")}
         onNewMessage={() => void navigate({ to: "/messages/new" })}
         onReopenDirectMessage={(channel) =>
           openDmMutation.mutate({
@@ -760,6 +744,7 @@ export function WorkspacePage({
           const messageId = firstUnreadMessageIds.get(channelId);
           setPendingTimelineAnchor(messageId ? { channelId, messageId } : null);
           localStorage.setItem("buzz.web.active-channel", channelId);
+          void navigate({ to: "/", search: { channel: channelId } });
           setActiveChannelId(channelId);
           setWorkspaceView("channel");
           setThreadRootId(null);
@@ -767,7 +752,17 @@ export function WorkspacePage({
         }}
       />
 
-      <main className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
+      <main className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
+        {routeMode === "workspace" && workspaceView !== "channel" ? (
+          <button
+            aria-label="Open navigation"
+            className="absolute bottom-4 left-4 z-20 flex size-11 items-center justify-center rounded-lg border border-border bg-background text-foreground shadow-sm md:hidden"
+            type="button"
+            onClick={() => setSidebarOpen(true)}
+          >
+            <Menu className="size-5" />
+          </button>
+        ) : null}
         {routeMode === "new-message" ? (
           <WorkspaceNewMessage
             error={
@@ -799,6 +794,7 @@ export function WorkspacePage({
                 return;
               }
               markInboxItemRead(item);
+              void navigate({ to: "/", search: { channel: item.channelId } });
               setActiveChannelId(item.channelId);
               setWorkspaceView("channel");
               setThreadRootId(null);
@@ -822,6 +818,7 @@ export function WorkspacePage({
                 return;
               }
               markInboxItemRead(item);
+              void navigate({ to: "/", search: { channel: item.channelId } });
               setActiveChannelId(item.channelId);
               setWorkspaceView("channel");
               setThreadRootId(null);
@@ -874,6 +871,10 @@ export function WorkspacePage({
             hideDirectMessagePending={hideDmMutation.isPending}
             members={channelMemberProfiles}
             messagesPending={messagesQuery.isPending}
+            messagesError={messagesQuery.isError}
+            onRetryMessages={() => {
+              void messagesQuery.refetch();
+            }}
             onlineMemberCount={onlineMemberCount}
             ownPubkey={identity.pubkey}
             reactionActorName={reactionActorName}

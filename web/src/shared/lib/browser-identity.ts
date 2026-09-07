@@ -65,9 +65,28 @@ function openDatabase(): Promise<IDBDatabase> {
         database.createObjectStore(STORE_NAME, { keyPath: "id" });
       }
     };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () =>
+    let settled = false;
+    const timeout = window.setTimeout(() => {
+      settled = true;
+      reject(
+        new Error(
+          "Your saved account storage is taking too long to open. Close other Buzz tabs and try again.",
+        ),
+      );
+    }, 5_000);
+    request.onsuccess = () => {
+      window.clearTimeout(timeout);
+      if (settled) request.result.close();
+      else {
+        settled = true;
+        resolve(request.result);
+      }
+    };
+    request.onerror = () => {
+      window.clearTimeout(timeout);
+      settled = true;
       reject(request.error ?? new Error("Could not open identity storage."));
+    };
   });
 }
 

@@ -268,6 +268,8 @@ export async function installWorkspaceRelayMock(
       const sockets = new Set<MockWebSocket>();
       const publishedEvents = loadPublishedEvents();
       const receivedEvents = loadReceivedEvents();
+      let socketCount = 0;
+      let authCount = 0;
       let reactionQueryCount = 0;
       let lastSearchFilter: Record<string, unknown> | null = null;
 
@@ -307,6 +309,7 @@ export async function installWorkspaceRelayMock(
         constructor(url: string | URL) {
           this.url = String(url);
           sockets.add(this);
+          socketCount += 1;
           window.setTimeout(() => {
             this.readyState = MockWebSocket.OPEN;
             this.emit("open", new Event("open"));
@@ -362,7 +365,12 @@ export async function installWorkspaceRelayMock(
             return;
           }
           if (!Array.isArray(envelope)) return;
+          if (envelope[0] === "CLOSE") {
+            this.subscriptions.delete(String(envelope[1]));
+            return;
+          }
           if (envelope[0] === "AUTH") {
+            authCount += 1;
             const auth = envelope[1] as ReturnType<typeof event>;
             window.setTimeout(
               () =>
@@ -397,6 +405,29 @@ export async function installWorkspaceRelayMock(
           }
           if (envelope[0] !== "REQ") return;
           const subscriptionId = String(envelope[1]);
+          const failedKind = Number(
+            sessionStorage.getItem("buzz.e2e.fail-query-kind"),
+          );
+          if (
+            failedKind &&
+            (envelope[2] as { kinds?: number[] })?.kinds?.includes(failedKind)
+          ) {
+            window.setTimeout(
+              () =>
+                this.emit(
+                  "message",
+                  new MessageEvent("message", {
+                    data: JSON.stringify([
+                      "CLOSED",
+                      subscriptionId,
+                      "error: simulated relay read failure",
+                    ]),
+                  }),
+                ),
+              0,
+            );
+            return;
+          }
           const filter = (envelope[2] ?? {}) as {
             kinds?: number[];
             authors?: string[];
@@ -805,6 +836,16 @@ export async function installWorkspaceRelayMock(
 
       window.WebSocket = MockWebSocket as unknown as typeof WebSocket;
       Object.assign(window, {
+        __BUZZ_WEB_E2E_TRANSPORT__: () => ({
+          socketCount,
+          authCount,
+          open: [...sockets].filter(
+            (socket) => socket.readyState === MockWebSocket.OPEN,
+          ).length,
+        }),
+        __BUZZ_WEB_E2E_DISCONNECT__: () => {
+          for (const socket of [...sockets]) socket.close();
+        },
         __BUZZ_WEB_E2E_EMIT__: (relayEvent: ReturnType<typeof event>) => {
           for (const socket of sockets) {
             if (socket.readyState === MockWebSocket.OPEN) {
