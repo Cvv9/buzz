@@ -2,6 +2,25 @@
 
 Scope: live `https://buzz.varvikstudios.com/` in the existing Chrome session, desktop and 390 × 844 viewport; source review and local regression tests. All eight initial issue groups below are fixed and deployed. Production verification caught an additional relay-admission regression; the first release was rolled back, then the corrected release was deployed and verified. No production messages, invitations, agent permissions, or credentials were changed.
 
+## Verified final release
+
+The final storage-recovery release is deployed from Buzz source
+`b7d8ca31dd10a031dfce44ee1495241b629ba138`, with the tracked image pin
+`ghcr.io/cvv9/buzz:web-b7d8ca31dd10a031dfce44ee1495241b629ba138@sha256:6afccfba64d5c3690393d873be0fe2a69aa5c59b23f92905370e5f4ad556de72`.
+
+- [Registry build](https://github.com/Cvv9/buzz/actions/runs/34098207997): passed.
+- [Persistent Suite pin](https://github.com/VarVik-Studios/varvik-suite/pull/139): merged with passing validation.
+- [Suite deployment](https://github.com/VarVik-Studios/varvik-suite/actions/runs/34098898132): both nodes passed; the Buzz container reported healthy.
+- Public `/health` returned `ok`. The served entry is `index-BswnafJB.js`; its imported `browser-identity-BZYSEbgp.js` contains the password-backup and persistent-storage implementation.
+- Full repository `just ci` passed on the storage follow-up. Web checks passed 155 unit tests; all 110 browser smoke tests passed, including 496 theme-state scans and three storage-recovery workflows.
+- The existing Suite workflow also runs its configured policy reconciliation. No personal Buzz recovery key or password was copied from the browser.
+
+**20/20 remains unverified.** Authenticated phone keyboard/rotation, TalkBack,
+and repeated desktop multi-tab/network checks still need direct sign-in.
+The Chrome automation tool subsequently required an update to the ChatGPT
+extension, which also blocks completion of live desktop checks. The failed
+cold run below must not be interpreted as zero-load or zero-throttle success.
+
 ## Latest storage finding
 
 After the theme release deployed, a desktop tab initially restored its account,
