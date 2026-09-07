@@ -337,11 +337,14 @@ export function WorkspacePage({
   const alertsUnreadCount = alertItems.filter((item) => !item.isRead).length;
   const inboxUnreadCount = inboxItems.filter((item) => !item.isRead).length;
   const emojiMemberPubkeys = React.useMemo(
-    () => [
-      ...(identity ? [identity.pubkey] : []),
-      ...channels.flatMap((channel) => channel.memberPubkeys),
-    ],
-    [channels, identity],
+    () =>
+      channelsQuery.isPending
+        ? []
+        : [
+            ...(identity ? [identity.pubkey] : []),
+            ...channels.flatMap((channel) => channel.memberPubkeys),
+          ],
+    [channels, channelsQuery.isPending, identity],
   );
   const customEmojiQuery = useCustomEmojiPalette(emojiMemberPubkeys);
   const customEmoji = customEmojiQuery.data ?? [];
