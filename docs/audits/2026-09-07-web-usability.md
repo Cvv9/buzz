@@ -2,6 +2,47 @@
 
 Scope: live `https://buzz.varvikstudios.com/` in the existing Chrome session, desktop and 390 × 844 viewport; source review and local regression tests. All eight initial issue groups below are fixed and deployed. Production verification caught an additional relay-admission regression; the first release was rolled back, then the corrected release was deployed and verified. No production messages, invitations, agent permissions, or credentials were changed.
 
+## Latest outcome
+
+The confirmed fixes are deployed at web revision
+`b41a44b7b2ba4b95550d150a095c112f4b603dbd`. Production is healthy on registry
+digest `sha256:ef0fe23041f1feffecdcb65998ebe32e5b2cbce914e62fd2bc5629fbf8bb06e1`.
+The served entry is `/assets/index-CB2IrDk2.js`. The full repository CI gate and
+all 43 browser smoke tests passed; later web-only adjustments passed fresh web
+checks/build and the complete browser suite.
+
+| Final live check | Observed result |
+|---|---|
+| Saved sign-in after deployment and reload | Restored without recovery-key or password re-entry |
+| Startup transport | 1 WebSocket, 1 authentication |
+| Startup REQs in an 8-second complete trace | 47, down from 87 before the follow-up batch |
+| Profile REQs | 4, down from 38 |
+| Relay throttle rejections | 0 in the final captured run |
+| Cache-disabled composer readiness | 1.36 seconds |
+| Warm reload composer readiness | 1.18 seconds |
+| First contentful paint / document load | 464 ms / 353 ms in the cache-disabled run |
+| Startup scripts | 989,771 decoded bytes; 332,583 transferred bytes |
+| Inbox secondary-text contrast on the user's theme | 13.22:1, up from 3.20–3.82:1 |
+| Phone New agent / Edit profile target height | 44 px / 44 px |
+| Dialog Escape and focus return | Passed live; focus returns to New agent |
+
+The final startup correction also waits for the first channel roster before
+loading custom emoji and batches list/set reconnect notifications. Neither
+profile nor emoji batching changes authoritative event precedence or skips
+reconnect refreshes. Measurements are single-session lab observations, not
+field percentiles or a promise for every device/network.
+
+**Bounded reassessment: 16/20**, up from 13/20. Accessibility, performance,
+responsive design, and theming are each 3/4; implementation integrity is 4/4.
+The confirmed implementation defects in this batch are fixed, but the strict
+full-mark evidence matrix below still needs screen-reader and reduced-motion
+workflow checks, real phone/keyboard coverage, all supported custom-theme
+states, and repeated constrained-network/two-tab startup measurements. Those
+unverified conditions do not earn automatic passes. This is not a 20/20 or
+whole-product accessibility certification.
+
+Release: https://github.com/Cvv9/buzz/actions/runs/34092456507
+
 ## Confirmed findings
 
 | ID | Priority | Evidence and impact | Fix |
@@ -59,11 +100,11 @@ The follow-up honors bounded relay retry hints for query and live subscriptions,
 - Inbox secondary text uses white at 35% and 40% opacity over the observed `rgb(16,16,16)` background: approximately **3.20:1** and **3.82:1** contrast after compositing. These are confirmed gaps for ordinary text under this audit's 4.5:1 target.
 - No console errors were captured in the final UI pass. HTTP-cache and viewport overrides were reset; the workspace returned to market-intelligence. No production test messages or account-setting changes were made.
 
-## Reassessment and path to 20/20
+## Initial reassessment and path to 20/20
 
 The rubric totals five dimensions at four points each. Full marks mean **4/4 in every dimension**, not an arbitrary score increase after deployment. This remains a bounded web assessment, not a whole-product accessibility certification.
 
-| Dimension | Current / 4 | Work required for 4/4 | Acceptance evidence |
+| Dimension | Before follow-up / 4 | Work required for 4/4 | Acceptance evidence |
 |---|---|---|---|
 | Accessibility | 2 | Replace low-contrast secondary text; audit keyboard focus, mobile off-canvas navigation, form labels/errors, dialogs, and reduced motion. The off-canvas sidebar currently uses translation without an explicit inert/focus boundary in source. | Text meets the audit's 4.5:1 target; critical flows complete with keyboard and a screen reader; hidden navigation cannot receive focus; dialogs close and restore focus; reduced-motion behavior is verified. |
 | Performance | 3 | Consolidate redundant startup queries and subscriptions so ordinary startup does not depend on throttle retries. Further defer nonessential code from the still roughly 1 MB decoded startup payload. | Repeated cold and warm runs under an agreed mobile/network profile, including a populated account and two tabs; no startup throttle rejections or connection fan-out; preserve the observed fast composer readiness with measured results, not just smaller files. |
@@ -82,7 +123,7 @@ The implementation preserves the existing product identity and Nostr authenticat
 
 ## Follow-up quality batch
 
-The next batch fixes the confirmed focus, touch-target, contrast, and release
+The follow-up batch fixes the confirmed focus, touch-target, contrast, and release
 reproducibility findings together:
 
 - Native modal dialogs contain Tab/Shift+Tab, close with Escape, make the
@@ -106,7 +147,23 @@ reproducibility findings together:
   production should reference the resulting registry digest. No mutable
   `latest` tag or relay protocol upgrade is part of this release.
 
-React Doctor reports 71/100 on the complete branch diff: eight warnings about
-existing component complexity, related state, and channel reconciliation. It
-reports no errors. These maintainability warnings are retained as follow-up
+React Doctor reports 71/100 on the complete branch diff. Its existing
+complexity/state findings are documented below; it reports no errors. These maintainability warnings are retained as follow-up
 work rather than suppressed or used as proof of user-facing failures.
+
+### Follow-up validation
+
+- Full `just ci` completed successfully: repository Rust checks/tests, desktop
+  checks/build and 5,062 JavaScript tests, 2,531 Tauri tests (17 explicitly
+  ignored), web checks/build and 153 unit tests, mobile analysis and 1,465 tests.
+  Existing infrastructure-only ignored tests remain outside this gate.
+- The 43-test browser smoke suite passed after profile refresh batching. The
+  final callback timing adjustment also passed the keyboard-focus regression
+  and a fresh production build.
+- Browser coverage includes 320/390/768/1440 widths, a 390×400 viewport with
+  200% root text scaling, mobile control dimensions, inert navigation,
+  Tab/Escape/focus restoration, and Inbox paragraph contrast ≥4.5:1 in Buzz
+  light/dark and GitHub light/dark. Paired Buzz screenshots were inspected.
+- Final React Doctor review: 71/100, no errors, nine warnings. Eight concern
+  existing complexity/state; one dependency warning is a false positive: the
+  memo explicitly depends on the accessed `channelsQuery.isPending` value. This tool score is separate from the bounded usability assessment.
