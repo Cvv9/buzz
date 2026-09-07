@@ -41,6 +41,7 @@ export async function installWorkspaceRelayMock(
     workflowChannelId?: string;
     communityRole?: "owner" | "admin" | "member";
     runtime?: RuntimeMock;
+    enforceAdmission?: boolean;
   } = {},
 ) {
   if (options.runtime) {
@@ -77,6 +78,7 @@ export async function installWorkspaceRelayMock(
       workflowChannelId,
       communityRole,
       runtime,
+      enforceAdmission,
     }) => {
       const event = (
         kind: number,
@@ -270,6 +272,17 @@ export async function installWorkspaceRelayMock(
       const receivedEvents = loadReceivedEvents();
       let socketCount = 0;
       let authCount = 0;
+      let admissionTimes: number[] = [];
+      let admissionRejected = 0;
+      let forcedThrottle = false;
+      const admissionPending = new Set<string>();
+      Object.assign(window, {
+        __BUZZ_WEB_E2E_ADMISSION__: () => ({
+          admissionRejected,
+          forcedThrottle,
+          pending: admissionPending.size,
+        }),
+      });
       let reactionQueryCount = 0;
       let lastSearchFilter: Record<string, unknown> | null = null;
 
@@ -365,7 +378,40 @@ export async function installWorkspaceRelayMock(
             return;
           }
           if (!Array.isArray(envelope)) return;
+          if (
+            enforceAdmission &&
+            (envelope[0] === "REQ" || envelope[0] === "EVENT")
+          ) {
+            const now = Date.now();
+            admissionTimes = admissionTimes.filter(
+              (time) => now - time < 5_000,
+            );
+            const force = !forcedThrottle && envelope[0] === "REQ";
+            if (force || admissionTimes.length >= 50) {
+              admissionPending.add(String(envelope[1]));
+              if (force) forcedThrottle = true;
+              else admissionRejected += 1;
+              window.setTimeout(
+                () =>
+                  this.emit(
+                    "message",
+                    new MessageEvent("message", {
+                      data: JSON.stringify([
+                        "CLOSED",
+                        envelope[1],
+                        `rate-limited: quota exceeded; retry in ${force ? 1 : Math.max(1, Math.ceil((admissionTimes[0] + 5_000 - now) / 1_000))}s`,
+                      ]),
+                    }),
+                  ),
+                0,
+              );
+              return;
+            }
+            admissionPending.delete(String(envelope[1]));
+            admissionTimes.push(now);
+          }
           if (envelope[0] === "CLOSE") {
+            admissionPending.delete(String(envelope[1]));
             this.subscriptions.delete(String(envelope[1]));
             return;
           }
@@ -882,6 +928,7 @@ export async function installWorkspaceRelayMock(
       workflowChannelId: options.workflowChannelId ?? null,
       communityRole: options.communityRole ?? "owner",
       runtime: options.runtime ?? null,
+      enforceAdmission: options.enforceAdmission ?? false,
     },
   );
 }

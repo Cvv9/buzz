@@ -13,12 +13,19 @@ declare global {
       open: number;
     };
     __BUZZ_WEB_E2E_DISCONNECT__: () => void;
+    __BUZZ_WEB_E2E_ADMISSION__: () => {
+      admissionRejected: number;
+      forcedThrottle: boolean;
+      pending: number;
+    };
   }
 }
 
-async function signIn(page: Page) {
+async function signIn(page: Page, enforceAdmission = false) {
   const secret = generateSecretKey();
-  await installWorkspaceRelayMock(page, getPublicKey(secret));
+  await installWorkspaceRelayMock(page, getPublicKey(secret), {
+    enforceAdmission,
+  });
   await page.goto("/");
   await page.getByLabel("Display name").fill("Audit user");
   await page.getByLabel("Recovery key").fill(nsecEncode(secret));
@@ -260,4 +267,42 @@ test("sidebar navigation leaves the new-message route and survives reload", asyn
   await expect(
     page.getByRole("heading", { name: "Inbox", exact: true }),
   ).toBeVisible();
+});
+
+test("startup retries relay admission hints without losing identity", async ({
+  page,
+}) => {
+  await signIn(page, true);
+  await page.reload();
+  await expect(page.getByLabel("Message general")).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() =>
+          (
+            window as unknown as {
+              __BUZZ_WEB_E2E_HAS_KIND_SUBSCRIPTION__: (kind: number) => boolean;
+            }
+          ).__BUZZ_WEB_E2E_HAS_KIND_SUBSCRIPTION__(39002),
+        ),
+      { timeout: 15_000 },
+    )
+    .toBe(true);
+  await expect(
+    page.getByRole("heading", { name: "Could not connect to your workspace" }),
+  ).toHaveCount(0);
+  expect(
+    await page.evaluate(() => window.__BUZZ_WEB_E2E_ADMISSION__()),
+  ).toMatchObject({ forcedThrottle: true });
+  await expect
+    .poll(
+      () => page.evaluate(() => window.__BUZZ_WEB_E2E_ADMISSION__().pending),
+      { timeout: 15_000 },
+    )
+    .toBe(0);
+  expect(
+    await page.evaluate(() => window.__BUZZ_WEB_E2E_TRANSPORT__()),
+  ).toEqual({ socketCount: 1, authCount: 1, open: 1 });
 });

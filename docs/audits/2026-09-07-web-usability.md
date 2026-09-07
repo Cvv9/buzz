@@ -1,6 +1,6 @@
 # Web usability audit — 7 September 2026
 
-Scope: live `https://buzz.varvikstudios.com/` in the existing Chrome session, desktop and 390 × 844 viewport; source review and local regression tests. All eight confirmed issue groups below are fixed locally in one batch; production has not been deployed. No production messages, invitations, agent permissions, or credentials were changed.
+Scope: live `https://buzz.varvikstudios.com/` in the existing Chrome session, desktop and 390 × 844 viewport; source review and local regression tests. All eight initial issue groups below are fixed. The first production verification caught a relay-admission regression and the release was rolled back; the follow-up adds admission-aware retries before redeployment. No production messages, invitations, agent permissions, or credentials were changed.
 
 ## Confirmed findings
 
@@ -31,13 +31,20 @@ All rows are **fixed and validated locally**. WEB-01 is a confirmed implementati
 - `pnpm --dir web check`: passed formatting, lint, file-size, public-key display, theme-catalog checks and **153 unit tests**.
 - `pnpm --dir web typecheck`: passed.
 - `pnpm --dir web build`: passed. The deferred emoji chunk remains about 506 KB and produces a chunk-size warning; it is not requested at startup.
-- `pnpm --dir web exec playwright test --project=smoke`: **39/39 passed**, including seven new regression workflows. Covers sign-in/reload/lock, shared transport and reconnect, injected storage/channel/message read failures, mobile navigation, deferred emoji and Escape, and route history. Existing coverage also exercised messages, threads, reactions, media, profiles/search, hosted-agent controls, workflows, invites, pairing, preferences and projects.
+- `pnpm --dir web exec playwright test --project=smoke`: **40/40 passed**, including eight new regression workflows. Covers sign-in/reload/lock, shared transport and reconnect, injected storage/channel/message read failures, mobile navigation, deferred emoji and Escape, and route history. Existing coverage also exercised messages, threads, reactions, media, profiles/search, hosted-agent controls, workflows, invites, pairing, preferences and projects.
 - The local mock retains real React, IndexedDB, password encryption and browser rendering; relay events are simulated. No production test messages or credential changes were made.
 - Browser-observed startup asset names, summed against their production build files: **1,025,935 bytes of JavaScript** versus **2,118,385 bytes** in the observed live bundle (**51.6% less**). Cached resource entries report zero decoded bytes, so file sizes were used rather than interpreting zeros as free transfers. This is an asset-size comparison, not a production latency claim.
 - Reload regression: **one WebSocket and one authentication**, versus more than 25 sockets observed during the live reload. Reconnect and sign-out teardown pass.
 - Mobile Inbox screenshot inspected at 390 × 844: navigation control remains visible and usable. Screenshot is in the Playwright test-results directory; HTML report is `web/playwright-report/index.html`.
 - Impeccable detector: no mechanical findings in changed UI targets. React Doctor reported 74/100 with four warnings: two component-complexity warnings, one related-state organization warning, and one prop-to-state synchronization warning. The latter is intentional synchronization of the thread panel with browser navigation, exercised by the route tests; the remaining warnings are maintainability debt, not evidence of additional broken workflows.
-- `git diff --check`: passed. No commit, push, or deployment was performed.
+- `git diff --check` and redacted staged secret scan: passed. Published through draft PR #79 because `main` requires pull requests.
+- `just ci` attempted: workspace Rust checks passed, then desktop Tauri clippy failed on five unused-variable/dead-code diagnostics in unchanged tray files. The full repository gate is not green.
+
+### Production admission regression
+
+The first release served the expected split assets and retained the saved account, but channel discovery failed with `rate-limited: quota exceeded; retry in 1s`. The relay limit is principal-scoped (shared by the signed-in account), not a separate allowance per socket. Production was rolled back to the previous healthy image.
+
+The follow-up honors bounded relay retry hints for query and live subscriptions, pauses pending sends for that deadline, and reconnects interrupted reads on the shared socket rather than opening a dedicated socket per read. Normal requests have no fixed pacing delay. A new browser regression enforces the relay's 50 requests per five seconds budget and injects a throttle response during startup. Full smoke coverage is rerun before redeploying.
 
 ## Focused quality assessment
 
