@@ -29,6 +29,8 @@ import type {
 import { agentRoleLabel } from "../agent-presentation";
 import type { BrowserIdentity } from "@/shared/lib/browser-identity";
 
+import { compareWorkspaceChannels } from "../channel-order";
+
 const SECTION_STORAGE_PREFIX = "buzz-web:channel-sections:v1";
 
 // Channels without a catalog section land in the community's default
@@ -174,6 +176,7 @@ export function WorkspaceSidebar({
   );
   const sectionLabels = new Map<string, string>();
   const catalogSections = [...streams]
+    .sort(compareWorkspaceChannels)
     .filter((channel) => !starredChannelIds.has(channel.id))
     .reduce<Map<string, WorkspaceChannel[]>>((sections, channel) => {
       const section = channelSectionKey(channel);

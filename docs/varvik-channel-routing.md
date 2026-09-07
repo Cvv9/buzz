@@ -58,3 +58,21 @@ agents should post to the narrowest matching channel and must not use
 - Keep raw event channels separate from summary/decision channels. For example,
   `watchdog-alerts` holds raw signals while `operations` holds deduplicated,
   actionable incident context.
+
+## Lean workspace navigation (2026-09-07)
+
+The active managed catalog contains General (team) and Command Center (Varun).
+Unused project rooms, including FactoryOS and Renderboard, are retired by an
+explicit archive operation in the Suite repository; history is retained. They
+must not be recreated by routine reconciliation. The BidWave intake workflow
+and its automatic channel enrollment are no longer provisioned.
+
+Browser navigation places General first, with general and introductions before
+research feeds. Command Center places brief-varun and sylars-control first,
+followed by operations, watchdog-alerts, github-events, security, portfolio, and
+agent-lab. Unknown owner-created rooms and sections remain visible. Ordering
+changes presentation only: channel grouping and access remain relay-backed.
+
+Operations summarizes incidents and operational context. Sylars Control carries
+the corresponding approval requests and execution results; these serve distinct
+purposes even when the same incident appears in both rooms.
