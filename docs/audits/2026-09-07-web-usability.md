@@ -15,11 +15,104 @@ The final storage-recovery release is deployed from Buzz source
 - Full repository `just ci` passed on the storage follow-up. Web checks passed 155 unit tests; all 110 browser smoke tests passed, including 496 theme-state scans and three storage-recovery workflows.
 - The existing Suite workflow also runs its configured policy reconciliation. No personal Buzz recovery key or password was copied from the browser.
 
-**20/20 remains unverified.** Authenticated phone keyboard/rotation, TalkBack,
-and repeated desktop multi-tab/network checks still need direct sign-in.
-The Chrome automation tool subsequently required an update to the ChatGPT
-extension, which also blocks completion of live desktop checks. The failed
-cold run below must not be interpreted as zero-load or zero-throttle success.
+## Concurrent-startup correction and physical phone checks
+
+[Suite PR 141](https://github.com/VarVik-Studios/varvik-suite/pull/141) changes
+the deployment's shared WebSocket admission setting from its default 10 to
+30 frames per second: a bounded 150 rather than 50 frames per five seconds.
+Approximately 47 startup REQs per client left too little room for two tabs.
+The new allowance is sized for two tabs plus a phone. It increases admitted
+request capacity threefold; separate message limits and membership checks
+remain in force. Suite validation and all 144 repository tests passed.
+[Deployment 34104054240](https://github.com/VarVik-Studios/varvik-suite/actions/runs/34104054240)
+completed successfully on both nodes from Suite merge
+`abe6e23e9598c997ed3bd7a1b95fd13cba55abde`. The Buzz container reported healthy.
+The browser image remains unchanged.
+
+The signed-in Pixel 6 (Android 17, Chrome) was verified on the production
+community without entering credentials or sending test messages:
+
+- Portrait viewport: 411 × 785 CSS pixels, no horizontal overflow.
+- Focusing the composer opened the real keyboard. The text field remained
+  completely inside the visual viewport; screenshot review confirmed the
+  composer and action row remained above the keyboard.
+- Landscape viewport: 865 × 303 CSS pixels. The `general` channel and composer
+  survived rotation, with no horizontal overflow. Original auto-rotation
+  settings were restored (accelerometer rotation 1, user rotation 0).
+- Composer actions measured 44 CSS pixels high.
+- Inbox navigation and Back restored the original `general` channel. After
+  the earlier deployment's temporary HTTP 502 cleared, repeated phone reloads
+  restored sign-in with no visible alerts.
+- Chrome's accessibility tree names the composer textbox `Message general`.
+  TalkBack 17.0.1 was enabled and bound; its first-run tutorial was dismissed,
+  and the browser received accessibility focus. A complete spoken-navigation
+  walkthrough was not verified. Accessibility was restored to its original
+  disabled state with no enabled services. Extra phone test tabs were closed.
+
+After the successful deployment, two additional Chrome tabs on the physical
+Pixel ran three simultaneous startup trials. The original phone tab stayed
+signed in. Both test tabs used 150 ms latency, 1.5 Mbps down and 0.75 Mbps up;
+network/cache settings were restored and both extra tabs closed in cleanup.
+CDP listeners counted frames directly throughout each 15-second run.
+
+| Pixel run | Composer ready, tab 1 / tab 2 | REQ count | Rate-limit responses |
+| --- | --- | --- | --- |
+| Cache disabled | 5.08 s / 4.61 s | 44 / 46 | 0 / 0 |
+| Cache enabled | 3.22 s / 2.38 s | 46 / 47 | 0 / 0 |
+| Cache disabled repeat | 5.33 s / 4.60 s | 38 / 44 | 0 / 0 |
+
+Every tab in every trial used one WebSocket and one AUTH. The shared admission
+bottleneck did not recur on this device. Cold device startup still costs
+4.6–5.3 seconds under the constrained network, so this is not evidence of
+instant loading or a blanket 20/20 performance score. Device timings are not a
+like-for-like desktop before/after comparison.
+
+Desktop constrained-network attempts encountered Chrome
+`ERR_BLOCKED_BY_CLIENT`, a CDP timeout, and test tabs disappearing. Those runs
+are invalid; normal network/cache settings were restored. An ordinary desktop
+pair subsequently loaded both composers at 4.97 / 4.76 seconds under recording,
+but event buffers reported truncation. Do not infer zero throttling from that
+incomplete desktop trace. Repeat desktop constrained-network testing with a
+stable browser automation connection before claiming that specific gate passed.
+
+## Signed-in verification follow-up
+
+Desktop sign-in was confirmed in a fresh Chrome tab on 7 September after the
+user signed in directly. The deployed entry remained `index-BswnafJB.js` and
+the encrypted password-backup key was present. Chrome still reported persistent
+storage as not granted. No credential values were read or copied.
+
+- A normal reload restored the authenticated workspace with one WebSocket,
+  one AUTH, and no observed rate-limit notices. A later normal-network reload
+  reached the message composer at approximately 911 ms.
+- Both fresh tabs restored the account automatically across all measured reloads.
+- Simultaneous two-tab startup was measured with 150 ms latency, 1.5 Mbps down,
+  and 0.75 Mbps up. Each tab used exactly one WebSocket and one AUTH. Event
+  buffers for these runs were not truncated.
+
+| Run | Composer ready, tab 1 / tab 2 | REQ count | Rate-limit responses |
+| --- | --- | --- | --- |
+| Cache disabled | 6.22 s / 7.01 s | 50 / 52 | 2 / 5 |
+| Cache enabled | 6.49 s / 6.75 s | 48 / 47 | 1 / 2 |
+| Cache disabled repeat | 8.81 s / 8.71 s | 49 / 49 | 4 / 2 |
+
+Readiness is the first observed composer after a changed navigation time origin,
+not a browser paint metric. Both tabs recovered; after the warm run, neither
+showed an alert. Network emulation and cache disabling were restored after each
+run. These results confirm a remaining startup-budget issue under concurrent
+use; automatic retry is recovering but does not make the delay acceptable.
+Further request reduction or coordination needs implementation and regression
+coverage before claiming the performance category is complete.
+
+The connected Pixel's Chrome still showed the recovery-key sign-in form, with
+no authenticated workspace or composer. At its 411 × 785 CSS-pixel viewport the
+sign-in page had no horizontal overflow. Authenticated keyboard, rotation, and
+TalkBack checks remain pending direct phone sign-in. No phone settings changed.
+
+**20/20 remains unverified.** The later section above records the deployed
+admission correction and successful physical-phone checks. Repeatable desktop
+constrained-network evidence and a complete spoken TalkBack walkthrough remain
+open. The initial desktop figures in this section precede the configuration fix.
 
 ## Latest storage finding
 
