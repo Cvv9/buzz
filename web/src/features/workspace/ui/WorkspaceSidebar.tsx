@@ -95,7 +95,7 @@ export function ProfileAvatar({
   return (
     <div
       className={cn(
-        "relative flex shrink-0 items-center justify-center overflow-hidden rounded-xl bg-[#d7d72e]/18 font-semibold text-[#969600]",
+        "relative flex shrink-0 items-center justify-center overflow-hidden rounded-xl bg-accent font-semibold text-accent-foreground",
         size === "sm" ? "size-7 text-[0.6875rem]" : "size-9 text-xs",
       )}
     >

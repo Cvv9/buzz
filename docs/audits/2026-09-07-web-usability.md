@@ -20,8 +20,18 @@ primary-button text using WCAG luminance, preserve full-opacity sidebar labels,
 and minimally adjust semantic text lightness against its theme surfaces.
 Theme hues, saturation, and backgrounds remain shared with desktop; browser UI
 text intentionally gains a contrast floor. All 62 themes pass axe WCAG A/AA
-checks across empty Inbox, populated agents, agent dialogs, and disabled empty
-forms. This automated result does not substitute for screen-reader testing.
+checks across empty Inbox, populated agents, agent dialogs, disabled empty
+forms, keyboard focus, hover, message errors, and message loading (496 state
+scans). The expanded sweep also found and fixed unreadable avatar initials
+and an unlabeled file input that could receive invisible keyboard focus.
+The existing Attach files button remains the accessible file-picker control.
+This automated result does not substitute for screen-reader testing.
+
+Validation: all 64 matrix/reduced-motion tests and all 43 separate workflow
+regressions passed. Full repository `just ci` passed before the final two
+markup-only fixes; fresh web checks/build and browser regressions validate
+those fixes. React Doctor reports 70/100 with no errors and nine existing
+complexity/state/dependency warnings.
 
 Reduced motion replaces spinning/pulsing status animation with a static state
 and uses short fades for entering dialogs. The connected Pixel 6 (Android 17)
