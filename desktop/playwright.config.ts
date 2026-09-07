@@ -186,7 +186,7 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: `${process.platform === "win32" ? "py -3" : "python3"} -m http.server 4173 -d dist`,
+    command: "pnpm exec vite preview --port 4173 --strictPort --host 127.0.0.1",
     cwd: ".",
     reuseExistingServer: !process.env.CI,
     url: "http://127.0.0.1:4173",
