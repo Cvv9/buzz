@@ -24,6 +24,14 @@ x-varvik-agent-environment: &varvik-agent-environment
   # Reject any tool action that asks to escape the runtime's normal sandbox.
   # Safe read/edit operations can still run inside the isolated container.
   BUZZ_ACP_PERMISSION_MODE: dont-ask
+  # Optional API-billed failover when the ChatGPT subscription hits its usage
+  # limit. agent-entrypoint.sh writes the azure-foundry config.toml block and
+  # BUZZ_ACP_FAILOVER_AGENT_ARGS from these when all three are set.
+  AZURE_FOUNDRY_API_KEY: ${AZURE_FOUNDRY_API_KEY:-}
+  AZURE_FOUNDRY_BASE_URL: ${AZURE_FOUNDRY_BASE_URL:-}
+  AZURE_FOUNDRY_DEPLOYMENT: ${AZURE_FOUNDRY_DEPLOYMENT:-}
+  AZURE_FOUNDRY_API_VERSION: ${AZURE_FOUNDRY_API_VERSION:-}
+  BUZZ_ACP_FAILOVER_COOLDOWN_SECS: ${BUZZ_AGENT_FAILOVER_COOLDOWN_SECS:-3600}
 
 x-varvik-agent-service: &varvik-agent-service
   profiles: ["agents"]

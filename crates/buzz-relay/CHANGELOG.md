@@ -1,5 +1,9 @@
 # Changelog
 
+## relay-v0.2.17
+
+- Add harness-generic provider failover to the hosted agent runner: after consecutive usage-limit-shaped errors, replace the agent process with one configured for an alternate provider (Azure AI Foundry for the Codex fleet) and return to the primary provider after a cooldown.
+
 ## relay-v0.2.16
 
 - Preserve durable runtime model identifiers when their display labels use an alias, preventing duplicate model-family labels from disabling hosted-agent model and effort controls.

@@ -227,6 +227,12 @@ pub struct OwnedAgent {
     /// desktop reader to distinguish a genuine runtime override from a stale
     /// session whose persona model was edited. Reset on spawn/restart.
     pub model_overridden: bool,
+    /// Whether this process was spawned under the provider-failover policy
+    /// (as opposed to the primary agent command/args/model). Gates the
+    /// runtime-defaults auto-apply in [`AgentPool::return_agent`] and
+    /// [`AgentPool::restore_runtime_defaults`]: a controller's primary-model
+    /// revision must never be re-applied to a failover process.
+    pub spawned_in_failover: bool,
     /// Normalized agent name from initialize (`agentInfo.name`/`serverInfo.name`).
     pub agent_name: String,
     /// Whether Goose accepted its custom system-prompt method. `None` probes on
@@ -811,14 +817,21 @@ impl AgentPool {
                 .as_ref()
                 .and_then(normalize_agent_runtime_catalog);
         }
-        if let Some(effective) = self.runtime_defaults.effective() {
-            if agent.desired_model.as_deref() != Some(effective.exact_selection_id()) {
-                install_runtime_revision(
-                    &mut agent.state,
-                    &mut agent.desired_model,
-                    &mut agent.model_overridden,
-                    effective,
-                );
+        // A process spawned under the failover policy is deliberately running
+        // a different provider/model than the controller's primary revision —
+        // re-applying that revision here would fight the failover switch on
+        // every return-to-pool. It gets the primary revision back the normal
+        // way once it is replaced by a primary-mode process.
+        if !agent.spawned_in_failover {
+            if let Some(effective) = self.runtime_defaults.effective() {
+                if agent.desired_model.as_deref() != Some(effective.exact_selection_id()) {
+                    install_runtime_revision(
+                        &mut agent.state,
+                        &mut agent.desired_model,
+                        &mut agent.model_overridden,
+                        effective,
+                    );
+                }
             }
         }
         let idx = agent.index;
@@ -885,6 +898,11 @@ impl AgentPool {
         *self.runtime_defaults = defaults;
         if let Some(effective) = self.runtime_defaults.effective() {
             for agent in self.agents.iter_mut().flatten() {
+                // See `return_agent`: failover processes must not be forced
+                // back onto the controller's primary model.
+                if agent.spawned_in_failover {
+                    continue;
+                }
                 install_runtime_revision(
                     &mut agent.state,
                     &mut agent.desired_model,
@@ -6148,6 +6166,7 @@ done"#
             model_capabilities: None,
             desired_model: None,
             model_overridden: false,
+            spawned_in_failover: false,
             agent_name: "legacy-test-agent".into(),
             goose_system_prompt_supported: None,
             protocol_version: 1,
@@ -6242,6 +6261,7 @@ done"#
             model_capabilities: None,
             desired_model: None,
             model_overridden: false,
+            spawned_in_failover: false,
             agent_name: "legacy-test-agent".into(),
             goose_system_prompt_supported: None,
             protocol_version: 1,
@@ -6414,6 +6434,7 @@ done"#
             model_capabilities: None,
             desired_model: None,
             model_overridden: false,
+            spawned_in_failover: false,
             agent_name: "legacy-test-agent".into(),
             goose_system_prompt_supported: None,
             protocol_version: 1,
@@ -6564,6 +6585,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             model_capabilities: None,
             desired_model: None,
             model_overridden: false,
+            spawned_in_failover: false,
             agent_name: "legacy-test-agent".into(),
             goose_system_prompt_supported: None,
             protocol_version: 1,
@@ -7575,6 +7597,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             model_capabilities: None,
             desired_model: None,
             model_overridden: false,
+            spawned_in_failover: false,
             agent_name: "unknown".into(),
             goose_system_prompt_supported: None,
             protocol_version: 2,
@@ -7633,6 +7656,7 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
             model_capabilities: None,
             desired_model: None,
             model_overridden: false,
+            spawned_in_failover: false,
             agent_name: "unknown".into(),
             goose_system_prompt_supported: None,
             protocol_version: 2,
@@ -8776,6 +8800,47 @@ printf '%s\n' '{{"jsonrpc":"2.0","id":0,"result":{{"stopReason":"end_turn"}}}}'"
         pool.commit_runtime_defaults(2).expect("commit");
         assert!(pool.runtime_dispatch_allowed());
         assert_eq!(pool.runtime_defaults_state(), RuntimeDefaultsState::Current);
+    }
+
+    #[tokio::test]
+    async fn return_agent_does_not_reapply_runtime_revision_to_failover_agent() {
+        use buzz_core::hosted_agent_runtime::ReasoningEffort;
+
+        let mut pool = AgentPool::from_slots(vec![None]);
+        assert_eq!(
+            pool.request_runtime_defaults(runtime_revision(
+                2,
+                "gpt-5.6-sol",
+                ReasoningEffort::High
+            )),
+            RuntimeRevisionDisposition::ReadyToApply
+        );
+        pool.commit_runtime_defaults(2).expect("commit");
+        assert_eq!(pool.runtime_defaults_state(), RuntimeDefaultsState::Current);
+
+        let acp = AcpClient::spawn("bash", &["-c".to_string(), "cat".to_string()], &[], false)
+            .await
+            .expect("spawn failover-agent stub");
+        let agent = OwnedAgent {
+            index: 0,
+            acp,
+            state: SessionState::default(),
+            model_capabilities: None,
+            desired_model: None,
+            model_overridden: false,
+            spawned_in_failover: true,
+            agent_name: "legacy-test-agent".into(),
+            goose_system_prompt_supported: None,
+            protocol_version: 1,
+        };
+        pool.return_agent(agent);
+
+        let returned = pool.agents_mut()[0].as_ref().expect("returned agent");
+        assert_eq!(
+            returned.desired_model, None,
+            "failover agent must not have the primary controller revision installed"
+        );
+        assert!(!returned.model_overridden);
     }
 
     #[tokio::test]

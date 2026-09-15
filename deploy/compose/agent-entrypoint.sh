@@ -38,6 +38,88 @@ if [ "${BUZZ_AGENT_ENTRYPOINT_MODELS_ONLY:-false}" = "true" ]; then
   exit 0
 fi
 
+# Optional API-billed failover when the ChatGPT subscription hits its usage
+# limit: points BUZZ_ACP_FAILOVER_ENV at a MODEL_PROVIDER/CODEX_CONFIG pair
+# that defines the azure-foundry provider inline via CODEX_CONFIG's
+# `model_providers` map. This deliberately never touches `~/.codex/config.toml`:
+# production mounts that file read-only from the host, and the container
+# filesystem itself is read-only, so writing to it would crash the agent
+# under `set -eu`. The published codex-acp adapter always spawns
+# `codex app-server` as a bare command — it does not accept `-c`/`--config`/
+# `-m` flags — so the provider switch must go through env vars
+# (MODEL_PROVIDER, CODEX_CONFIG), not `BUZZ_ACP_FAILOVER_AGENT_ARGS`.
+# No-op unless all three AZURE_FOUNDRY_* vars are set; a partial set is a
+# misconfiguration.
+configure_provider_failover() {
+  set_count=0
+  [ -n "${AZURE_FOUNDRY_API_KEY:-}" ] && set_count=$((set_count + 1))
+  [ -n "${AZURE_FOUNDRY_BASE_URL:-}" ] && set_count=$((set_count + 1))
+  [ -n "${AZURE_FOUNDRY_DEPLOYMENT:-}" ] && set_count=$((set_count + 1))
+
+  if [ "${set_count}" -eq 0 ]; then
+    return 0
+  fi
+  if [ "${set_count}" -ne 3 ]; then
+    echo "AZURE_FOUNDRY_API_KEY, AZURE_FOUNDRY_BASE_URL, and AZURE_FOUNDRY_DEPLOYMENT must all be set together for provider failover (or all left empty)" >&2
+    exit 1
+  fi
+
+  if ! printf '%s' "${AZURE_FOUNDRY_BASE_URL}" | grep -Eq '^https://'; then
+    echo "AZURE_FOUNDRY_BASE_URL must start with https://" >&2
+    exit 1
+  fi
+  if ! printf '%s' "${AZURE_FOUNDRY_DEPLOYMENT}" | grep -Eq '^[A-Za-z0-9._-]+$'; then
+    echo "AZURE_FOUNDRY_DEPLOYMENT must match ^[A-Za-z0-9._-]+\$" >&2
+    exit 1
+  fi
+  if [ -n "${AZURE_FOUNDRY_API_VERSION:-}" ] &&
+    ! printf '%s' "${AZURE_FOUNDRY_API_VERSION}" | grep -Eq '^[A-Za-z0-9._-]+$'; then
+    echo "AZURE_FOUNDRY_API_VERSION must match ^[A-Za-z0-9._-]+\$" >&2
+    exit 1
+  fi
+
+  # Build the JSON with node's JSON.stringify (already required for the model
+  # catalog extractor above) rather than hand-splicing strings, so escaping of
+  # the doubly-nested CODEX_CONFIG-inside-BUZZ_ACP_FAILOVER_ENV JSON is
+  # guaranteed correct regardless of what characters end up in these values.
+  if [ -z "${BUZZ_ACP_FAILOVER_ENV:-}" ]; then
+    BUZZ_ACP_FAILOVER_ENV="$(node -e '
+      const provider = {
+        name: "Azure Foundry (failover)",
+        base_url: process.env.AZURE_FOUNDRY_BASE_URL,
+        env_key: "AZURE_FOUNDRY_API_KEY",
+        wire_api: "responses",
+      };
+      if (process.env.AZURE_FOUNDRY_API_VERSION) {
+        provider.query_params = { "api-version": process.env.AZURE_FOUNDRY_API_VERSION };
+      }
+      const codexConfig = {
+        model: process.env.AZURE_FOUNDRY_DEPLOYMENT,
+        model_provider: "azure-foundry",
+        model_providers: { "azure-foundry": provider },
+      };
+      process.stdout.write(JSON.stringify({
+        MODEL_PROVIDER: "azure-foundry",
+        CODEX_CONFIG: JSON.stringify(codexConfig),
+      }));
+    ')"
+    export BUZZ_ACP_FAILOVER_ENV
+  fi
+
+  echo "provider failover: azure-foundry/${AZURE_FOUNDRY_DEPLOYMENT} enabled" >&2
+}
+
+# Test hook: exercise configure_provider_failover() against a throwaway HOME
+# without starting an agent, touching identity state, or requiring root.
+# Prints the resulting BUZZ_ACP_FAILOVER_ENV (or nothing, if failover stayed
+# disabled) to stdout so tests can assert on it — the export itself does not
+# survive this process exiting.
+if [ "${BUZZ_AGENT_ENTRYPOINT_FAILOVER_ONLY:-false}" = "true" ]; then
+  configure_provider_failover
+  printf '%s\n' "${BUZZ_ACP_FAILOVER_ENV:-}"
+  exit 0
+fi
+
 : "${BUZZ_ACP_DISPLAY_NAME:=VarVik Guide}"
 : "${BUZZ_ACP_PROFILE_ABOUT:=Hosted AI collaborator for the VarVik Studios community}"
 : "${BUZZ_ACP_PROFILE_AUDIENCE:=community}"
@@ -121,6 +203,8 @@ if [ "${BUZZ_CODEX_AUTH_PREPARED:-false}" != "true" ]; then
   fi
 fi
 unset BUZZ_CODEX_AUTH_PREPARED
+
+configure_provider_failover
 
 # Keep one stable Nostr identity per named agent volume. Explicit environment
 # values remain supported for migrations and externally managed identities.

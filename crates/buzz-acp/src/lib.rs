@@ -3,6 +3,7 @@
 mod acp;
 mod config;
 mod engram_fetch;
+mod failover;
 mod filter;
 mod observer;
 mod pool;
@@ -21,7 +22,7 @@ pub use usage::TurnUsage;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use acp::{AcpClient, EnvVar, McpServer};
 use anyhow::{Context, Result};
@@ -1957,6 +1958,13 @@ struct RespawnResult {
     index: usize,
     /// Tuple: (initialized client, protocol version, agent name).
     result: Result<(AcpClient, u32, String)>,
+    /// Whether this respawn was spawned under the failover policy (i.e. the
+    /// plan in effect when the task was launched). Carried alongside the
+    /// result so the collector builds a consistent `OwnedAgent` even if the
+    /// harness's failover mode changed while the task was in flight.
+    failover: bool,
+    /// Desired model from the plan in effect when this task was launched.
+    model: Option<String>,
 }
 
 /// Outcome of a non-cancelling steer attempt, forwarded from a per-attempt
@@ -1985,14 +1993,25 @@ struct SteerAckEvent {
 struct RespawnGuard {
     index: usize,
     tx: mpsc::Sender<RespawnResult>,
+    /// Whether the plan this task was launched with was the failover plan.
+    failover: bool,
+    /// Desired model from the plan this task was launched with.
+    model: Option<String>,
     sent: bool,
 }
 
 impl RespawnGuard {
-    fn new(index: usize, tx: mpsc::Sender<RespawnResult>) -> Self {
+    fn new(
+        index: usize,
+        tx: mpsc::Sender<RespawnResult>,
+        failover: bool,
+        model: Option<String>,
+    ) -> Self {
         Self {
             index,
             tx,
+            failover,
+            model,
             sent: false,
         }
     }
@@ -2008,6 +2027,8 @@ impl RespawnGuard {
         match self.tx.try_send(RespawnResult {
             index: self.index,
             result,
+            failover: self.failover,
+            model: self.model.clone(),
         }) {
             Ok(()) => self.sent = true,
             Err(e) => {
@@ -2032,6 +2053,8 @@ impl Drop for RespawnGuard {
             let _ = self.tx.try_send(RespawnResult {
                 index: self.index,
                 result: Err(anyhow::anyhow!("respawn task panicked or was cancelled")),
+                failover: self.failover,
+                model: self.model.clone(),
             });
         }
     }
@@ -2843,6 +2866,12 @@ async fn tokio_main() -> Result<()> {
         })
         .collect();
 
+    // Tracks whether newly spawned agents should run under the provider
+    // failover policy (see `crate::failover`). Disabled unless
+    // `config.failover.enabled()` and enough consecutive application errors
+    // match a configured trigger.
+    let mut failover_state = failover::FailoverState::default();
+
     //
     // Branches 1 & 2 both need to borrow `pool`, but they access different
     // fields (result_rx vs join_set). We use `rx_and_join_set()` to split the
@@ -2932,7 +2961,8 @@ async fn tokio_main() -> Result<()> {
                     "waking",
                     None,
                 );
-                let startup = PoolStartup::from_config(&config, observer.clone());
+                let wake_plan = failover::spawn_plan(&config, failover_state.is_active());
+                let startup = PoolStartup::from_plan(&config, &wake_plan, observer.clone());
                 let wake_tx = wake_tx.clone();
                 let wake_shutdown = shutdown_rx.clone();
                 wake_tasks.spawn(async move {
@@ -2950,8 +2980,49 @@ async fn tokio_main() -> Result<()> {
         }
 
         if pool_ready && last_maintenance.elapsed() >= maintenance_interval {
-            last_maintenance = std::time::Instant::now();
+            let maintenance_now = std::time::Instant::now();
+            last_maintenance = maintenance_now;
             queue.compact_expired_state();
+
+            // Provider failover cooldown: if the configured cooldown has
+            // elapsed since activation, return to the primary provider and
+            // replace every idle agent still running the failover process.
+            // Checked-out (in-flight) agents are handled when they return in
+            // `handle_prompt_result`'s Ok-branch mode-mismatch check.
+            if failover_state.expire_if_due(&config.failover, maintenance_now) {
+                tracing::info!("failover cooldown elapsed — returning to primary");
+                if let Some(ref observer) = observer {
+                    observer.emit(
+                        "failover_changed",
+                        None,
+                        &observer::context_for(None, None, None),
+                        serde_json::json!({ "active": false }),
+                    );
+                }
+                let primary_plan = failover::spawn_plan(&config, false);
+                let agents = pool.agents_mut();
+                for idx in 0..agents.len() {
+                    let is_failover_agent = agents[idx]
+                        .as_ref()
+                        .map(|a| a.spawned_in_failover)
+                        .unwrap_or(false);
+                    if !is_failover_agent {
+                        continue;
+                    }
+                    if let Some(old_agent) = agents[idx].take() {
+                        spawn_replacement_task(
+                            old_agent,
+                            &config,
+                            primary_plan.clone(),
+                            Duration::ZERO,
+                            &mut crash_history[idx],
+                            &respawn_tx,
+                            &mut respawn_tasks,
+                            observer.clone(),
+                        );
+                    }
+                }
+            }
 
             // Slot refill: spawn background tasks for empty slots whose
             // circuit breaker allows it. spawn_and_init runs off the main
@@ -2966,11 +3037,13 @@ async fn tokio_main() -> Result<()> {
                 slot.respawn_in_flight = true;
                 tracing::info!(agent = idx, "slot refill: spawning background respawn");
                 let cmd = config.agent_command.clone();
-                let args = config.agent_args.clone();
-                let env = config.persona_env_vars.clone();
+                let plan = failover::spawn_plan(&config, failover_state.is_active());
                 let has_codex = config.has_generated_codex_config;
                 let observer = observer.clone();
-                let guard = RespawnGuard::new(idx, respawn_tx.clone());
+                let guard =
+                    RespawnGuard::new(idx, respawn_tx.clone(), plan.failover, plan.model.clone());
+                let args = plan.args;
+                let env = plan.env;
                 respawn_tasks.spawn(async move {
                     let result = spawn_and_init(&cmd, &args, &env, has_codex, idx, observer).await;
                     guard.send(result);
@@ -3001,8 +3074,9 @@ async fn tokio_main() -> Result<()> {
                         acp,
                         state: SessionState::default(),
                         model_capabilities: None,
-                        desired_model: config.model.clone(),
+                        desired_model: rr.model,
                         model_overridden: false,
+                        spawned_in_failover: rr.failover,
                         agent_name,
                         goose_system_prompt_supported: None,
                         protocol_version,
@@ -3723,6 +3797,7 @@ async fn tokio_main() -> Result<()> {
                     &mut respawn_tasks,
                     observer.clone(),
                     Some(&ctx.rest_client),
+                    &mut failover_state,
                 ) == LoopAction::Exit
                 {
                     break;
@@ -3738,6 +3813,7 @@ async fn tokio_main() -> Result<()> {
                     &respawn_tx,
                     &mut respawn_tasks,
                     observer.clone(),
+                    failover_state.is_active(),
                 ) == LoopAction::Exit
                 {
                     break;
@@ -3762,6 +3838,7 @@ async fn tokio_main() -> Result<()> {
                     &respawn_tx,
                     &mut respawn_tasks,
                     observer.clone(),
+                    failover_state.is_active(),
                 );
                 if pool.live_count() == 0 && !any_respawn_in_flight(&crash_history) {
                     tracing::error!("all agents dead — exiting");
@@ -4543,6 +4620,7 @@ fn handle_prompt_result(
     respawn_tasks: &mut tokio::task::JoinSet<()>,
     observer: Option<observer::ObserverHandle>,
     rest_client: Option<&relay::RestClient>,
+    failover_state: &mut failover::FailoverState,
 ) -> LoopAction {
     let before = pool.task_map().len();
     let agent_index = result.agent.index;
@@ -4756,7 +4834,31 @@ fn handle_prompt_result(
                 outcome = outcome_label,
                 "agent_returned"
             );
-            pool.return_agent(result.agent);
+            failover_state.observe_success();
+            // The harness's failover mode may have changed while this agent
+            // was checked out (activation, or a cooldown expiry that missed
+            // this in-flight agent). Replace it now rather than returning it
+            // to the pool running the stale provider.
+            if result.agent.spawned_in_failover != failover_state.is_active() {
+                tracing::info!(
+                    agent = agent_index,
+                    "provider mode changed — replacing agent"
+                );
+                let plan = failover::spawn_plan(config, failover_state.is_active());
+                let idx = result.agent.index;
+                spawn_replacement_task(
+                    result.agent,
+                    config,
+                    plan,
+                    Duration::ZERO,
+                    &mut crash_history[idx],
+                    respawn_tx,
+                    respawn_tasks,
+                    observer.clone(),
+                );
+            } else {
+                pool.return_agent(result.agent);
+            }
         }
         // Fatal outcomes: the agent subprocess is dead or poisoned — respawn it.
         PromptOutcome::AgentExited | PromptOutcome::Timeout(_) => {
@@ -4792,6 +4894,7 @@ fn handle_prompt_result(
                 respawn_tx,
                 respawn_tasks,
                 observer.clone(),
+                failover_state.is_active(),
             ) {
                 // Circuit open — slot stays empty until maintenance refill.
                 if pool.live_count() == 0 && !any_respawn_in_flight(crash_history) {
@@ -4832,6 +4935,7 @@ fn handle_prompt_result(
                 respawn_tx,
                 respawn_tasks,
                 observer.clone(),
+                failover_state.is_active(),
             ) {
                 // Circuit open — slot stays empty until maintenance refill.
                 if pool.live_count() == 0 && !any_respawn_in_flight(crash_history) {
@@ -4897,6 +5001,7 @@ fn handle_prompt_result(
                     respawn_tx,
                     respawn_tasks,
                     observer,
+                    failover_state.is_active(),
                 ) && pool.live_count() == 0
                     && !any_respawn_in_flight(crash_history)
                 {
@@ -4912,8 +5017,49 @@ fn handle_prompt_result(
                     error = %e,
                     "agent_returned (application error — pipe intact)"
                 );
-                emit_turn_error(&e.to_string(), error_code);
-                pool.return_agent(result.agent);
+                let message = e.to_string();
+                emit_turn_error(&message, error_code);
+
+                let decision =
+                    failover_state.observe_error(&config.failover, &message, Instant::now());
+                let should_replace = match decision {
+                    failover::FailoverDecision::Activate => {
+                        tracing::warn!(agent = agent_index, "provider failover activated");
+                        if let Some(ref observer) = observer {
+                            observer.emit(
+                                "failover_changed",
+                                Some(agent_index),
+                                &observer::context_for(channel_id, None, Some(turn_id.clone())),
+                                serde_json::json!({
+                                    "active": true,
+                                    "reason": message,
+                                    "cooldownSecs": config.failover.cooldown.map(|d| d.as_secs()),
+                                }),
+                            );
+                        }
+                        true
+                    }
+                    failover::FailoverDecision::AlreadyActive => !result.agent.spawned_in_failover,
+                    failover::FailoverDecision::Counted(_)
+                    | failover::FailoverDecision::Ignored => false,
+                };
+
+                if should_replace {
+                    let plan = failover::spawn_plan(config, true);
+                    let idx = result.agent.index;
+                    spawn_replacement_task(
+                        result.agent,
+                        config,
+                        plan,
+                        Duration::ZERO,
+                        &mut crash_history[idx],
+                        respawn_tx,
+                        respawn_tasks,
+                        observer.clone(),
+                    );
+                } else {
+                    pool.return_agent(result.agent);
+                }
             }
         }
     }
@@ -4933,6 +5079,7 @@ fn recover_panicked_agent(
     respawn_tx: &mpsc::Sender<RespawnResult>,
     respawn_tasks: &mut tokio::task::JoinSet<()>,
     observer: Option<observer::ObserverHandle>,
+    failover_active: bool,
 ) {
     let task_id = join_error.id();
     let Some(meta) = pool.task_map_mut().remove(&task_id) else {
@@ -5007,10 +5154,11 @@ fn recover_panicked_agent(
     // Spawn respawn work off the main loop.
     slot.respawn_in_flight = true;
     let cmd = config.agent_command.clone();
-    let args = config.agent_args.clone();
-    let env = config.persona_env_vars.clone();
+    let plan = failover::spawn_plan(config, failover_active);
+    let args = plan.args;
+    let env = plan.env;
     let has_codex = config.has_generated_codex_config;
-    let guard = RespawnGuard::new(i, respawn_tx.clone());
+    let guard = RespawnGuard::new(i, respawn_tx.clone(), plan.failover, plan.model);
     respawn_tasks.spawn(async move {
         if !delay.is_zero() {
             tokio::time::sleep(delay).await;
@@ -5032,6 +5180,7 @@ fn drain_ready_join_results(
     respawn_tx: &mpsc::Sender<RespawnResult>,
     respawn_tasks: &mut tokio::task::JoinSet<()>,
     observer: Option<observer::ObserverHandle>,
+    failover_active: bool,
 ) -> LoopAction {
     while let Some(Some(join_result)) = pool.join_set.join_next().now_or_never() {
         if let Err(join_error) = join_result {
@@ -5048,6 +5197,7 @@ fn drain_ready_join_results(
                 respawn_tx,
                 respawn_tasks,
                 observer.clone(),
+                failover_active,
             );
             if pool.live_count() == 0 && !any_respawn_in_flight(crash_history) {
                 return LoopAction::Exit;
@@ -5229,11 +5379,14 @@ fn default_heartbeat_prompt() -> String {
 
 /// Spawn a background respawn task for a crashed agent slot.
 ///
-/// Does the circuit breaker check synchronously (non-blocking), then spawns
-/// the actual shutdown + backoff + spawn_and_init work into a background task.
-/// The result comes back through `respawn_tx` so the main loop stays responsive.
+/// Does the circuit breaker check synchronously (non-blocking), then delegates
+/// the actual shutdown + backoff + spawn_and_init work to
+/// [`spawn_replacement_task`]. A crash increments the circuit breaker's crash
+/// count; a deliberate provider-mode switch (see `handle_prompt_result`) does
+/// not, so it calls `spawn_replacement_task` directly instead of through here.
 ///
 /// Returns `true` if a respawn task was spawned, `false` if the circuit is open.
+#[allow(clippy::too_many_arguments)]
 fn spawn_respawn_task(
     old_agent: OwnedAgent,
     config: &Config,
@@ -5241,6 +5394,7 @@ fn spawn_respawn_task(
     respawn_tx: &mpsc::Sender<RespawnResult>,
     respawn_tasks: &mut tokio::task::JoinSet<()>,
     observer: Option<observer::ObserverHandle>,
+    failover_active: bool,
 ) -> bool {
     let index = old_agent.index;
 
@@ -5260,14 +5414,45 @@ fn spawn_respawn_task(
         }
     };
 
+    let plan = failover::spawn_plan(config, failover_active);
+    spawn_replacement_task(
+        old_agent,
+        config,
+        plan,
+        delay,
+        slot,
+        respawn_tx,
+        respawn_tasks,
+        observer,
+    );
+
+    true
+}
+
+/// Spawn the actual shutdown + backoff + spawn_and_init work for replacing
+/// `old_agent` off the main loop, per `plan`. Shared by the crash-recovery
+/// path (`spawn_respawn_task`, which records a crash first) and deliberate
+/// provider-mode switches (which must NOT count as a crash against the
+/// circuit breaker).
+#[allow(clippy::too_many_arguments)]
+fn spawn_replacement_task(
+    old_agent: OwnedAgent,
+    config: &Config,
+    plan: failover::SpawnPlan,
+    delay: Duration,
+    slot: &mut SlotCircuit,
+    respawn_tx: &mpsc::Sender<RespawnResult>,
+    respawn_tasks: &mut tokio::task::JoinSet<()>,
+    observer: Option<observer::ObserverHandle>,
+) {
+    let index = old_agent.index;
     slot.respawn_in_flight = true;
 
-    // Spawn the actual work (shutdown + sleep + spawn + init) off the main loop.
     let cmd = config.agent_command.clone();
-    let args = config.agent_args.clone();
-    let env = config.persona_env_vars.clone();
+    let args = plan.args;
+    let env = plan.env;
     let has_codex = config.has_generated_codex_config;
-    let guard = RespawnGuard::new(index, respawn_tx.clone());
+    let guard = RespawnGuard::new(index, respawn_tx.clone(), plan.failover, plan.model);
     respawn_tasks.spawn(async move {
         // Shutdown old agent (reap child, prevent zombie).
         let mut agent = old_agent;
@@ -5281,8 +5466,6 @@ fn spawn_respawn_task(
         let result = spawn_and_init(&cmd, &args, &env, has_codex, index, observer).await;
         guard.send(result);
     });
-
-    true
 }
 
 fn normalized_agent_name(init_result: &serde_json::Value) -> String {
@@ -5323,10 +5506,14 @@ struct PoolStartup {
     extra_env: Vec<(String, String)>,
     has_generated_codex_config: bool,
     model: Option<String>,
+    /// Whether the processes started by this pool run under the failover
+    /// policy. Propagated onto every `OwnedAgent::spawned_in_failover`.
+    failover: bool,
     observer: Option<observer::ObserverHandle>,
 }
 
 impl PoolStartup {
+    /// Startup parameters for the primary agent command/args/model.
     fn from_config(config: &Config, observer: Option<observer::ObserverHandle>) -> Self {
         Self {
             agents: config.agents,
@@ -5335,6 +5522,27 @@ impl PoolStartup {
             extra_env: config.persona_env_vars.clone(),
             has_generated_codex_config: config.has_generated_codex_config,
             model: config.model.clone(),
+            failover: false,
+            observer,
+        }
+    }
+
+    /// Startup parameters from a [`failover::SpawnPlan`] — used when a lazy
+    /// pool wakes while the harness is in failover mode, so the woken pool
+    /// starts on the same provider active processes were already using.
+    fn from_plan(
+        config: &Config,
+        plan: &failover::SpawnPlan,
+        observer: Option<observer::ObserverHandle>,
+    ) -> Self {
+        Self {
+            agents: config.agents,
+            command: config.agent_command.clone(),
+            args: plan.args.clone(),
+            extra_env: plan.env.clone(),
+            has_generated_codex_config: config.has_generated_codex_config,
+            model: plan.model.clone(),
+            failover: plan.failover,
             observer,
         }
     }
@@ -5402,6 +5610,7 @@ async fn initialize_agent_pool(
                             model_capabilities: None,
                             desired_model: startup.model.clone(),
                             model_overridden: false,
+                            spawned_in_failover: startup.failover,
                             agent_name,
                             goose_system_prompt_supported: None,
                             protocol_version,
@@ -7885,6 +8094,7 @@ mod build_mcp_servers_tests {
             runtime_controller_pubkey: None,
             no_base_prompt: false,
             base_prompt_content: None,
+            failover: crate::failover::FailoverPolicy::default(),
         }
     }
 
@@ -8110,6 +8320,7 @@ mod error_outcome_emission_tests {
             runtime_controller_pubkey: None,
             no_base_prompt: false,
             base_prompt_content: None,
+            failover: crate::failover::FailoverPolicy::default(),
         }
     }
 
@@ -8142,6 +8353,7 @@ mod error_outcome_emission_tests {
             model_capabilities: None,
             desired_model: None,
             model_overridden: false,
+            spawned_in_failover: false,
             agent_name: "unknown".into(),
             goose_system_prompt_supported: None,
             // Error branches under test never read this; 1 is the legacy
@@ -8215,6 +8427,7 @@ mod error_outcome_emission_tests {
             &mut respawn_tasks,
             None,
             None,
+            &mut failover::FailoverState::default(),
         );
 
         let returned = pool.agents_mut()[0].as_ref().expect("returned agent");
@@ -8287,6 +8500,7 @@ mod error_outcome_emission_tests {
             &mut respawn_tasks,
             None,
             None,
+            &mut failover::FailoverState::default(),
         );
 
         let returned = pool.agents_mut()[0].as_ref().expect("returned agent");
@@ -8401,6 +8615,7 @@ mod error_outcome_emission_tests {
             &mut respawn_tasks,
             None,
             None,
+            &mut failover::FailoverState::default(),
         );
 
         let returned = pool.agents_mut()[0].as_ref().expect("returned agent");
@@ -8464,6 +8679,7 @@ mod error_outcome_emission_tests {
             &mut respawn_tasks,
             Some(observer.clone()),
             None,
+            &mut failover::FailoverState::default(),
         );
 
         let turn_errors: Vec<_> = observer
@@ -8537,6 +8753,7 @@ mod error_outcome_emission_tests {
             &respawn_tx,
             &mut respawn_tasks,
             Some(observer.clone()),
+            false,
         );
 
         let panic = observer
@@ -8631,6 +8848,7 @@ mod error_outcome_emission_tests {
                 &mut respawn_tasks,
                 Some(observer.clone()),
                 None,
+                &mut failover::FailoverState::default(),
             );
             let events = observer.snapshot();
             let turn_error = events.iter().find(|e| e.kind == "turn_error").unwrap();
@@ -8722,6 +8940,7 @@ mod error_outcome_emission_tests {
                 &mut respawn_tasks,
                 None,
                 None,
+                &mut failover::FailoverState::default(),
             );
             (
                 queue.pending_channels(),
@@ -8828,6 +9047,7 @@ mod error_outcome_emission_tests {
                 &mut respawn_tasks,
                 None,
                 None,
+                &mut failover::FailoverState::default(),
             );
             (
                 queue.pending_channels(),
@@ -8920,6 +9140,7 @@ mod error_outcome_emission_tests {
             &mut respawn_tasks,
             Some(observer.clone()),
             None,
+            &mut failover::FailoverState::default(),
         );
 
         let events = observer.snapshot();
@@ -9014,6 +9235,7 @@ mod error_outcome_emission_tests {
             &mut respawn_tasks,
             Some(observer.clone()),
             None,
+            &mut failover::FailoverState::default(),
         );
 
         let events = observer.snapshot();
@@ -9130,6 +9352,7 @@ mod error_outcome_emission_tests {
             &mut respawn_tasks,
             Some(observer.clone()),
             None,
+            &mut failover::FailoverState::default(),
         );
 
         // Batch preserved as a cancelled merge, not dead-lettered — same
@@ -9263,6 +9486,7 @@ mod error_outcome_emission_tests {
             &mut respawn_tasks,
             Some(observer.clone()),
             None,
+            &mut failover::FailoverState::default(),
         );
 
         // No batch to merge — the queue has nothing pending for any channel.
@@ -9446,6 +9670,7 @@ mod error_outcome_emission_tests {
             &mut respawn_tasks,
             None,
             None,
+            &mut failover::FailoverState::default(),
         );
 
         // The batch must not be requeued: pending_channels returns 0.
@@ -9532,6 +9757,7 @@ mod error_outcome_emission_tests {
             &mut respawn_tasks,
             None,
             None,
+            &mut failover::FailoverState::default(),
         );
 
         // Non-auth application error: batch IS requeued (first attempt, retry budget > 0).
