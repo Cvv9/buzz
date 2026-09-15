@@ -129,6 +129,78 @@ All configuration is via environment variables (or CLI flags — every env var h
 | `--heartbeat-prompt` | `BUZZ_ACP_HEARTBEAT_PROMPT` | (built-in) | Custom heartbeat prompt text. Conflicts with `--heartbeat-prompt-file`. |
 | `--heartbeat-prompt-file` | `BUZZ_ACP_HEARTBEAT_PROMPT_FILE` | — | Read heartbeat prompt from a file. Conflicts with `--heartbeat-prompt`. |
 
+### Provider failover
+
+The harness can automatically switch newly spawned agent processes to an
+alternate provider when the primary one starts returning errors that look
+like a usage/rate limit (rather than a transient bug), then switch back once
+a cooldown elapses. This is harness-generic — it works with any adapter, not
+just Codex — but the `deploy/compose/` bundle wires it specifically for a
+ChatGPT-subscription `codex-acp` failing over to an Azure AI Foundry /
+Azure OpenAI Responses endpoint (see [deploy/compose/README.md](../../deploy/compose/README.md)).
+
+| Flag | Env Var | Default | Description |
+|------|---------|---------|-------------|
+| `--failover-agent-args` | `BUZZ_ACP_FAILOVER_AGENT_ARGS` | — | Extra CLI args appended to `--agent-args` only while running in failover mode (comma-separated, same splitting rules as `--agent-args`). Adapter-dependent — see the Codex note below. |
+| `--failover-env` | `BUZZ_ACP_FAILOVER_ENV` | — | Extra env vars injected only in failover mode, as a **single JSON object string** (e.g. `{"MODEL_PROVIDER":"azure-foundry","CODEX_CONFIG":"{\"model\":\"x\"}"}`) — not comma-split `KEY=VALUE` pairs, because a value like a `CODEX_CONFIG` payload legitimately contains commas. Wins over a same-keyed persona env var. |
+| `--failover-model` | `BUZZ_ACP_FAILOVER_MODEL` | — | Desired model while in failover mode. `None` leaves model selection to `--failover-agent-args` or the adapter default. |
+| `--failover-triggers` | `BUZZ_ACP_FAILOVER_TRIGGERS` | `usage_limit,usage limit,rate_limit_exceeded,insufficient_quota,quota exceeded,too many requests,internal error` | Comma-separated, case-insensitive substrings matched against an application error message. |
+| `--failover-threshold` | `BUZZ_ACP_FAILOVER_THRESHOLD` | `2` | Consecutive trigger-matching errors required before activating failover. Must be `>= 1`. |
+| `--failover-cooldown-secs` | `BUZZ_ACP_FAILOVER_COOLDOWN_SECS` | `3600` | Seconds to stay on the failover provider before returning to primary. `0` disables the cooldown — stays on failover until process restart. |
+
+Failover is **disabled** unless at least one of `--failover-agent-args`,
+`--failover-env`, or `--failover-model` is set — the triggers/threshold/cooldown
+alone don't do anything on their own.
+
+**Semantics:**
+
+- **Threshold / consecutive matches.** Only *consecutive* application-class
+  errors that match a trigger count toward the threshold. A successful turn,
+  or an error that doesn't match a trigger, resets the streak to zero.
+- **Activation replaces the agent process.** When the threshold is hit, the
+  harness spawns a fresh process with the failover args/env/model and shuts
+  down the old one — this is a deliberate provider switch, not a crash, so it
+  does not count against the crash-loop circuit breaker. In-flight ACP
+  sessions on the replaced process are lost; the next turn on that channel
+  starts a fresh session on the new process.
+- **Cooldown / return to primary.** Once `--failover-cooldown-secs` elapses
+  since activation, the harness returns to the primary provider the same
+  way — idle failover agents are replaced on the next maintenance tick, and
+  checked-out ones are replaced as soon as they finish their current turn.
+  `0` means never time out automatically (stays on failover until the
+  process is restarted).
+- **Why `internal error` is a default trigger.** `codex-acp` surfaces a
+  ChatGPT-subscription usage-limit hit as a bare JSON-RPC `-32603 Internal
+  error`, indistinguishable at the message level from other internal errors.
+  It's in the default trigger list so the common case works out of the box;
+  operators who see false-positive failovers should narrow
+  `--failover-triggers` to something more specific for their setup.
+
+**`codex-acp` ignores CLI config flags.** The published `@agentclientprotocol/codex-acp`
+adapter always spawns `codex app-server` as a bare command — it does not
+accept `-c`/`--config`/`-m` flags. Config reaches Codex only via the
+`CODEX_CONFIG` env var (a JSON object spread into the `thread/start` `config`
+param) and the provider via the `MODEL_PROVIDER` env var, both inherited from
+the harness's own environment. For Codex, use `--failover-env`, not
+`--failover-agent-args`.
+
+**Example — Codex on a ChatGPT subscription failing over to Azure AI Foundry:**
+
+The `CODEX_CONFIG` value can define the provider inline via its own
+`model_providers` map — no `~/.codex/config.toml` edit needed, which also
+means this works when `config.toml` is mounted read-only (as it is in
+production):
+
+```bash
+buzz-acp --agent-command codex-acp \
+  --failover-env '{"MODEL_PROVIDER":"azure-foundry","CODEX_CONFIG":"{\"model\":\"hermes-gpt-5-5\",\"model_provider\":\"azure-foundry\",\"model_providers\":{\"azure-foundry\":{\"name\":\"Azure Foundry (failover)\",\"base_url\":\"https://<resource>.openai.azure.com/openai/v1\",\"env_key\":\"AZURE_FOUNDRY_API_KEY\",\"wire_api\":\"responses\",\"query_params\":{\"api-version\":\"2025-04-01-preview\"}}}}"}'
+```
+
+`deploy/compose/agent-entrypoint.sh` builds this JSON automatically from
+`AZURE_FOUNDRY_*` env vars (using `node -e ... JSON.stringify(...)` so the
+doubly-nested escaping is guaranteed correct) — see
+[deploy/compose/README.md](../../deploy/compose/README.md).
+
 ### Inbound Author Gate
 
 Controls which authors' events the harness forwards to the agent. Events from disallowed authors are silently dropped before reaching subscription rules.

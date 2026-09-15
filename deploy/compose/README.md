@@ -99,6 +99,29 @@ remove the affected `agent-*-codex` volume and start that agent again. Use this 
 on a server you control: each hosted agent necessarily receives the credential
 needed to call Codex. The credential is never served to browser clients.
 
+### Subscription failover to Azure Foundry
+
+When a ChatGPT-subscription `codex-acp` agent hits its usage limit,
+`agent-entrypoint.sh` can switch it to an API-billed Azure AI Foundry /
+Azure OpenAI Responses endpoint until the subscription limit resets. Set all
+three of `AZURE_FOUNDRY_API_KEY`, `AZURE_FOUNDRY_BASE_URL` (the `…/openai/v1`
+endpoint), and `AZURE_FOUNDRY_DEPLOYMENT` in `.env` (optionally
+`AZURE_FOUNDRY_API_VERSION`); leaving all three unset disables failover
+entirely, and setting only some of them is a startup error. The entrypoint
+points `BUZZ_ACP_FAILOVER_ENV` at a `MODEL_PROVIDER`/`CODEX_CONFIG` pair that
+defines the `azure-foundry` provider inline via `CODEX_CONFIG`'s own
+`model_providers` map — it never touches `~/.codex/config.toml`, which
+production mounts read-only from the host on a read-only container
+filesystem, and never writes the key to disk. `BUZZ_ACP_FAILOVER_ENV` (not
+`BUZZ_ACP_FAILOVER_AGENT_ARGS`) is required here because the published
+`codex-acp` adapter always spawns `codex app-server` as a bare command and
+never accepts CLI config flags. Agents switch to it automatically after a
+few consecutive usage-limit-shaped errors and return to the subscription
+after `BUZZ_AGENT_FAILOVER_COOLDOWN_SECS` (default 3600s; `0` disables the
+automatic return). See [crates/buzz-acp/README.md § Provider
+failover](../../crates/buzz-acp/README.md#provider-failover) for the full
+trigger/threshold/cooldown semantics.
+
 Each container registers itself as a relay member and publishes its agent
 profile. An owner/admin then opens a channel in the browser and adds the relevant
 shared or admin agent. Mentioning an agent sends work to its server runtime. The

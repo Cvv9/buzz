@@ -13,6 +13,7 @@ use thiserror::Error;
 use url::Url;
 use uuid::Uuid;
 
+use crate::failover::FailoverPolicy;
 use crate::filter::SubscriptionRule;
 
 /// Default idle timeout (seconds) when neither `--idle-timeout` nor the
@@ -432,6 +433,49 @@ pub struct CliArgs {
     #[arg(long, env = "BUZZ_ACP_MODEL")]
     pub model: Option<String>,
 
+    /// Extra CLI args appended to `--agent-args` when the harness fails over
+    /// to an alternate provider. Empty (the default) means failover is
+    /// disabled unless `--failover-env` or `--failover-model` is set instead.
+    #[arg(long, env = "BUZZ_ACP_FAILOVER_AGENT_ARGS", value_delimiter = ',')]
+    pub failover_agent_args: Option<Vec<String>>,
+
+    /// Extra env vars injected only while running the failover provider, as a
+    /// single JSON object string (e.g.
+    /// `{"MODEL_PROVIDER":"azure-foundry","CODEX_CONFIG":"{\"model\":\"x\"}"}`).
+    /// A JSON object is required (not comma-split `KEY=VALUE` pairs) because
+    /// values such as a `CODEX_CONFIG` payload legitimately contain commas.
+    /// Wins over a same-keyed persona env var.
+    #[arg(long, env = "BUZZ_ACP_FAILOVER_ENV")]
+    pub failover_env: Option<String>,
+
+    /// Desired model while running the failover provider. `None` (the
+    /// default) leaves model selection to `--failover-agent-args` or the
+    /// adapter default.
+    #[arg(long, env = "BUZZ_ACP_FAILOVER_MODEL")]
+    pub failover_model: Option<String>,
+
+    /// Comma-separated, case-insensitive substrings matched against an
+    /// application error message to detect a usage/rate-limit style failure
+    /// that should trigger provider failover.
+    #[arg(
+        long,
+        env = "BUZZ_ACP_FAILOVER_TRIGGERS",
+        value_delimiter = ',',
+        default_value = "usage_limit,usage limit,rate_limit_exceeded,insufficient_quota,quota exceeded,too many requests,internal error"
+    )]
+    pub failover_triggers: Vec<String>,
+
+    /// Number of consecutive trigger-matching errors required before
+    /// activating failover. Must be `>= 1`.
+    #[arg(long, env = "BUZZ_ACP_FAILOVER_THRESHOLD", default_value_t = 2)]
+    pub failover_threshold: u32,
+
+    /// Seconds to stay on the failover provider before returning to primary.
+    /// `0` disables the cooldown — the harness stays on failover until
+    /// process restart.
+    #[arg(long, env = "BUZZ_ACP_FAILOVER_COOLDOWN_SECS", default_value_t = 3600)]
+    pub failover_cooldown_secs: u64,
+
     /// Title for the agent's ACP sessions, passed out-of-band in `session/new`
     /// `_meta`. Adapters that recognize it name the session after this value;
     /// others ignore it. Never enters the prompt.
@@ -591,6 +635,9 @@ pub struct Config {
     /// `from_cli()`. `None` when using the compiled-in default or when
     /// `--no-base-prompt` is set.
     pub base_prompt_content: Option<String>,
+    /// Provider-failover policy. `enabled() == false` (the default) means
+    /// the harness never switches away from the primary agent/model.
+    pub failover: FailoverPolicy,
 }
 
 /// Maximum length, in characters, of a session title sent to the adapter.
@@ -669,6 +716,39 @@ fn validate_allowlist(entries: &[String]) -> Result<HashSet<String>, ConfigError
         validated.insert(trimmed);
     }
     Ok(validated)
+}
+
+/// Parse `--failover-env` as a single JSON object string into `(key, value)`
+/// pairs. A JSON object (not comma-split `KEY=VALUE` pairs) is required
+/// because values such as a `CODEX_CONFIG` payload legitimately contain
+/// commas. Rejects a missing/empty input as "no extra env", non-object JSON,
+/// non-string values, and empty keys.
+fn parse_failover_env(raw: Option<String>) -> Result<Vec<(String, String)>, ConfigError> {
+    let Some(raw) = raw.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(Vec::new());
+    };
+    let value: serde_json::Value = serde_json::from_str(raw)
+        .map_err(|e| ConfigError::ConfigFile(format!("--failover-env is not valid JSON: {e}")))?;
+    let serde_json::Value::Object(map) = value else {
+        return Err(ConfigError::ConfigFile(
+            "--failover-env must be a JSON object, e.g. {\"KEY\":\"value\"}".into(),
+        ));
+    };
+    map.into_iter()
+        .map(|(key, value)| {
+            if key.trim().is_empty() {
+                return Err(ConfigError::ConfigFile(
+                    "--failover-env has an entry with an empty key".into(),
+                ));
+            }
+            let value = value.as_str().ok_or_else(|| {
+                ConfigError::ConfigFile(format!(
+                    "--failover-env entry '{key}' must have a string value"
+                ))
+            })?;
+            Ok((key, value.to_string()))
+        })
+        .collect()
 }
 
 /// Validate the `--multiple-event-handling` / `--dedup` combination.
@@ -1095,6 +1175,35 @@ impl Config {
                 ))
             })?;
 
+        if args.failover_threshold == 0 {
+            return Err(ConfigError::ConfigFile(
+                "--failover-threshold / BUZZ_ACP_FAILOVER_THRESHOLD must be >= 1".into(),
+            ));
+        }
+        let failover = FailoverPolicy {
+            agent_args: args
+                .failover_agent_args
+                .unwrap_or_default()
+                .into_iter()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect(),
+            env: parse_failover_env(args.failover_env)?,
+            model: args.failover_model,
+            triggers: args
+                .failover_triggers
+                .iter()
+                .map(|s| s.trim().to_ascii_lowercase())
+                .filter(|s| !s.is_empty())
+                .collect(),
+            threshold: args.failover_threshold,
+            cooldown: if args.failover_cooldown_secs == 0 {
+                None
+            } else {
+                Some(std::time::Duration::from_secs(args.failover_cooldown_secs))
+            },
+        };
+
         let config = Config {
             keys,
             relay_url: args.relay_url,
@@ -1148,6 +1257,7 @@ impl Config {
             runtime_controller_pubkey,
             no_base_prompt: args.no_base_prompt,
             base_prompt_content,
+            failover,
         };
 
         Ok(config)
@@ -1168,8 +1278,16 @@ impl Config {
             modes.sort();
             format!(" allowed_respond_to=[{}]", modes.join(","))
         };
+        let failover_detail = if self.failover.enabled() {
+            match self.failover.cooldown {
+                Some(cooldown) => format!(" failover=enabled(cooldown={}s)", cooldown.as_secs()),
+                None => " failover=enabled(cooldown=none)".to_string(),
+            }
+        } else {
+            " failover=disabled".to_string()
+        };
         format!(
-            "relay={} pubkey={} agent_cmd={} {} mcp_cmd={} idle_timeout={}s max_turn={}s agents={} heartbeat={}s subscribe={:?} dedup={:?} meh={:?} ignore_self={} context_limit={} max_turns_per_session={} presence={} typing={} memory={} model={} permission_mode={} {}{}",
+            "relay={} pubkey={} agent_cmd={} {} mcp_cmd={} idle_timeout={}s max_turn={}s agents={} heartbeat={}s subscribe={:?} dedup={:?} meh={:?} ignore_self={} context_limit={} max_turns_per_session={} presence={} typing={} memory={} model={} permission_mode={} {}{}{}",
             self.relay_url,
             self.keys.public_key().to_hex(),
             self.agent_command,
@@ -1192,6 +1310,7 @@ impl Config {
             self.permission_mode,
             respond_to_detail,
             allowed_respond_to_detail,
+            failover_detail,
         )
     }
 }
@@ -1473,6 +1592,19 @@ fn rule_applies_to_channel(rule: &SubscriptionRule, channel_id: Uuid) -> bool {
     }
 }
 
+/// Minimal `Config` builders shared across `buzz-acp` test modules (e.g.
+/// `failover::tests`) that need a `Config` without going through CLI parsing.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    /// Build a minimal `Config` with `SubscribeMode::All` and every failover
+    /// field at its disabled default. Callers override individual fields.
+    pub(crate) fn minimal_config() -> Config {
+        tests::test_config(SubscribeMode::All)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1480,7 +1612,7 @@ mod tests {
     use clap::{Parser, ValueEnum};
 
     /// Build a minimal Config for testing without CLI parsing.
-    fn test_config(mode: SubscribeMode) -> Config {
+    pub(crate) fn test_config(mode: SubscribeMode) -> Config {
         Config {
             keys: nostr::Keys::generate(),
             relay_url: "ws://localhost:3000".into(),
@@ -1526,6 +1658,7 @@ mod tests {
             runtime_controller_pubkey: None,
             no_base_prompt: false,
             base_prompt_content: None,
+            failover: crate::failover::FailoverPolicy::default(),
         }
     }
 
@@ -3048,5 +3181,60 @@ channels = "ALL"
             "Found secret-bearing env args without hide_env_values=true. \
              Add `hide_env_values = true` to each: {violations:?}"
         );
+    }
+
+    #[test]
+    fn parse_failover_env_none_or_empty_is_no_extra_env() {
+        assert_eq!(parse_failover_env(None).expect("none"), Vec::new());
+        assert_eq!(
+            parse_failover_env(Some("".into())).expect("empty"),
+            Vec::new()
+        );
+        assert_eq!(
+            parse_failover_env(Some("   ".into())).expect("whitespace"),
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn parse_failover_env_parses_json_object_including_nested_json_string_values() {
+        let raw = r#"{"MODEL_PROVIDER":"azure-foundry","CODEX_CONFIG":"{\"model\":\"x\"}"}"#;
+        let mut parsed = parse_failover_env(Some(raw.into())).expect("valid json object");
+        parsed.sort();
+        assert_eq!(
+            parsed,
+            vec![
+                ("CODEX_CONFIG".to_string(), r#"{"model":"x"}"#.to_string()),
+                ("MODEL_PROVIDER".to_string(), "azure-foundry".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_failover_env_rejects_non_object_json() {
+        let err = parse_failover_env(Some("[1,2,3]".into())).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::ConfigFile(msg) if msg.contains("must be a JSON object"))
+        );
+    }
+
+    #[test]
+    fn parse_failover_env_rejects_invalid_json() {
+        let err = parse_failover_env(Some("{not json}".into())).unwrap_err();
+        assert!(matches!(err, ConfigError::ConfigFile(msg) if msg.contains("not valid JSON")));
+    }
+
+    #[test]
+    fn parse_failover_env_rejects_non_string_value() {
+        let err = parse_failover_env(Some(r#"{"KEY": 1}"#.into())).unwrap_err();
+        assert!(
+            matches!(err, ConfigError::ConfigFile(msg) if msg.contains("must have a string value"))
+        );
+    }
+
+    #[test]
+    fn parse_failover_env_rejects_empty_key() {
+        let err = parse_failover_env(Some(r#"{"": "value"}"#.into())).unwrap_err();
+        assert!(matches!(err, ConfigError::ConfigFile(msg) if msg.contains("empty key")));
     }
 }
