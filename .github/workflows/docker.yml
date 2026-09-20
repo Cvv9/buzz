@@ -48,6 +48,7 @@ on:
       - ".github/workflows/docker.yml"
       - ".github/workflows/publish-hosted-agent-runtime.yml"
       - "scripts/test-*workflow*"
+      - "scripts/manual-workflow-fixture-forwarder*.mjs"
       - "scripts/test-agent-runtime-isolation.sh"
       - "scripts/test-manual-mcp-session.sh"
       - "deploy/compose/**"
