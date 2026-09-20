@@ -947,6 +947,18 @@ pub enum UsersCmd {
 
 #[derive(Subcommand)]
 pub enum WorkflowsCmd {
+    /// List an agent's scheduled workflows, actual results, and manual limits (owner only)
+    Scheduled {
+        /// Immutable agent public key as hex
+        #[arg(long)]
+        agent_pubkey: String,
+        /// Last workflow UUID returned by the previous page
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Page size (1 to 100)
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+    },
     /// List workflows in a channel
     List {
         /// Channel UUID
@@ -997,6 +1009,9 @@ pub enum WorkflowsCmd {
         /// JSON object of input variables passed to the workflow as event content
         #[arg(long)]
         inputs: Option<String>,
+        /// Expected definition hash from scheduled workflow summaries
+        #[arg(long)]
+        expected_definition_hash: Option<String>,
     },
     /// List runs for a workflow
     Runs {

@@ -1878,6 +1878,205 @@ pub fn build_workflow_trigger(workflow_id: Uuid) -> Result<EventBuilder, SdkErro
     Ok(EventBuilder::new(Kind::Custom(KIND_WORKFLOW_TRIGGER as u16), "").tags(tags))
 }
 
+/// Build a manual trigger with a reserved definition revision. Inputs cannot
+/// shadow the revision, and retries must reuse the caller's signed event.
+pub fn build_workflow_manual_trigger(
+    workflow_id: Uuid,
+    expected_definition_hash: Option<&str>,
+    inputs: &serde_json::Map<String, serde_json::Value>,
+) -> Result<EventBuilder, SdkError> {
+    if workflow_id.is_nil() || inputs.contains_key("expected_definition_hash") {
+        return Err(SdkError::InvalidInput(
+            "invalid workflow or reserved expected_definition_hash input".into(),
+        ));
+    }
+    let mut content = inputs.clone();
+    if let Some(hash) = expected_definition_hash {
+        let hash = check_pubkey_hex(hash, "expected_definition_hash")?;
+        content.insert("expected_definition_hash".into(), hash.into());
+    }
+    let content =
+        serde_json::to_string(&content).map_err(|e| SdkError::InvalidInput(e.to_string()))?;
+    check_content(&content, 64 * 1024)?;
+    Ok(
+        EventBuilder::new(Kind::Custom(KIND_WORKFLOW_TRIGGER as u16), content)
+            .tags([tag(&["d", &workflow_id.to_string()])?]),
+    )
+}
+
+fn execution_header(version: u32, ids: &[Uuid], key: &str) -> Result<(), SdkError> {
+    if version != buzz_core::workflow_execution::PROTOCOL_VERSION
+        || ids.iter().any(Uuid::is_nil)
+        || check_pubkey_hex(key, "agent_pubkey")? != key
+    {
+        return Err(SdkError::InvalidInput(
+            "invalid workflow execution header".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Build strict agent-signed execution control (46040). The signer must be the
+/// envelope's agent. Every task operation is scoped to its exact destination.
+pub fn build_workflow_execution_control(
+    control: &buzz_core::workflow_execution::ExecutionControl,
+) -> Result<EventBuilder, SdkError> {
+    use buzz_core::workflow_execution::ExecutionOperation;
+    execution_header(
+        control.version,
+        &[control.community_id, control.instance_id],
+        &control.agent_pubkey,
+    )?;
+    let mut tags = vec![tag(&["p", &control.agent_pubkey])?];
+    let context = match &control.operation {
+        ExecutionOperation::Capability {} => None,
+        ExecutionOperation::Claim {
+            run_id,
+            task_id,
+            channel_id,
+            revision,
+            ephemeral_pubkey,
+        } => {
+            if *revision < 1
+                || check_pubkey_hex(ephemeral_pubkey, "ephemeral_pubkey")? != *ephemeral_pubkey
+                || *ephemeral_pubkey == control.agent_pubkey
+            {
+                return Err(SdkError::InvalidInput("invalid workflow claim".into()));
+            }
+            Some((*run_id, *task_id, *channel_id, None))
+        }
+        ExecutionOperation::Started {
+            run_id,
+            task_id,
+            channel_id,
+            grant_id,
+            ordinal,
+        }
+        | ExecutionOperation::Stopped {
+            run_id,
+            task_id,
+            channel_id,
+            grant_id,
+            ordinal,
+            ..
+        }
+        | ExecutionOperation::Finished {
+            run_id,
+            task_id,
+            channel_id,
+            grant_id,
+            ordinal,
+            ..
+        } => {
+            if *ordinal < 1 || grant_id.is_nil() {
+                return Err(SdkError::InvalidInput("invalid workflow grant".into()));
+            }
+            if let ExecutionOperation::Finished {
+                result_event_id, ..
+            } = &control.operation
+            {
+                if check_pubkey_hex(result_event_id, "result_event_id")? != *result_event_id {
+                    return Err(SdkError::InvalidInput(
+                        "invalid workflow result reference".into(),
+                    ));
+                }
+            }
+            Some((*run_id, *task_id, *channel_id, Some(*grant_id)))
+        }
+    };
+    if let Some((run, task, channel, grant)) = context {
+        execution_header(
+            control.version,
+            &[run, task, channel],
+            &control.agent_pubkey,
+        )?;
+        tags.push(tag(&["h", &channel.to_string()])?);
+        tags.push(tag(&["workflow-run", &run.to_string()])?);
+        tags.push(tag(&["workflow-task", &task.to_string()])?);
+        if let Some(grant) = grant {
+            tags.push(tag(&["workflow-grant", &grant.to_string()])?);
+        }
+    }
+    let content =
+        serde_json::to_string(control).map_err(|e| SdkError::InvalidInput(e.to_string()))?;
+    Ok(EventBuilder::new(
+        Kind::Custom(buzz_core::kind::KIND_WORKFLOW_EXECUTION_CONTROL as u16),
+        content,
+    )
+    .tags(tags)
+    .allow_self_tagging())
+}
+
+/// Build a relay-signed attempt grant or cancellation (46041).
+pub fn build_workflow_execution_decision(
+    decision: &buzz_core::workflow_execution::ExecutionDecision,
+) -> Result<EventBuilder, SdkError> {
+    execution_header(
+        decision.version,
+        &[
+            decision.community_id,
+            decision.instance_id,
+            decision.run_id,
+            decision.task_id,
+            decision.grant_id,
+            decision.channel_id,
+        ],
+        &decision.agent_pubkey,
+    )?;
+    if decision.ordinal < 1 || decision.revision < 1 || decision.deadline <= 0 {
+        return Err(SdkError::InvalidInput(
+            "invalid workflow execution decision".into(),
+        ));
+    }
+    let content =
+        serde_json::to_string(decision).map_err(|e| SdkError::InvalidInput(e.to_string()))?;
+    Ok(EventBuilder::new(
+        Kind::Custom(buzz_core::kind::KIND_WORKFLOW_EXECUTION_DECISION as u16),
+        content,
+    )
+    .tags([
+        tag(&["p", &decision.agent_pubkey])?,
+        tag(&["h", &decision.channel_id.to_string()])?,
+        tag(&["workflow-run", &decision.run_id.to_string()])?,
+        tag(&["workflow-task", &decision.task_id.to_string()])?,
+        tag(&["workflow-grant", &decision.grant_id.to_string()])?,
+    ]))
+}
+
+/// Build a relay-signed run invalidation (46042) with explicit recipient and
+/// channel. Consumers must refresh authorized reads rather than trust a cache.
+pub fn build_workflow_run_status(
+    status: &buzz_core::workflow_execution::RunStatusInvalidation,
+    recipient: &str,
+    channel: Uuid,
+) -> Result<EventBuilder, SdkError> {
+    execution_header(
+        status.version,
+        &[
+            status.community_id,
+            status.workflow_id,
+            status.run_id,
+            channel,
+        ],
+        recipient,
+    )?;
+    if status.revision < 1 {
+        return Err(SdkError::InvalidInput("invalid workflow revision".into()));
+    }
+    let content =
+        serde_json::to_string(status).map_err(|e| SdkError::InvalidInput(e.to_string()))?;
+    Ok(EventBuilder::new(
+        Kind::Custom(buzz_core::kind::KIND_WORKFLOW_RUN_STATUS as u16),
+        content,
+    )
+    .tags([
+        tag(&["p", recipient])?,
+        tag(&["h", &channel.to_string()])?,
+        tag(&["d", &status.workflow_id.to_string()])?,
+        tag(&["workflow-run", &status.run_id.to_string()])?,
+    ]))
+}
+
 /// Build a workflow approval event — kind 46030 (grant) or 46031 (deny).
 ///
 /// - `token_hash`: hex-encoded SHA-256 of the approval token UUID (d-tag).
@@ -2614,6 +2813,101 @@ mod tests {
             let s = t.as_slice();
             s.first().map(|v| v.as_str()) == Some(key) && s.get(1).map(|v| v.as_str()) == Some(val)
         })
+    }
+
+    #[test]
+    fn workflow_manual_trigger_reserves_revision_and_preserves_inputs() {
+        let mut inputs = serde_json::Map::new();
+        inputs.insert("note".into(), "fresh".into());
+        let event =
+            sign(build_workflow_manual_trigger(uuid(), Some(&"ab".repeat(32)), &inputs).unwrap());
+        let content: serde_json::Value = serde_json::from_str(&event.content).unwrap();
+        assert_eq!(content["expected_definition_hash"], "ab".repeat(32));
+        assert_eq!(content["note"], "fresh");
+        inputs.insert("expected_definition_hash".into(), "shadow".into());
+        assert!(build_workflow_manual_trigger(uuid(), None, &inputs).is_err());
+        assert!(
+            build_workflow_manual_trigger(uuid(), Some("bad"), &serde_json::Map::new()).is_err()
+        );
+    }
+
+    #[test]
+    fn workflow_execution_builders_scope_control_and_reject_bad_grants() {
+        use buzz_core::workflow_execution::*;
+        let keys = nostr::Keys::generate();
+        let channel = uuid();
+        let mut control = ExecutionControl {
+            version: 1,
+            community_id: uuid(),
+            agent_pubkey: keys.public_key().to_hex(),
+            instance_id: uuid(),
+            operation: ExecutionOperation::Claim {
+                run_id: uuid(),
+                task_id: uuid(),
+                channel_id: channel,
+                revision: 1,
+                ephemeral_pubkey: nostr::Keys::generate().public_key().to_hex(),
+            },
+        };
+        let event = build_workflow_execution_control(&control)
+            .unwrap()
+            .sign_with_keys(&keys)
+            .unwrap();
+        assert_eq!(event.kind.as_u16(), 46040);
+        assert!(event
+            .tags
+            .iter()
+            .any(|t| t.as_slice() == ["h", &channel.to_string()]));
+        assert!(event
+            .tags
+            .iter()
+            .any(|t| t.as_slice() == ["p", &keys.public_key().to_hex()]));
+        control.version = 2;
+        assert!(build_workflow_execution_control(&control).is_err());
+        control.version = 1;
+        control.operation = ExecutionOperation::Started {
+            run_id: uuid(),
+            task_id: uuid(),
+            channel_id: channel,
+            grant_id: uuid(),
+            ordinal: 0,
+        };
+        assert!(build_workflow_execution_control(&control).is_err());
+        let mut decision = ExecutionDecision {
+            version: 1,
+            community_id: uuid(),
+            agent_pubkey: keys.public_key().to_hex(),
+            instance_id: uuid(),
+            run_id: uuid(),
+            task_id: uuid(),
+            grant_id: uuid(),
+            channel_id: channel,
+            ordinal: 1,
+            revision: 1,
+            deadline: 2000000000,
+            decision: DecisionKind::Grant,
+        };
+        assert_eq!(
+            sign(build_workflow_execution_decision(&decision).unwrap())
+                .kind
+                .as_u16(),
+            46041
+        );
+        decision.deadline = 0;
+        assert!(build_workflow_execution_decision(&decision).is_err());
+        let status = RunStatusInvalidation {
+            version: 1,
+            community_id: uuid(),
+            workflow_id: uuid(),
+            run_id: uuid(),
+            revision: 1,
+        };
+        assert_eq!(
+            sign(build_workflow_run_status(&status, &keys.public_key().to_hex(), channel).unwrap())
+                .kind
+                .as_u16(),
+            46042
+        );
     }
 
     #[test]

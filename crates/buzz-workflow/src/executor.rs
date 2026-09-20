@@ -403,9 +403,14 @@ pub fn resolve_step_templates(
     };
 
     match &step.action {
-        SendMessage { text, channel } => Ok(SendMessage {
+        SendMessage {
+            text,
+            channel,
+            agent_targets,
+        } => Ok(SendMessage {
             text: t(text)?,
             channel: t_opt(channel)?,
+            agent_targets: agent_targets.clone(),
         }),
         SendDm { to, text } => Ok(SendDm {
             to: t(to)?,
@@ -546,7 +551,11 @@ pub async fn dispatch_action(
     let result = serving_write
         .protect(async {
             match action {
-                SendMessage { text, channel } => {
+                SendMessage {
+                    text,
+                    channel,
+                    agent_targets,
+                } => {
                     // Look up workflow metadata for destination validation and
                     // attribution, scoped to the run's community — the same run/workflow
                     // UUID may exist in another community, so a bare-id lookup could
@@ -596,6 +605,7 @@ pub async fn dispatch_action(
                                 workflow_name: workflow.name.clone(),
                                 run_id: run_id.to_string(),
                                 step_id: step_id.to_owned(),
+                                agent_targets: agent_targets.clone(),
                             },
                         )
                         .await

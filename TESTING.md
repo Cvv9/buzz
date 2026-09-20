@@ -410,3 +410,25 @@ CLI-side, only two matter for testing:
 | ACP logs `discovered 0 channel(s)` / `no channel subscriptions resolved` | Agent identity isn't a member of any channel | `buzz channels add-member --channel "$CHANNEL" --pubkey "$AGENT_PUBKEY" --role member` from another identity |
 | `GOOSE_MODE` warning, agent hangs | Not set | `export GOOSE_MODE=auto` |
 | Tests pass locally but CI fails | Forgot to run `just ci` | `just ci` runs the gate (fmt, clippy, unit tests, desktop/web builds) |
+
+### Manual scheduled-agent workflow admission
+
+Use a dedicated Postgres/Redis test instance, with explicit `DATABASE_URL` and
+`REDIS_URL`; these tests create uniquely named communities and never call a model
+provider. After activating Hermit:
+
+```sh
+cargo test -p buzz-core -p buzz-sdk -p buzz-workflow
+cargo test -p buzz-db workflow_manual -- --ignored --nocapture
+cargo test -p buzz-relay workflow_manual -- --ignored --nocapture
+```
+
+The DB suite covers concurrent distinct signed requests, same-agent and community
+concurrency, rolling allowances and exact boundaries, definition/owner/channel
+changes, scheduler collision claims, replayable signed outbox intent and deletion
+retention. The relay test submits signed events through the shared ingress and
+proves old runners remain blocked. Capability rows in these tests are test-only
+fixtures; they do not prove safe ACP execution. Phase 2 must separately prove
+claims, process stopping, scoped credentials and actual completion before enabling
+the runtime capability handler. Never clear stalled evidence merely because a
+lease expires or a runner is online; old work needs positively verified stopping.

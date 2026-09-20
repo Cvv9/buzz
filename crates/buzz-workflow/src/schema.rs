@@ -103,6 +103,9 @@ pub enum ActionDef {
         /// Optional channel UUID override. Must be a valid UUID string.
         #[serde(default)]
         channel: Option<String>,
+        /// Immutable managed-agent identities; names are presentation only.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        agent_targets: Vec<String>,
     },
     /// Send a direct message to a user.
     SendDm {
@@ -152,7 +155,106 @@ pub enum ActionDef {
     },
 }
 
+/// A statically bound task in a supported manual workflow.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ManualTask {
+    /// Stable step identifier.
+    pub step_id: String,
+    /// Immutable target public key.
+    pub agent_pubkey: String,
+    /// Fixed destination.
+    pub channel_id: uuid::Uuid,
+    /// Fresh task instructions from the current definition.
+    pub text: String,
+}
+
 impl WorkflowDef {
+    /// Compute the next UTC occurrence using the scheduler's cron normalization.
+    /// Interval times stay unknown: persisted occurrence buckets are not the
+    /// live scheduler's actual firing-time anchor.
+    pub fn next_scheduled_at(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+        _last_fire: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Option<chrono::DateTime<chrono::Utc>> {
+        use std::str::FromStr;
+        if !self.enabled {
+            return None;
+        }
+        match &self.trigger {
+            TriggerDef::Schedule {
+                cron: Some(expression),
+                interval: None,
+            } => cron::Schedule::from_str(&normalize_cron(expression))
+                .ok()?
+                .after(&now)
+                .next(),
+            // Persisted scheduled_for is a deterministic occurrence bucket;
+            // the live interval scheduler anchors its actual successful tick.
+            // Do not infer an exact next time from the different DB anchor.
+            TriggerDef::Schedule {
+                cron: None,
+                interval: Some(_),
+            } => None,
+            _ => None,
+        }
+    }
+
+    /// Return fixed task bindings for the bounded manual execution profile.
+    /// Legacy name-only definitions require an owner-signed target update.
+    pub fn manual_tasks(&self, channel_id: uuid::Uuid) -> Result<Vec<ManualTask>, &'static str> {
+        if !self.enabled {
+            return Err("workflow_disabled");
+        }
+        if !matches!(self.trigger, TriggerDef::Schedule { .. }) || self.validate().is_err() {
+            return Err("unsupported_manual_profile");
+        }
+        let mut tasks = Vec::new();
+        for step in &self.steps {
+            let ActionDef::SendMessage {
+                text,
+                channel,
+                agent_targets,
+            } = &step.action
+            else {
+                return Err("unsupported_manual_profile");
+            };
+            if text.trim().is_empty()
+                || step.if_expr.is_some()
+                || text.contains("{{")
+                || channel
+                    .as_ref()
+                    .is_some_and(|c| c != &channel_id.to_string())
+            {
+                return Err("unsupported_manual_profile");
+            }
+            if agent_targets.is_empty() {
+                return Err("association_unresolved");
+            }
+            let mut seen = HashSet::new();
+            for target in agent_targets {
+                if target.len() != 64
+                    || target
+                        .bytes()
+                        .any(|b| !b.is_ascii_hexdigit() || b.is_ascii_uppercase())
+                    || !seen.insert(target)
+                {
+                    return Err("unsupported_manual_profile");
+                }
+                tasks.push(ManualTask {
+                    step_id: step.id.clone(),
+                    agent_pubkey: target.clone(),
+                    channel_id,
+                    text: text.clone(),
+                });
+            }
+        }
+        if tasks.is_empty() || tasks.len() > 2 {
+            return Err("unsupported_manual_profile");
+        }
+        Ok(tasks)
+    }
+
     /// True when any step performs an action that can exfiltrate channel data
     /// to an arbitrary external destination (`call_webhook`).
     ///
@@ -192,6 +294,21 @@ impl WorkflowDef {
 
         let mut seen_ids: HashSet<&str> = HashSet::new();
         for step in &self.steps {
+            if let ActionDef::SendMessage { agent_targets, .. } = &step.action {
+                let mut targets = HashSet::new();
+                for key in agent_targets {
+                    if key.len() != 64
+                        || key
+                            .bytes()
+                            .any(|b| !b.is_ascii_hexdigit() || b.is_ascii_uppercase())
+                        || !targets.insert(key)
+                    {
+                        return Err(WorkflowError::InvalidDefinition(
+                            "agent_targets must contain unique lowercase hex public keys".into(),
+                        ));
+                    }
+                }
+            }
             if step.id.trim().is_empty() {
                 return Err(WorkflowError::InvalidDefinition(
                     "step id must not be empty".into(),
@@ -905,5 +1022,88 @@ mod tests {
             trigger,
             TriggerDef::DiffPosted { filter: Some(_) }
         ));
+    }
+}
+
+#[cfg(test)]
+mod manual_profile_tests {
+    use super::*;
+    fn definition() -> WorkflowDef {
+        serde_json::from_value(serde_json::json!({"name":"brief","trigger":{"on":"schedule","cron":"0 9 * * *"},"steps":[{"id":"brief","action":"send_message","text":"Daily report","agent_targets":["a".repeat(64)]}]})).unwrap()
+    }
+    #[test]
+    fn manual_profile_rejects_templates_conditions_and_more_than_two_tasks() {
+        let channel = uuid::Uuid::new_v4();
+        let mut def = definition();
+        assert_eq!(def.manual_tasks(channel).unwrap().len(), 1);
+        def.steps[0].if_expr = Some("true".into());
+        assert_eq!(
+            def.manual_tasks(channel).unwrap_err(),
+            "unsupported_manual_profile"
+        );
+        def = definition();
+        if let ActionDef::SendMessage { text, .. } = &mut def.steps[0].action {
+            *text = "{{trigger.text}}".into();
+        }
+        assert_eq!(
+            def.manual_tasks(channel).unwrap_err(),
+            "unsupported_manual_profile"
+        );
+        def = definition();
+        if let ActionDef::SendMessage { agent_targets, .. } = &mut def.steps[0].action {
+            *agent_targets = vec!["a".repeat(64), "b".repeat(64), "c".repeat(64)];
+        }
+        assert_eq!(
+            def.manual_tasks(channel).unwrap_err(),
+            "unsupported_manual_profile"
+        );
+    }
+    #[test]
+    fn manual_profile_names_never_establish_binding_and_static_destination_is_scoped() {
+        let channel = uuid::Uuid::new_v4();
+        let mut def = definition();
+        if let ActionDef::SendMessage {
+            agent_targets,
+            text,
+            ..
+        } = &mut def.steps[0].action
+        {
+            agent_targets.clear();
+            *text = "@Agent report".into();
+        }
+        assert_eq!(
+            def.manual_tasks(channel).unwrap_err(),
+            "association_unresolved"
+        );
+        def = definition();
+        if let ActionDef::SendMessage { channel, .. } = &mut def.steps[0].action {
+            *channel = Some(uuid::Uuid::new_v4().to_string());
+        }
+        assert_eq!(
+            def.manual_tasks(channel).unwrap_err(),
+            "unsupported_manual_profile"
+        );
+    }
+    #[test]
+    fn invalid_zero_interval_next_occurrence_is_unknown() {
+        let mut def = definition();
+        def.trigger = TriggerDef::Schedule {
+            cron: None,
+            interval: Some("0s".into()),
+        };
+        let now = chrono::Utc::now();
+        assert!(def.next_scheduled_at(now, Some(now)).is_none());
+    }
+    #[test]
+    fn interval_occurrence_bucket_does_not_claim_an_exact_next_time() {
+        let mut def = definition();
+        def.trigger = TriggerDef::Schedule {
+            cron: None,
+            interval: Some("1h".into()),
+        };
+        let now = chrono::Utc::now();
+        assert!(def
+            .next_scheduled_at(now, Some(now - chrono::Duration::hours(1)))
+            .is_none());
     }
 }

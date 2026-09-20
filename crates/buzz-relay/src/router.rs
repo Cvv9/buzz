@@ -63,6 +63,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/events", post(api::bridge::submit_event))
         .route("/query", post(api::bridge::query_events))
         .route("/count", post(api::bridge::count_events))
+        .route("/workflows", get(workflows_page_or_summaries))
         .route(
             "/workflows/{workflow_id}/runs",
             get(api::workflows::workflow_runs),
@@ -185,6 +186,59 @@ fn make_http_span(request: &Request<Body>) -> tracing::Span {
         otel.kind = "server",
         http.request.method = %request.method(),
     )
+}
+
+fn prefers_workflows_page(accept: &str, query: Option<&str>) -> bool {
+    accept.contains("text/html")
+        && !url::form_urlencoded::parse(query.unwrap_or("").as_bytes())
+            .any(|(key, _)| key == "agent_pubkey")
+}
+
+// `/workflows` is also an existing browser route. Parse the API query only
+// after content negotiation so normal navigation still loads the workspace.
+async fn workflows_page_or_summaries(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::OriginalUri(uri): axum::extract::OriginalUri,
+) -> axum::response::Response {
+    let accept = headers
+        .get("accept")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if prefers_workflows_page(accept, uri.query()) {
+        if state.config.serve_web_workspace {
+            if let Some(dir) = &state.config.web_dir {
+                return workflow_read_response(read_spa_index(&dir.join("index.html")).await);
+            }
+        }
+        return workflow_read_response(StatusCode::NOT_FOUND.into_response());
+    }
+    let query = match axum::extract::Query::<api::workflows::ScheduledQuery>::try_from_uri(&uri) {
+        Ok(query) => query,
+        Err(error) => return workflow_read_response(error.into_response()),
+    };
+    workflow_read_response(
+        api::workflows::agent_scheduled_workflows(
+            State(state),
+            headers,
+            axum::extract::RawQuery(uri.query().map(str::to_owned)),
+            query,
+        )
+        .await
+        .into_response(),
+    )
+}
+
+fn workflow_read_response(mut response: axum::response::Response) -> axum::response::Response {
+    response.headers_mut().append(
+        axum::http::header::VARY,
+        axum::http::HeaderValue::from_static("Accept"),
+    );
+    response.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("private, no-store"),
+    );
+    response
 }
 
 async fn public_admin_not_found() -> StatusCode {
@@ -524,6 +578,34 @@ mod tests {
                 .is_none(),
             "empty configuration must fail closed rather than emit a wildcard"
         );
+    }
+
+    #[test]
+    fn workflow_read_variants_are_not_shared_cached() {
+        let response = workflow_read_response(StatusCode::OK.into_response());
+        assert_eq!(response.headers()[axum::http::header::VARY], "Accept");
+        assert_eq!(
+            response.headers()[axum::http::header::CACHE_CONTROL],
+            "private, no-store"
+        );
+    }
+
+    #[test]
+    fn workflow_summary_query_does_not_shadow_browser_navigation() {
+        assert!(prefers_workflows_page(
+            "text/html,application/xhtml+xml",
+            None
+        ));
+        assert!(prefers_workflows_page("text/html", Some("tab=history")));
+        assert!(!prefers_workflows_page("application/json", None));
+        assert!(!prefers_workflows_page(
+            "text/html",
+            Some("agent_pubkey=abc")
+        ));
+        assert!(!prefers_workflows_page(
+            "text/html",
+            Some("%61gent_pubkey=abc")
+        ));
     }
 
     #[test]

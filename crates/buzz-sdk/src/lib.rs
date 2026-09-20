@@ -20,6 +20,8 @@ pub use builders::*;
 
 /// Re-export kind constants so consumers don't need buzz-core directly.
 pub use buzz_core::kind;
+/// Versioned workflow execution payloads for the typed builders.
+pub use buzz_core::workflow_execution;
 
 /// Thread reference for reply builders (NIP-10 markers).
 ///

@@ -596,3 +596,34 @@ instead of one refresh per author. Cleanup cancels the timer and subscriptions;
 no in-flight query result is shared across invalidations. Workspace startup
 waits for the initial roster/message author set before mounting this sync.
 The web profile and hosted-agent E2E tests cover live projection after updates.
+
+### Scheduled workflow manual execution control
+
+The agent settings read model is `GET /workflows?agent_pubkey=<hex>` (NIP-98,
+exact current community owner plus visible destinations). It joins explicit
+owner-signed `send_message.agent_targets` or current-definition bindings; agent
+display names never establish or change this association. Name-only legacy
+workflows require an owner-signed definition update before manual execution.
+
+Kind `46020` is the single manual admission path for UI, CLI and signed direct
+requests. `expected_definition_hash` is a reserved request field; arbitrary
+manual inputs and templates are unsupported. Supported definitions are enabled,
+scheduled, fixed text, same-channel `send_message` tasks with one or two explicit
+`(step, agent)` pairs and no conditional/other actions. Existing channel override
+restrictions remain enforced.
+
+Postgres owns request receipts, per-community admission serialization, rolling
+allowances, active target locks and signed-task outbox. Settings receipts and
+summary limits are read from that ledger. A charged workflow deletion creates a
+tombstone: it cannot erase allowances, clear an active run or resurrect through
+a delayed definition event. Community erasure retains its existing fence/purge
+policy and includes the new tenant-scoped tables.
+
+Kinds `46040` (agent execution control), `46041` (relay grant/cancel), and `46042`
+(relay status invalidation) are the versioned supervised-execution protocol.
+`workflow_runs.status` remains workflow **dispatch** status; `execution_state`
+and verified task results describe actual agent completion. Old evidence is
+unknown/stalled. Capability freshness must never release an unresolved execution
+lock. Relay control ingress remains disabled until the isolated runner and
+execution claims are implemented; new manual task intent is never sent through
+the ordinary conversation retry path.
