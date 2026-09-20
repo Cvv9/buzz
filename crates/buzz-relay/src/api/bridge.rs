@@ -823,28 +823,49 @@ async fn submit_event_authed(
         }
     };
 
+    let stop_exception = if event.pubkey == pubkey && event.verify().is_ok() {
+        match crate::workflow_execution::parse_control(tenant, &event) {
+            Ok(control)
+                if buzz_core::kind::event_kind_u32(&event)
+                    == buzz_core::kind::KIND_WORKFLOW_EXECUTION_CONTROL =>
+            {
+                state
+                    .db
+                    .workflow_stop_authorized(tenant.community(), &control)
+                    .await
+                    .unwrap_or(false)
+            }
+            _ => false,
+        }
+    } else {
+        false
+    };
     // Enforce relay membership (with NIP-OA fallback via x-auth-tag header).
     let auth_tag = headers.get("x-auth-tag").and_then(|v| v.to_str().ok());
-    let nip_oa_owner = match super::relay_members::enforce_relay_membership(
-        state,
-        tenant.community(),
-        &pubkey_bytes,
-        auth_tag,
-    )
-    .await
-    {
-        Ok(owner) => owner.or_else(|| {
-            if !state.config.require_relay_membership {
-                super::relay_members::extract_nip_oa_owner(&pubkey_bytes, auth_tag)
-            } else {
-                None
+    let nip_oa_owner = if stop_exception {
+        None
+    } else {
+        match super::relay_members::enforce_relay_membership(
+            state,
+            tenant.community(),
+            &pubkey_bytes,
+            auth_tag,
+        )
+        .await
+        {
+            Ok(owner) => owner.or_else(|| {
+                if !state.config.require_relay_membership {
+                    super::relay_members::extract_nip_oa_owner(&pubkey_bytes, auth_tag)
+                } else {
+                    None
+                }
+            }),
+            Err(e) => {
+                return SubmitOutcome::Err {
+                    status: e.0,
+                    response: e,
+                };
             }
-        }),
-        Err(e) => {
-            return SubmitOutcome::Err {
-                status: e.0,
-                response: e,
-            };
         }
     };
     if let Some(owner) = nip_oa_owner {
@@ -986,6 +1007,22 @@ async fn query_events_authed(
     enforce_http_admission(state, tenant, &pubkey).await?;
     check_nip98_replay(state, tenant, event_id_bytes).await?;
     let pubkey_bytes = pubkey.to_bytes().to_vec();
+
+    if state
+        .db
+        .is_workflow_credential(&pubkey_bytes)
+        .await
+        .map_err(|_| internal_error("workflow authorization"))?
+    {
+        let filters: Vec<nostr::Filter> = serde_json::from_slice(body)
+            .map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid filters"))?;
+        let events = crate::workflow_scoped::snapshot(state, tenant, &pubkey_bytes, &filters)
+            .await
+            .map_err(|e| api_error(StatusCode::FORBIDDEN, &e))?;
+        return Ok(Json(
+            serde_json::to_value(events).map_err(|_| internal_error("workflow query"))?,
+        ));
+    }
 
     let auth_tag = headers.get("x-auth-tag").and_then(|v| v.to_str().ok());
     super::relay_members::enforce_relay_membership(
@@ -1473,6 +1510,20 @@ async fn count_events_authed(
     enforce_http_admission(state, tenant, &pubkey).await?;
     check_nip98_replay(state, tenant, event_id_bytes).await?;
     let pubkey_bytes = pubkey.to_bytes().to_vec();
+
+    if state
+        .db
+        .is_workflow_credential(&pubkey_bytes)
+        .await
+        .map_err(|_| internal_error("workflow authorization"))?
+    {
+        let filters: Vec<nostr::Filter> = serde_json::from_slice(body)
+            .map_err(|_| api_error(StatusCode::BAD_REQUEST, "invalid filters"))?;
+        let events = crate::workflow_scoped::snapshot(state, tenant, &pubkey_bytes, &filters)
+            .await
+            .map_err(|e| api_error(StatusCode::FORBIDDEN, &e))?;
+        return Ok(Json(serde_json::json!({"count":events.len()})));
+    }
 
     let auth_tag = headers.get("x-auth-tag").and_then(|v| v.to_str().ok());
     super::relay_members::enforce_relay_membership(

@@ -387,6 +387,22 @@ impl ActionSink for RelayActionSink {
             let (stored_event, was_inserted) = if targets_agent {
                 let run = Uuid::parse_str(&context.run_id)
                     .map_err(|_| ActionSinkError::InvalidInput("invalid workflow run".into()))?;
+                if let Some(id) = state
+                    .db
+                    .queue_supervised_workflow_tasks(
+                        community_id,
+                        run,
+                        &context.step_id,
+                        channel_uuid,
+                        &managed_targets,
+                        &event,
+                        &state.relay_keypair,
+                    )
+                    .await
+                    .map_err(|e| ActionSinkError::Database(e.to_string()))?
+                {
+                    return Ok(id);
+                }
                 state
                     .db
                     .persist_scheduled_workflow_task(
@@ -1024,7 +1040,10 @@ mod integration_tests {
             community_id: *community.as_uuid(),
             agent_pubkey: agent.public_key().to_hex(),
             instance_id: Uuid::new_v4(),
-            operation: buzz_core::workflow_execution::ExecutionOperation::Capability {},
+            operation: buzz_core::workflow_execution::ExecutionOperation::Capability {
+                runtime_profile: "linux-uids-v1".into(),
+                max_turn_duration_secs: 7200,
+            },
         };
         let event = buzz_sdk::build_workflow_execution_control(&control)
             .unwrap()
@@ -1033,8 +1052,15 @@ mod integration_tests {
         assert!(
             crate::workflow_execution::handle_control(&tenant, &state, &event)
                 .await
+                .unwrap()
+                .accepted
+        );
+        let legacy=EventBuilder::new(Kind::Custom(46040),serde_json::json!({"version":1,"community_id":community.as_uuid(),"agent_pubkey":agent.public_key().to_hex(),"instance_id":Uuid::new_v4(),"operation":{"op":"capability"}}).to_string()).sign_with_keys(&agent).unwrap();
+        assert!(
+            crate::workflow_execution::handle_control(&tenant, &state, &legacy)
+                .await
                 .is_err(),
-            "Phase1 never unlocks an unisolated runner"
+            "legacy capability lacks proven isolation contract"
         );
     }
 }

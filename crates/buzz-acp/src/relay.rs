@@ -467,6 +467,42 @@ impl RestClient {
             .map_err(|e| RelayError::Http(e.to_string()))
     }
 
+    /// Submit one execution receipt while retaining HTTP rejection status.
+    /// The workflow journal owns retries and must distinguish terminal denial
+    /// from disconnection before replacing Finished with verified Stopped.
+    pub(crate) async fn submit_execution_receipt(
+        &self,
+        event: &Event,
+    ) -> Result<(u16, Value), RelayError> {
+        let url = format!("{}/events", self.base_url);
+        let body = serde_json::to_vec(event)?;
+        let auth = self.nip98_header("POST", &url, Some(&body))?;
+        let mut request = self
+            .http
+            .post(&url)
+            .header("Authorization", auth)
+            .header("Content-Type", "application/json")
+            .body(body);
+        if let Some(tag) = &self.auth_tag_json {
+            request = request.header("x-auth-tag", tag);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|error| RelayError::Http(error.to_string()))?;
+        let status = response.status().as_u16();
+        let text = response
+            .text()
+            .await
+            .map_err(|error| RelayError::Http(error.to_string()))?;
+        let value = match serde_json::from_str(&text) {
+            Ok(value) => value,
+            Err(_) if !(200..300).contains(&status) => Value::Null,
+            Err(error) => return Err(RelayError::Json(error)),
+        };
+        Ok((status, value))
+    }
+
     /// Submit a signed event via the HTTP bridge: `POST /events` with NIP-98 auth.
     ///
     /// The event must already be signed. Returns the relay response JSON.

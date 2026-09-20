@@ -153,6 +153,12 @@ pub(crate) async fn evaluate_manual_limits(
 ) -> Result<(Option<String>, ManualLimits)> {
     let mut allowance = limits(tx, community, workflow_id, now).await?;
     if reason.is_none() {
+        let dm:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflows w JOIN channels c ON c.community_id=w.community_id AND c.id=w.channel_id WHERE w.community_id=$1 AND w.id=$2 AND c.channel_type='dm')").bind(community.as_uuid()).bind(workflow_id).fetch_one(&mut **tx).await?;
+        if dm {
+            reason = Some("unsupported_manual_destination");
+        }
+    }
+    if reason.is_none() {
         let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_runs WHERE community_id=$1 AND workflow_id=$2 AND (execution_state IN ('queued','running','stalled') OR (execution_state IS NULL AND status IN ('pending','running','waiting_approval')))) OR EXISTS(SELECT 1 FROM scheduled_workflow_fires WHERE community_id=$1 AND workflow_id=$2 AND outcome='started' AND workflow_run_id IS NULL)")
                 .bind(community.as_uuid()).bind(workflow_id).fetch_one(&mut **tx).await?;
         let manual_active: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workflow_runs WHERE community_id=$1 AND origin='manual' AND execution_state IN ('queued','running','stalled')")
@@ -297,6 +303,7 @@ impl Db {
                     ("workflow-step", task.step_id.clone()),
                     ("workflow-task", task_id.to_string()),
                     ("workflow-origin", "manual".into()),
+                    ("workflow-community", community.as_uuid().to_string()),
                     ("workflow-protocol", "1".into()),
                     ("workflow-deadline", deadline.timestamp().to_string()),
                     ("workflow-definition", hex::encode(&hash)),
@@ -418,7 +425,7 @@ impl Db {
                 sqlx::query("INSERT INTO workflow_run_tasks(community_id,run_id,task_id,step_id,agent_pubkey,channel_id,task_event_id,state) VALUES($1,$2,$3,$4,$5,$6,$7,'stalled') ON CONFLICT(community_id,run_id,step_id,agent_pubkey) DO NOTHING")
                     .bind(community.as_uuid()).bind(run).bind(Uuid::new_v4()).bind(step).bind(&key).bind(channel).bind(event.id.as_bytes().as_slice()).execute(&mut *tx).await?;
             }
-            sqlx::query("UPDATE workflow_runs SET execution_state='stalled',safe_error_code='legacy_execution_unknown',revision=revision+1 WHERE community_id=$1 AND id=$2")
+            sqlx::query("UPDATE workflow_runs SET execution_state=CASE WHEN EXISTS(SELECT 1 FROM workflow_run_tasks t WHERE t.community_id=workflow_runs.community_id AND t.run_id=workflow_runs.id AND t.state IN ('queued','running')) THEN CASE WHEN execution_state='running' THEN 'running' ELSE 'queued' END ELSE 'stalled' END,safe_error_code='legacy_execution_unknown',revision=revision+1 WHERE community_id=$1 AND id=$2")
                 .bind(community.as_uuid()).bind(run).execute(&mut *tx).await?;
         }
         tx.commit().await?;

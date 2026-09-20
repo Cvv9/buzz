@@ -32,7 +32,12 @@ pub struct ExecutionControl {
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ExecutionOperation {
     /// Advertise safe runtime support. The relay fixes expiry at 90 seconds.
-    Capability {},
+    Capability {
+        /// Tested operating-system identity isolation profile.
+        runtime_profile: String,
+        /// Configured ordinary agent turn bound, in seconds.
+        max_turn_duration_secs: u64,
+    },
     /// Request permission immediately before starting an execution attempt.
     Claim {
         /// Durable run.
@@ -45,6 +50,11 @@ pub enum ExecutionOperation {
         revision: i64,
         /// Child-only read credential; never the agent key.
         ephemeral_pubkey: String,
+    },
+    /// Recover an original claim receipt only to prove its attempt stopped.
+    RecoverClaim {
+        /// Exact original signed claim; never reissued as a new claim.
+        signed_claim: nostr::Event,
     },
     /// Confirm execution began under a durable grant.
     Started {
@@ -166,9 +176,75 @@ mod tests {
     use super::*;
     #[test]
     fn workflow_manual_protocol_rejects_unknown_operation_fields() {
-        let mut value = serde_json::json!({"version":1,"community_id":Uuid::new_v4(),"agent_pubkey":"a".repeat(64),"instance_id":Uuid::new_v4(),"operation":{"op":"capability"}});
+        let mut value = serde_json::json!({"version":1,"community_id":Uuid::new_v4(),"agent_pubkey":"a".repeat(64),"instance_id":Uuid::new_v4(),"operation":{"op":"capability","runtime_profile":"linux-uids-v1","max_turn_duration_secs":7200}});
         assert!(serde_json::from_value::<ExecutionControl>(value.clone()).is_ok());
         value["operation"]["trusted"] = true.into();
         assert!(serde_json::from_value::<ExecutionControl>(value).is_err());
     }
+}
+
+/// Verify an embedded original claim for recovery, without requiring freshness.
+/// Returns its fixed run/task/channel scope. Recovery never authorizes execution.
+pub fn recovery_claim_scope(control: &ExecutionControl) -> Option<(Uuid, Uuid, Uuid)> {
+    let ExecutionOperation::RecoverClaim { signed_claim } = &control.operation else {
+        return None;
+    };
+    if signed_claim.verify().is_err()
+        || crate::kind::event_kind_u32(signed_claim) != crate::kind::KIND_WORKFLOW_EXECUTION_CONTROL
+        || signed_claim.pubkey.to_hex() != control.agent_pubkey
+        || control.version != PROTOCOL_VERSION
+        || control.instance_id.is_nil()
+    {
+        return None;
+    }
+    let original: ExecutionControl = serde_json::from_str(&signed_claim.content).ok()?;
+    if original.version != PROTOCOL_VERSION
+        || original.community_id != control.community_id
+        || original.agent_pubkey != control.agent_pubkey
+        || original.instance_id != control.instance_id
+    {
+        return None;
+    }
+    let ExecutionOperation::Claim {
+        run_id,
+        task_id,
+        channel_id,
+        revision,
+        ephemeral_pubkey,
+    } = original.operation
+    else {
+        return None;
+    };
+    if [run_id, task_id, channel_id, control.community_id]
+        .iter()
+        .any(Uuid::is_nil)
+        || revision < 1
+        || ephemeral_pubkey == control.agent_pubkey
+        || ephemeral_pubkey.len() != 64
+        || !ephemeral_pubkey
+            .bytes()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        || signed_claim.tags.len() != 4
+    {
+        return None;
+    }
+    for (key, value) in [
+        ("p", control.agent_pubkey.clone()),
+        ("h", channel_id.to_string()),
+        ("workflow-run", run_id.to_string()),
+        ("workflow-task", task_id.to_string()),
+    ] {
+        let mut tags = signed_claim
+            .tags
+            .iter()
+            .filter(|t| t.as_slice().first().is_some_and(|v| v == key));
+        if tags
+            .next()
+            .is_none_or(|t| t.as_slice() != [key, value.as_str()])
+            || tags.next().is_some()
+        {
+            return None;
+        }
+    }
+    Some((run_id, task_id, channel_id))
 }

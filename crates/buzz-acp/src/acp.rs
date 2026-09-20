@@ -141,6 +141,9 @@ fn build_initialize_params() -> serde_json::Value {
 pub struct AcpClient {
     /// The agent child process (kept alive to prevent zombie).
     child: Child,
+    /// Preserve the group id even after the direct child has exited.
+    process_group: Option<u32>,
+    workflow_session: Option<String>,
     /// Write end of the agent's stdin pipe.
     stdin: ChildStdin,
     /// Framed reader over the agent's stdout pipe (line-oriented, bounded).
@@ -460,6 +463,43 @@ fn build_client_capabilities() -> serde_json::Value {
 }
 
 impl AcpClient {
+    /// Original process group leader, retained after a child exit.
+    pub(crate) fn process_group_id(&self) -> Option<u32> {
+        self.process_group
+    }
+
+    pub(crate) async fn cancel_workflow(&mut self) -> Result<(), AcpError> {
+        if let Some(session) = self.workflow_session.clone() {
+            self.session_cancel(&session).await?;
+        }
+        Ok(())
+    }
+
+    /// Reap the direct child and positively verify the entire process group is
+    /// gone. False is unresolved execution, never a successful stop receipt.
+    pub(crate) async fn shutdown_verified(&mut self) -> bool {
+        let Some(pid) = self.process_group else {
+            return false;
+        };
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        kill_process_group(pid);
+        if !matches!(
+            tokio::time::timeout_at(deadline, self.child.wait()).await,
+            Ok(Ok(_))
+        ) {
+            return false;
+        }
+        loop {
+            if process_group_gone(pid) {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
     /// Kill the agent subprocess and wait for it to exit (no zombies).
     ///
     /// `Drop` only calls `start_kill()` (sends SIGKILL but doesn't reap).
@@ -503,11 +543,59 @@ impl AcpClient {
         extra_env: &[(String, String)],
         has_generated_codex_config: bool,
     ) -> Result<Self, AcpError> {
+        Self::spawn_internal(command, args, extra_env, has_generated_codex_config, None).await
+    }
+
+    /// Spawn an isolated workflow child with an explicit, credential-scoped environment.
+    pub(crate) async fn spawn_workflow(
+        command: &str,
+        args: &[String],
+        extra_env: &[(String, String)],
+        manual: bool,
+    ) -> Result<Self, AcpError> {
+        Self::spawn_internal(command, args, extra_env, false, Some(manual)).await
+    }
+
+    async fn spawn_internal(
+        command: &str,
+        args: &[String],
+        extra_env: &[(String, String)],
+        has_generated_codex_config: bool,
+        workflow: Option<bool>,
+    ) -> Result<Self, AcpError> {
         use std::process::Stdio;
 
-        let mut cmd = tokio::process::Command::new(command);
-        cmd.args(args)
-            .stdin(Stdio::piped())
+        let isolation = crate::workflow_isolation::Isolation::configured()
+            .map_err(|e| AcpError::Protocol(e.to_string()))?;
+        if workflow.is_some() && isolation.is_none() {
+            return Err(AcpError::Protocol(
+                "workflow worker isolation is not configured".into(),
+            ));
+        }
+        let mut cmd = match &isolation {
+            Some(profile) => {
+                let manual = workflow.unwrap_or(false);
+                let mut cmd = profile.command(command, args, manual);
+                let inherited = if workflow.is_some() {
+                    Vec::new()
+                } else {
+                    std::env::vars().collect()
+                };
+                cmd.envs(profile.environment(inherited, manual));
+                if workflow.is_some() {
+                    // The caller has composed provider settings and replaced
+                    // the Buzz key; parent values must never override these.
+                    cmd.envs(extra_env.iter().cloned());
+                }
+                cmd
+            }
+            None => {
+                let mut cmd = tokio::process::Command::new(command);
+                cmd.args(args);
+                cmd
+            }
+        };
+        cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             // Inherit stderr so agent logs are visible in the harness terminal.
             .stderr(Stdio::inherit())
@@ -525,11 +613,12 @@ impl AcpClient {
         //   • has_generated_codex_config=false: return None; any persona-supplied
         //     CODEX_CONFIG falls through to the normal operator-wins loop below.
         let has_codex_config = extra_env.iter().any(|(k, _)| k == "CODEX_CONFIG");
-        let parent_codex_config = if has_generated_codex_config && has_codex_config {
-            std::env::var("CODEX_CONFIG").ok()
-        } else {
-            None
-        };
+        let parent_codex_config =
+            if workflow.is_none() && has_generated_codex_config && has_codex_config {
+                std::env::var("CODEX_CONFIG").ok()
+            } else {
+                None
+            };
         let codex_config_value = build_codex_config_env(
             extra_env,
             parent_codex_config.as_deref(),
@@ -581,6 +670,7 @@ impl AcpClient {
                 _ => None,
             };
         let mut child = cmd.spawn()?;
+        let process_group = child.id();
 
         let stdin = child
             .stdin
@@ -593,6 +683,8 @@ impl AcpClient {
 
         Ok(Self {
             child,
+            process_group,
+            workflow_session: None,
             stdin,
             reader: FramedRead::new(stdout, LinesCodec::new_with_max_length(MAX_LINE_SIZE)),
             next_id: 0,
@@ -727,6 +819,7 @@ impl AcpClient {
             .ok_or_else(|| AcpError::Protocol("session/new response missing sessionId".into()))?
             .to_owned();
         tracing::info!(target: "acp::session", "session created: {session_id}");
+        self.workflow_session = Some(session_id.clone());
         Ok(SessionNewResponse {
             session_id,
             raw: result,
@@ -2382,6 +2475,18 @@ fn kill_process_group(pid: u32) -> bool {
 
     // pid == pgid because the child was spawned with process_group(0).
     killpg(Pid::from_raw(pid as i32), Signal::SIGKILL).is_ok()
+}
+
+#[cfg(unix)]
+pub(crate) fn process_group_gone(pid: u32) -> bool {
+    matches!(
+        nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pid as i32), None),
+        Err(nix::errno::Errno::ESRCH)
+    )
+}
+#[cfg(not(unix))]
+pub(crate) fn process_group_gone(_pid: u32) -> bool {
+    false
 }
 
 /// Fallback for non-Unix: process-group kill not available.

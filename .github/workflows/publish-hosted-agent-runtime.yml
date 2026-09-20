@@ -85,6 +85,14 @@ jobs:
             test "$(id -u node)" = 1000
             test "$(id -g node)" = 1000
           '
+          scripts/test-agent-runtime-isolation.sh "$IMAGE"
+          scripts/test-manual-mcp-session.sh "$IMAGE"
+          docker run --rm --platform linux/amd64 --network none --read-only \
+            --tmpfs /tmp:rw,nosuid,nodev,size=128m -v "$PWD/deploy/compose:/compose:ro" \
+            --entrypoint node "$IMAGE" /compose/tests/codex-acp-wire-smoke.mjs
+          docker run --rm --platform linux/amd64 --network none \
+            -v "$PWD/deploy/compose:/compose:ro" --entrypoint node "$IMAGE" \
+            --test /compose/tests/codex-acp-terminal-errors.test.mjs
 
       - name: Attest hosted agent runtime provenance
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1

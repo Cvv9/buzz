@@ -1,6 +1,24 @@
 #!/bin/sh
 set -eu
 
+normalize_codex_api_key() {
+  if [ -z "${OPENAI_API_KEY:-}" ] && [ -n "${CODEX_API_KEY:-}" ]; then
+    export OPENAI_API_KEY="${CODEX_API_KEY}"
+  fi
+}
+
+prepare_codex_auth() {
+  ordinary_home=$1
+  manual_home=$2
+  auth_source=$3
+  if [ -n "${OPENAI_API_KEY:-}" ]; then
+    rm -f "${ordinary_home}/.codex/auth.json" "${manual_home}/.codex/auth.json"
+  elif [ -s "${auth_source}" ]; then
+    install -o 1000 -g 1000 -m 600 "${auth_source}" "${ordinary_home}/.codex/auth.json"
+    install -o 1002 -g 1002 -m 600 "${auth_source}" "${manual_home}/.codex/auth.json"
+  fi
+}
+
 extract_profile_model_catalog() {
   field="${1:-all}"
   node -e '
@@ -156,9 +174,7 @@ codex_auth_source=/run/secrets/varvik-codex-auth.json
 # Codex consumes OPENAI_API_KEY. Keep CODEX_API_KEY as the documented
 # deployment-facing alias, without changing the precedence of an explicit
 # OPENAI_API_KEY when both are set.
-if [ -z "${OPENAI_API_KEY:-}" ] && [ -n "${CODEX_API_KEY:-}" ]; then
-  export OPENAI_API_KEY="${CODEX_API_KEY}"
-fi
+normalize_codex_api_key
 
 # An organization API key is authoritative for unattended agents. Never let a
 # copied personal subscription session in the durable Codex state volume take
@@ -179,63 +195,38 @@ if [ "${use_openai_api_key}" = false ] && [ -e "${codex_auth_source}" ] &&
 fi
 
 if [ "$(id -u)" -eq 0 ]; then
-  mkdir -p /home/node/.codex
-  chown node:node /home/node/.codex
-  if [ "${use_openai_api_key}" = true ]; then
-    rm -f /home/node/.codex/auth.json
-  elif [ -s "${codex_auth_source}" ]; then
-    install -o node -g node -m 600 "${codex_auth_source}" /home/node/.codex/auth.json
-  fi
-  export HOME=/home/node
-  # The mounted source is deliberately root-only. Tell the re-executed,
-  # unprivileged phase that the selected credential path was already prepared
-  # so it does not try to read the source again after privileges are dropped.
+  /usr/local/bin/agent-runtime-init >/dev/null
+  prepare_codex_auth /home/node /home/buzz-manual "${codex_auth_source}"
+  export HOME=/var/lib/buzz-harness
+  cd /var/lib/buzz-harness
   export BUZZ_CODEX_AUTH_PREPARED=true
-  exec setpriv --reuid=node --regid=node --init-groups "$0" "$@"
+  # Only the supervisor can switch worker identities and stop their groups.
+  # Ordinary and manual ACP/helper children must strip these capabilities.
+  exec setpriv --reuid=1001 --regid=1001 --clear-groups \
+    --inh-caps=-all,+setuid,+setgid,+kill \
+    --ambient-caps=-all,+setuid,+setgid,+kill --no-new-privs "$0" "$@"
 fi
-
-if [ "${BUZZ_CODEX_AUTH_PREPARED:-false}" != "true" ]; then
-  if [ "${use_openai_api_key}" = true ]; then
-    rm -f "${HOME}/.codex/auth.json"
-  elif [ -s "${codex_auth_source}" ]; then
-    mkdir -p "${HOME}/.codex"
-    install -m 600 "${codex_auth_source}" "${HOME}/.codex/auth.json"
-  fi
-fi
+[ "$(id -u)" -eq 1001 ] && [ "${BUZZ_CODEX_AUTH_PREPARED:-false}" = true ] || {
+  echo 'Hosted agent must start through the isolated root initializer' >&2
+  exit 1
+}
 unset BUZZ_CODEX_AUTH_PREPARED
+export HOME=/var/lib/buzz-harness
+export BUZZ_AGENT_KEY_FILE=/var/lib/buzz-harness/identity.env
+export BUZZ_ACP_SUPERVISOR_PROFILE=linux-uids-v1
+export BUZZ_ACP_WORKFLOW_STATE_DIR=/var/lib/buzz-harness/workflow-runs
+export BUZZ_ACP_ORDINARY_HOME=/home/node
+export BUZZ_ACP_MANUAL_HOME=/home/buzz-manual
+export BUZZ_ACP_MANUAL_WORKSPACE=/home/buzz-manual/workspace
+export BUZZ_ACP_BROKER_GID=1003
 
 configure_provider_failover
 
-# Keep one stable Nostr identity per named agent volume. Explicit environment
-# values remain supported for migrations and externally managed identities.
-: "${BUZZ_AGENT_KEY_FILE:=${HOME}/.codex/varvik-agent-identity.env}"
-if [ -r "${BUZZ_AGENT_KEY_FILE}" ]; then
-  VARVIK_AGENT_PUBKEY="$(sed -n 's/^VARVIK_AGENT_PUBKEY=\([0-9a-f]\{64\}\)$/\1/p' "${BUZZ_AGENT_KEY_FILE}")"
-  BUZZ_PRIVATE_KEY="$(sed -n 's/^BUZZ_PRIVATE_KEY=\([0-9a-f]\{64\}\)$/\1/p' "${BUZZ_AGENT_KEY_FILE}")"
-fi
-
-if [ -z "${BUZZ_PRIVATE_KEY:-}" ] && [ -z "${VARVIK_AGENT_PUBKEY:-}" ]; then
-  keypair="$(buzz-admin generate-key)"
-  VARVIK_AGENT_PUBKEY="$(printf '%s\n' "${keypair}" | sed -n 's/^Public key:[[:space:]]*//p')"
-  BUZZ_PRIVATE_KEY="$(printf '%s\n' "${keypair}" | sed -n 's/^Secret key:[[:space:]]*//p')"
-fi
-
-if ! printf '%s' "${VARVIK_AGENT_PUBKEY:-}" | grep -Eq '^[0-9a-f]{64}$'; then
-  echo "VARVIK_AGENT_PUBKEY must be a 64-character lowercase hex key" >&2
-  exit 1
-fi
-if ! printf '%s' "${BUZZ_PRIVATE_KEY:-}" | grep -Eq '^[0-9a-f]{64}$'; then
-  echo "BUZZ_PRIVATE_KEY must be a 64-character lowercase hex key" >&2
-  exit 1
-fi
-
-if [ ! -s "${BUZZ_AGENT_KEY_FILE}" ]; then
-  umask 077
-  {
-    printf 'VARVIK_AGENT_PUBKEY=%s\n' "${VARVIK_AGENT_PUBKEY}"
-    printf 'BUZZ_PRIVATE_KEY=%s\n' "${BUZZ_PRIVATE_KEY}"
-  } >"${BUZZ_AGENT_KEY_FILE}"
-fi
+# Root migrated/generated this exact identity before dropping privileges.
+VARVIK_AGENT_PUBKEY="$(sed -n 's/^VARVIK_AGENT_PUBKEY=\([0-9a-f]\{64\}\)$/\1/p' "${BUZZ_AGENT_KEY_FILE}")"
+BUZZ_PRIVATE_KEY="$(sed -n 's/^BUZZ_PRIVATE_KEY=\([0-9a-f]\{64\}\)$/\1/p' "${BUZZ_AGENT_KEY_FILE}")"
+printf '%s' "${VARVIK_AGENT_PUBKEY}" | grep -Eq '^[0-9a-f]{64}$' || exit 1
+printf '%s' "${BUZZ_PRIVATE_KEY}" | grep -Eq '^[0-9a-f]{64}$' || exit 1
 export VARVIK_AGENT_PUBKEY BUZZ_PRIVATE_KEY
 
 # Ask the configured ACP adapter for its single canonical model catalog before

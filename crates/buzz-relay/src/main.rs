@@ -632,6 +632,10 @@ async fn main() -> anyhow::Result<()> {
     let action_sink = Arc::new(buzz_relay::workflow_sink::RelayActionSink::new(&state));
     workflow_engine.set_action_sink(action_sink);
 
+    tokio::spawn(buzz_relay::workflow_execution::run_workers(Arc::clone(
+        &state,
+    )));
+
     // Start the cron loop AFTER the action sink is wired.
     let wf_cron = Arc::clone(&workflow_engine);
     tokio::spawn(async move { wf_cron.run().await });

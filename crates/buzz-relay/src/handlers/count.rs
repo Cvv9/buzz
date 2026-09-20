@@ -37,6 +37,29 @@ pub async fn handle_count(
             }
         }
     };
+    match state.db.is_workflow_credential(&pubkey_bytes).await {
+        Ok(true) => {
+            match crate::workflow_scoped::snapshot(&state, &conn.tenant, &pubkey_bytes, &filters)
+                .await
+            {
+                Ok(events) => {
+                    conn.send(RelayMessage::count(&sub_id, events.len() as u64));
+                }
+                Err(reason) => {
+                    conn.send(RelayMessage::closed(&sub_id, &reason));
+                }
+            }
+            return;
+        }
+        Ok(false) => {}
+        Err(_) => {
+            conn.send(RelayMessage::closed(
+                &sub_id,
+                "error: workflow authorization",
+            ));
+            return;
+        }
+    }
 
     // P-gated kinds (gift wraps, member notifications, observer frames) require
     // the caller's own pubkey in the #p tag — same enforcement as WS REQ handler.

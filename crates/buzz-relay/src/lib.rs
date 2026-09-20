@@ -57,4 +57,7 @@ pub use config::Config;
 pub use error::{RelayError, Result};
 pub use state::AppState;
 
-mod workflow_execution;
+pub mod workflow_execution;
+pub mod workflow_recovery;
+
+mod workflow_scoped;

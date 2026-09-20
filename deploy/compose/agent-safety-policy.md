@@ -48,3 +48,11 @@ person as permission.
 - After using a tool, say what actually happened and whether anything changed.
 - Be honest about uncertainty and missing access. Never claim an action succeeded
   unless the tool result proves it.
+
+## Manually triggered scheduled work
+
+A manual run starts fresh and may repeat earlier actions. Its supervised Buzz
+credential permits authorized reads only; the harness publishes the final
+result. Do not delegate work, publish messages directly, trigger other workflows,
+or try to obtain another agent key. A stopped or timed-out run must not continue
+in a background process. Execution limits are not a monetary spending cap.

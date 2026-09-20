@@ -17,6 +17,9 @@ mod runtime_identity;
 mod runtime_profile;
 mod setup_mode;
 mod usage;
+mod workflow_execution;
+mod workflow_isolation;
+mod workflow_journal;
 
 pub use usage::TurnUsage;
 
@@ -2511,6 +2514,21 @@ async fn tokio_main() -> Result<()> {
         ),
     }
 
+    let supervised_profile = workflow_isolation::Isolation::configured()?.is_some();
+    let workflow_runtime = match workflow_execution::WorkflowRuntime::start(
+        &config,
+        relay.rest_client(),
+        relay_self.as_deref(),
+    )
+    .await
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            tracing::error!("workflow capability disabled: {error}");
+            None
+        }
+    };
+
     let mut relay_observer_control_rx = None;
     let mut relay_observer_publisher_task = None;
     let mut relay_observer_publisher = None;
@@ -2673,8 +2691,7 @@ async fn tokio_main() -> Result<()> {
             Some(include_str!("base_prompt.md"))
         },
         heartbeat_prompt: config.heartbeat_prompt.clone(),
-        cwd: std::env::current_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from("/"))
+        cwd: workflow_isolation::ordinary_working_directory()?
             .to_string_lossy()
             .to_string(),
         rest_client: relay.rest_client(),
@@ -2884,7 +2901,10 @@ async fn tokio_main() -> Result<()> {
     }
 
     loop {
-        if pool_ready {
+        let workflow_busy = workflow_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.is_busy());
+        if pool_ready && !workflow_busy {
             while let Some(event) = pending_runtime_control_events.pop_front() {
                 if let Some(controller) = config.runtime_controller_pubkey.as_ref() {
                     handle_runtime_controller_event(
@@ -2916,6 +2936,9 @@ async fn tokio_main() -> Result<()> {
                     }
                 }
             }
+        }
+        if let Some(runtime) = &workflow_runtime {
+            runtime.update_revision(pool.effective_runtime_revision());
         }
         // A scheduled heartbeat is work, not a best-effort notification. Keep
         // it pending across a sleeping pool, runtime reconciliation, queued
@@ -3200,7 +3223,7 @@ async fn tokio_main() -> Result<()> {
                                     controller,
                                     chrono::Utc::now().timestamp(),
                                 ) {
-                                    Ok(()) if pool_ready => {
+                                    Ok(()) if pool_ready && !workflow_runtime.as_ref().is_some_and(|runtime| runtime.is_busy()) => {
                                         handle_runtime_controller_event(
                                             &config.keys,
                                             event,
@@ -3249,6 +3272,13 @@ async fn tokio_main() -> Result<()> {
                     match buzz_event {
                         Some(buzz_event) => {
                             let kind_u32 = buzz_event.event.kind.as_u16() as u32;
+                            if workflow_execution::intercepts(&buzz_event.event, supervised_profile) {
+                                if let Some(runtime) = &workflow_runtime {
+                                    runtime.enqueue(buzz_event.event.clone());
+                                }
+                                continue;
+                            }
+
 
                             if kind_u32 == KIND_MEMBER_ADDED_NOTIFICATION
                                 || kind_u32 == KIND_MEMBER_REMOVED_NOTIFICATION
@@ -4138,6 +4168,10 @@ async fn tokio_main() -> Result<()> {
         }
     }
     drop(pool);
+
+    if let Some(runtime) = workflow_runtime {
+        runtime.shutdown().await;
+    }
 
     // Abort any in-flight respawn tasks. They may be sleeping in backoff or
     // running spawn_and_init — either way, we don't want them spawning new
@@ -5820,8 +5854,7 @@ async fn run_models(args: ModelsArgs) -> Result<()> {
     };
 
     let agent_args = config::normalize_agent_args(&args.agent.agent_command, args.agent.agent_args);
-    let cwd = std::env::current_dir()
-        .unwrap_or_else(|_| std::path::PathBuf::from("/"))
+    let cwd = workflow_isolation::ordinary_working_directory()?
         .to_string_lossy()
         .to_string();
 

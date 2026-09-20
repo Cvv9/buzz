@@ -201,28 +201,42 @@ COPY --from=builder /build/target/release/buzz-pair-relay /usr/local/bin/buzz-pa
 # the normal relay image. It connects to Buzz over the same public protocol as
 # any other agent and runs Codex through the Agent Client Protocol adapter.
 FROM node:${NODE_VERSION}-${DEBIAN_VERSION}-slim AS node-runtime-files
-FROM ${RUNTIME_IMAGE} AS agent-runtime
+FROM ${RUNTIME_IMAGE} AS agent-runtime-base
 COPY --from=node-runtime-files /usr/local/ /usr/local/
+COPY --chmod=0444 deploy/compose/patch-codex-acp.mjs /opt/buzz/patch-codex-acp.mjs
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl git \
+    && apt-get install -y --no-install-recommends ca-certificates curl git util-linux \
     && rm -rf /var/lib/apt/lists/* \
     && userdel --remove ubuntu \
     && groupadd --gid 1000 node \
     && useradd --uid 1000 --gid 1000 --home-dir /home/node --create-home --shell /bin/bash node \
+    && groupadd --gid 1001 buzz-harness \
+    && useradd --uid 1001 --gid 1001 --home-dir /var/lib/buzz-harness --create-home --shell /usr/sbin/nologin buzz-harness \
+    && groupadd --gid 1002 buzz-manual \
+    && useradd --uid 1002 --gid 1002 --home-dir /home/buzz-manual --create-home --shell /usr/sbin/nologin buzz-manual \
+    && groupadd --gid 1003 buzz-broker \
+    && chmod 0700 /home/node /home/buzz-manual /var/lib/buzz-harness \
+    && command -v setpriv && command -v flock \
     && npm install --global @agentclientprotocol/codex-acp@1.1.14 \
+    && mkdir -p /etc/buzz \
+    && node /opt/buzz/patch-codex-acp.mjs \
     && rm -rf /usr/local/lib/node_modules/npm \
     && rm -f /usr/local/bin/npm /usr/local/bin/npx
-COPY --from=stripped-binaries /build/target/release/buzz-acp /usr/local/bin/buzz-acp
-COPY --from=stripped-binaries /build/target/release/buzz /usr/local/bin/buzz
-COPY --from=stripped-binaries /build/target/release/buzz-admin /usr/local/bin/buzz-admin
+COPY --chmod=0755 deploy/compose/agent-runtime-init.sh /usr/local/bin/agent-runtime-init
 COPY --chmod=0755 deploy/compose/agent-entrypoint.sh /usr/local/bin/agent-entrypoint
 COPY --chmod=0755 deploy/compose/http-mcp-bridge.mjs /usr/local/bin/buzz-http-mcp-bridge
 COPY --chmod=0444 deploy/compose/agent-safety-policy.md /etc/buzz/agent-safety-policy.md
-# The entrypoint initializes the named Codex state volume as root, then drops
-# permanently to the image's unprivileged `node` identity before Buzz or Codex.
 USER root
 WORKDIR /home/node
 ENTRYPOINT ["/usr/local/bin/agent-entrypoint"]
+
+# Runtime base can be smoke-tested without rebuilding unrelated relay binaries.
+FROM agent-runtime-base AS agent-runtime
+COPY --from=stripped-binaries /build/target/release/buzz-acp /usr/local/bin/buzz-acp
+COPY --from=stripped-binaries /build/target/release/buzz /usr/local/bin/buzz
+COPY --from=stripped-binaries /build/target/release/buzz-admin /usr/local/bin/buzz-admin
+# Root initializes protected persistent identity/journals, then the harness
+# retains only SETUID/SETGID/KILL as UID1001; workers run without capabilities.
 
 # Keep the stripped runtime as the final/default Dockerfile target so existing
 # `docker build .` callers and release tags retain their current behavior.

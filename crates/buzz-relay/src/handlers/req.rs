@@ -93,6 +93,33 @@ pub async fn handle_req(
             }
         }
     };
+    match state.db.is_workflow_credential(&pubkey_bytes).await {
+        Ok(true) => {
+            match crate::workflow_scoped::snapshot(&state, &conn.tenant, &pubkey_bytes, &filters)
+                .await
+            {
+                Ok(events) => {
+                    for event in events {
+                        conn.send(RelayMessage::event(&sub_id, &event));
+                    }
+                    conn.send(RelayMessage::eose(&sub_id));
+                    conn.send(RelayMessage::closed(&sub_id, "workflow snapshot complete"));
+                }
+                Err(reason) => {
+                    conn.send(RelayMessage::closed(&sub_id, &reason));
+                }
+            }
+            return;
+        }
+        Ok(false) => {}
+        Err(_) => {
+            conn.send(RelayMessage::closed(
+                &sub_id,
+                "error: workflow authorization",
+            ));
+            return;
+        }
+    }
 
     let channel_id = extract_channel_id_from_filters(&filters);
     let requested_channel_ids = match extract_channel_ids_from_filters_limited(&filters) {

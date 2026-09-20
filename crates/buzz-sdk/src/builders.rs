@@ -1929,7 +1929,16 @@ pub fn build_workflow_execution_control(
     )?;
     let mut tags = vec![tag(&["p", &control.agent_pubkey])?];
     let context = match &control.operation {
-        ExecutionOperation::Capability {} => None,
+        ExecutionOperation::Capability {
+            runtime_profile,
+            max_turn_duration_secs,
+        } => {
+            if runtime_profile != "linux-uids-v1" || !(1..=604800).contains(max_turn_duration_secs)
+            {
+                return Err(SdkError::InvalidInput("invalid runtime capability".into()));
+            }
+            None
+        }
         ExecutionOperation::Claim {
             run_id,
             task_id,
@@ -1944,6 +1953,11 @@ pub fn build_workflow_execution_control(
                 return Err(SdkError::InvalidInput("invalid workflow claim".into()));
             }
             Some((*run_id, *task_id, *channel_id, None))
+        }
+        ExecutionOperation::RecoverClaim { .. } => {
+            let (run, task, channel) = buzz_core::workflow_execution::recovery_claim_scope(control)
+                .ok_or_else(|| SdkError::InvalidInput("invalid recovery claim".into()))?;
+            Some((run, task, channel, None))
         }
         ExecutionOperation::Started {
             run_id,

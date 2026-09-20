@@ -2186,6 +2186,31 @@ async fn ingest_event_inner(
         ));
     }
 
+    if state
+        .db
+        .is_workflow_credential(auth.pubkey().as_bytes())
+        .await
+        .map_err(|e| IngestError::Internal(e.to_string()))?
+    {
+        return Err(IngestError::AuthFailed(
+            "restricted: workflow read credential cannot write".into(),
+        ));
+    }
+    if event
+        .tags
+        .iter()
+        .any(|t| t.as_slice().first().is_some_and(|k| k == "workflow-result"))
+        && !state
+            .db
+            .validate_workflow_result(tenant.community(), &event)
+            .await
+            .map_err(|e| IngestError::Internal(e.to_string()))?
+    {
+        return Err(IngestError::Rejected(
+            "invalid: workflow result evidence".into(),
+        ));
+    }
+
     let required = match required_scope_for_kind(kind_u32, &event) {
         Ok(scope) => scope,
         Err(msg) => return Err(IngestError::Rejected(msg.into())),

@@ -252,6 +252,11 @@ pub async fn cmd_approve_step(
 pub async fn dispatch(cmd: crate::WorkflowsCmd, client: &BuzzClient) -> Result<(), CliError> {
     use crate::WorkflowsCmd;
     match cmd {
+        WorkflowsCmd::Recover {
+            request,
+            container,
+            audit,
+        } => super::workflow_recovery::recover(client, &request, &container, &audit).await,
         WorkflowsCmd::Scheduled {
             agent_pubkey,
             cursor,

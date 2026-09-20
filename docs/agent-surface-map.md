@@ -619,11 +619,33 @@ tombstone: it cannot erase allowances, clear an active run or resurrect through
 a delayed definition event. Community erasure retains its existing fence/purge
 policy and includes the new tenant-scoped tables.
 
-Kinds `46040` (agent execution control), `46041` (relay grant/cancel), and `46042`
-(relay status invalidation) are the versioned supervised-execution protocol.
+Kinds `46040` (agent execution control and pinned-controller recovery), `46041`
+(relay grant/cancel), and `46042` (relay status invalidation) are the versioned
+supervised-execution protocol.
 `workflow_runs.status` remains workflow **dispatch** status; `execution_state`
 and verified task results describe actual agent completion. Old evidence is
 unknown/stalled. Capability freshness must never release an unresolved execution
-lock. Relay control ingress remains disabled until the isolated runner and
-execution claims are implemented; new manual task intent is never sent through
-the ordinary conversation retry path.
+lock. Relay control ingress accepts signed version-1 capabilities and execution
+claims from supported isolated runners. Manual task intent uses the supervised
+execution path and its shared attempt budget, separately from ordinary
+conversation retries.
+
+Supervised workflow execution uses kinds 46040–46042 and a durable task/grant
+outbox. The relay admits a manual child only through a versioned Linux isolation
+capability, per-run attempt ledger, and run-bound temporary public key. That key
+supports destination-channel `/query`/`/count` and WebSocket snapshot reads, with
+current permissions checked on each read; it cannot publish or invoke other
+HTTP operations. Channel membership discovery maps its own `p` filter to the
+original agent and confines metadata `d` filters to the destination. Manual
+result posts require exact signed task/grant/instance evidence and do not trigger
+another workflow. A dispatch trace does not release concurrency: completion or
+verified process-stop evidence does.
+
+`RecoverClaim` repairs a crash after a signed claim was saved but before its
+receipt was journaled. It carries the exact original signed claim and returns
+only its persisted receipt, or a durable `no_grant` result that fences a late
+arrival of that original claim. It never allocates another attempt or authorizes
+a launch; a recovered grant is used only to acknowledge verified stopping.
+When stopping cannot be proven locally across a previous container/PID namespace,
+use the pinned-controller [verified stop recovery procedure](workflow-stop-recovery.md).
+Unverified execution remains stalled and retains its concurrency locks.

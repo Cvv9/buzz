@@ -81,3 +81,4 @@ pub mod test_helpers {
 }
 
 pub mod workflow_execution;
+pub mod workflow_recovery;

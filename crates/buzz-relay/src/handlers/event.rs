@@ -416,7 +416,7 @@ pub(crate) async fn dispatch_persistent_event(
 }
 
 /// Run post-commit delivery/side effects for a stored event.
-async fn dispatch_persistent_event_inner(
+pub(crate) async fn dispatch_persistent_event_inner(
     tenant: &TenantContext,
     state: &Arc<AppState>,
     stored_event: &StoredEvent,
@@ -551,6 +551,11 @@ async fn dispatch_persistent_event_inner(
     if !buzz_core::kind::is_workflow_execution_kind(kind_u32)
         && !buzz_core::kind::is_command_kind(kind_u32)
         && !is_relay_workflow_msg
+        && !stored_event
+            .event
+            .tags
+            .iter()
+            .any(|t| t.as_slice() == ["workflow-origin", "manual"])
         && kind_u32 != KIND_GIFT_WRAP
     {
         let workflow_engine = Arc::clone(&state.workflow_engine);
@@ -675,6 +680,20 @@ pub async fn handle_event(event: Event, conn: Arc<ConnectionState>, state: Arc<A
             }
         }
     };
+
+    if state
+        .db
+        .is_workflow_credential(&pubkey_bytes)
+        .await
+        .unwrap_or(true)
+    {
+        conn.send(RelayMessage::ok(
+            &event_id_hex,
+            false,
+            "restricted: workflow read credential cannot write",
+        ));
+        return;
+    }
 
     // Must run before both ephemeral and persistent branches. Persistent
     // events get a second check inside ingest_event() (step 3), but
