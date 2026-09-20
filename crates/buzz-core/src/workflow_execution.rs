@@ -171,18 +171,6 @@ pub struct RunStatusInvalidation {
     pub revision: i64,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn workflow_manual_protocol_rejects_unknown_operation_fields() {
-        let mut value = serde_json::json!({"version":1,"community_id":Uuid::new_v4(),"agent_pubkey":"a".repeat(64),"instance_id":Uuid::new_v4(),"operation":{"op":"capability","runtime_profile":"linux-uids-v1","max_turn_duration_secs":7200}});
-        assert!(serde_json::from_value::<ExecutionControl>(value.clone()).is_ok());
-        value["operation"]["trusted"] = true.into();
-        assert!(serde_json::from_value::<ExecutionControl>(value).is_err());
-    }
-}
-
 /// Verify an embedded original claim for recovery, without requiring freshness.
 /// Returns its fixed run/task/channel scope. Recovery never authorizes execution.
 pub fn recovery_claim_scope(control: &ExecutionControl) -> Option<(Uuid, Uuid, Uuid)> {
@@ -247,4 +235,16 @@ pub fn recovery_claim_scope(control: &ExecutionControl) -> Option<(Uuid, Uuid, U
         }
     }
     Some((run_id, task_id, channel_id))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn workflow_manual_protocol_rejects_unknown_operation_fields() {
+        let mut value = serde_json::json!({"version":1,"community_id":Uuid::new_v4(),"agent_pubkey":"a".repeat(64),"instance_id":Uuid::new_v4(),"operation":{"op":"capability","runtime_profile":"linux-uids-v1","max_turn_duration_secs":7200}});
+        assert!(serde_json::from_value::<ExecutionControl>(value.clone()).is_ok());
+        value["operation"]["trusted"] = true.into();
+        assert!(serde_json::from_value::<ExecutionControl>(value).is_err());
+    }
 }

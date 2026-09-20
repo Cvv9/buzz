@@ -2,7 +2,7 @@
 /** Actual isolated relay → Linux harness → patched ACP adapter acceptance test.
  * Usage: DATABASE_URL=postgres://.../buzz_manual_tests_v3 node scripts/test-manual-workflow-harness.mjs IMAGE
  * Requires the isolated relay on 55341 and existing web dependencies. Never uses provider credentials.
- * Leaves its scoped DB evidence and Docker state volume; always stops its own container.
+ * Retains local evidence by default; scoped CI options collect artifacts and remove owned runtime resources.
  */
 import assert from 'node:assert/strict';
 import {request as httpRequest} from 'node:http';
@@ -10,7 +10,7 @@ import {createHash, randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
 import {dirname, join, resolve} from 'node:path';
-import {mkdtempSync, writeFileSync} from 'node:fs';
+import {mkdtempSync, writeFileSync, statSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {execFileSync} from 'node:child_process';
 
@@ -31,7 +31,14 @@ const owner=getPublicKey(ownerKey),agent=getPublicKey(agentKey);
 const relay=getPublicKey(bytes('0'.repeat(63)+'1'));
 const channel=randomUUID(),workflow=randomUUID();
 const suffix=randomUUID().slice(0,8),name=`buzz-manual-harness-${suffix}`,volume=`${name}-state`;
-const artifacts=mkdtempSync(join(tmpdir(),`${name}-`));
+const artifactRoot=process.env.BUZZ_MANUAL_TEST_ARTIFACT_ROOT || tmpdir();
+assert(statSync(artifactRoot).isDirectory(),'artifact root must be an existing directory');
+const artifacts=mkdtempSync(join(artifactRoot,`${name}-`));
+const network=process.env.BUZZ_MANUAL_TEST_NETWORK;
+if(network) assert(/^buzz-manual-ci-[0-9a-f-]{36}$/.test(network),'only a scoped CI network is permitted');
+const cleanup=process.env.BUZZ_MANUAL_TEST_CLEANUP==='1';
+assert(!cleanup || network,'automatic cleanup requires the scoped CI network');
+let createdContainer=false,createdVolume=false;
 const sql=q=>execFileSync('psql',[database,'-X','-q','-A','-t','-v','ON_ERROR_STOP=1','-c',q],{encoding:'utf8'}).trim();
 const docker=(...args)=>execFileSync('docker',args,{encoding:'utf8',timeout:120000}).trim();
 const sign=(key,kind,tags,content)=>finalizeEvent({kind,tags,content,created_at:Math.floor(Date.now()/1000)},key);
@@ -60,6 +67,13 @@ async function until(label,condition,seconds=90) {
 }
 let community,runId;
 try {
+  assert.equal(docker('volume','ls','--format','{{.Name}}','--filter',`name=^${volume}$`),'','fixture volume must not already exist');
+  assert.equal(docker('ps','-a','--format','{{.Names}}','--filter',`name=^/${name}$`),'','fixture container must not already exist');
+  if(network) {
+    const info=JSON.parse(docker('network','inspect',network))[0];
+    assert.equal(info.Internal,true,'CI network must block external egress');
+    assert.equal(info.Labels?.['buzz.manual-test'],network,'CI network ownership must match');
+  }
   // Host mapping is shared, but every identity/channel/workflow/run is fixture-unique.
   sql(`INSERT INTO communities(host) VALUES('${authority}') ON CONFLICT(lower(host)) DO NOTHING`);
   community=sql(`SELECT id FROM communities WHERE lower(host)='${authority}'`);assert.match(community,/^[0-9a-f-]{36}$/);
@@ -76,8 +90,9 @@ try {
   writeFileSync(join(artifacts,'start.sh'),`#!/bin/sh\nset -eu\n/usr/local/bin/agent-runtime-init >/dev/null\nexport HOME=/var/lib/buzz-harness\ncd "$HOME"\nexec setpriv --reuid=1001 --regid=1001 --clear-groups --inh-caps=-all,+setuid,+setgid,+kill --ambient-caps=-all,+setuid,+setgid,+kill --no-new-privs buzz-acp\n`,{mode:0o755});
   const env={BUZZ_PRIVATE_KEY:Buffer.from(agentKey).toString('hex'),VARVIK_AGENT_PUBKEY:agent,BUZZ_RELAY_URL:`ws://${authority}`,BUZZ_ACP_AGENT_COMMAND:'codex-acp',BUZZ_ACP_LAZY_POOL:'true',BUZZ_ACP_KINDS:'46008',BUZZ_ACP_NO_MEMORY:'true',BUZZ_ACP_NO_PRESENCE:'true',BUZZ_ACP_NO_TYPING:'true',BUZZ_ACP_AGENT_OWNER:owner,BUZZ_ACP_SUPERVISOR_PROFILE:'linux-uids-v1',BUZZ_ACP_WORKFLOW_COMMUNITY_ID:community,BUZZ_ACP_WORKFLOW_RELAY_PUBKEY:relay,BUZZ_ACP_MAX_TURN_DURATION:'60',BUZZ_ACP_IDLE_TIMEOUT:'10',BUZZ_ACP_FAILOVER_TRIGGERS:'usage_limit,internal error',BUZZ_ACP_FAILOVER_ENV:JSON.stringify({MODEL_PROVIDER:'azure-foundry',CODEX_CONFIG:JSON.stringify({model:'fixture-model',model_provider:'azure-foundry'})}),CODEX_PATH:'/fixture/fake-codex-app-server.mjs',OPENAI_API_KEY:'local-fixture-not-a-provider-key',RUST_LOG:'buzz_acp=debug'};
   writeFileSync(join(artifacts,'runner.env'),Object.entries(env).map(([k,v])=>`${k}=${v}`).join('\n')+'\n',{mode:0o600});
-  docker('volume','create',volume);
-  docker('run','-d','--name',name,'--init','--read-only','--tmpfs','/tmp:rw,nosuid,nodev,size=256m','--tmpfs','/home/node:rw,nosuid,nodev,size=256m','--tmpfs','/home/buzz-manual:rw,nosuid,nodev,size=256m','--tmpfs','/run/buzz-auth:rw,nosuid,nodev,size=1m','--cap-drop','ALL','--cap-add','CHOWN','--cap-add','DAC_OVERRIDE','--cap-add','FOWNER','--cap-add','SETUID','--cap-add','SETGID','--cap-add','KILL','--security-opt','no-new-privileges:true','--env-file',join(artifacts,'runner.env'),'-v',`${volume}:/var/lib/buzz-harness`,'-v',`${artifacts}/start.sh:/start.sh:ro`,'-v',`${root}/deploy/compose/tests:/fixture:ro`,'--entrypoint','/bin/sh',image,'/start.sh');
+  docker('volume','create',...(network?['--label',`buzz.manual-harness=${network}`]:[]),volume);createdVolume=true;
+  docker('create','--name',name,...(network?['--network',network,'--label',`buzz.manual-harness=${network}`]:[]),'--init','--read-only','--tmpfs','/tmp:rw,nosuid,nodev,size=256m','--tmpfs','/home/node:rw,nosuid,nodev,size=256m','--tmpfs','/home/buzz-manual:rw,nosuid,nodev,size=256m','--tmpfs','/run/buzz-auth:rw,nosuid,nodev,size=1m','--cap-drop','ALL','--cap-add','CHOWN','--cap-add','DAC_OVERRIDE','--cap-add','FOWNER','--cap-add','SETUID','--cap-add','SETGID','--cap-add','KILL','--security-opt','no-new-privileges:true','--env-file',join(artifacts,'runner.env'),'-v',`${volume}:/var/lib/buzz-harness`,'-v',`${artifacts}/start.sh:/start.sh:ro`,'-v',`${root}/deploy/compose/tests:/fixture:ro`,'--entrypoint','/bin/sh',image,'/start.sh');createdContainer=true;
+  docker('start',name);
   await until('verified harness capability',()=>sql(`SELECT count(*) FROM workflow_execution_capabilities WHERE community_id='${community}' AND encode(agent_pubkey,'hex')='${agent}' AND expires_at>NOW()`)==='1');
   const trigger=sign(ownerKey,46020,[['d',workflow]],JSON.stringify({expected_definition_hash:definitionHash}));
   const admitted=await publish(trigger);assert.equal(admitted.accepted,true,JSON.stringify(admitted));runId=admitted.run_id;assert.match(runId,/^[0-9a-f-]{36}$/);
@@ -117,7 +132,9 @@ try {
   const evidence={image,community,workflow,runId,eventRunId,agent,channel,attempts:attempts.map(({ordinal,stopped,outcome})=>({ordinal,stopped,outcome})),result:final.id,escapedStop:escaped,artifactDirectory:artifacts,volume};
   writeFileSync(join(artifacts,'evidence.json'),JSON.stringify(evidence,null,2)+'\n');console.log(JSON.stringify({status:'PASS',...evidence},null,2));
 } finally {
-  try{writeFileSync(join(artifacts,'runner.log'),docker('logs',name));}catch{}
-  try{docker('stop','--time','10',name);}catch{}
+  if(createdContainer) try{writeFileSync(join(artifacts,'runner.log'),docker('logs',name));}catch{}
+  if(createdContainer) try{docker('stop','--time','10',name);}catch{}
+  if(cleanup && createdContainer) docker('rm',name);
+  if(cleanup && createdVolume) docker('volume','rm',volume);
   console.error(`Harness evidence: ${artifacts}; container ${name}; volume ${volume}; run ${runId??'not admitted'}`);
 }

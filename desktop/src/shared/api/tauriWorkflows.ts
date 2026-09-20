@@ -292,3 +292,174 @@ export async function denyApproval(
   });
   return fromRawApprovalResponse(raw);
 }
+
+// Settings uses the allowlisted summary projection, never detailed execution traces.
+import type {
+  AgentScheduledWorkflowsPage,
+  ManualWorkflowLimits,
+  ManualWorkflowReceipt,
+  ManualWorkflowScope,
+  PreparedManualWorkflow,
+  WorkflowExecutionState,
+} from "./workflowTypes";
+
+function record(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("Invalid workflow response.");
+  return value as Record<string, unknown>;
+}
+function text(value: unknown): string {
+  if (typeof value !== "string") throw new Error("Invalid workflow response.");
+  return value;
+}
+function optionalText(value: unknown): string | null {
+  return value == null ? null : text(value);
+}
+function count(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
+    throw new Error("Invalid workflow response.");
+  return value;
+}
+/** Summary clocks are ISO UTC; legacy history times are Unix seconds. */
+export function workflowTimestamp(value: unknown): number | null {
+  if (value == null) return null;
+  const millis =
+    typeof value === "number"
+      ? value * 1000
+      : typeof value === "string"
+        ? Date.parse(value)
+        : NaN;
+  if (!Number.isFinite(millis)) throw new Error("Invalid workflow time.");
+  return millis;
+}
+function serverTime(value: unknown): number {
+  const time = workflowTimestamp(value);
+  if (time === null) throw new Error("Missing workflow server time.");
+  return time;
+}
+function fromManualLimits(value: unknown): ManualWorkflowLimits {
+  const raw = record(value);
+  return {
+    remainingWorkflow: count(raw.remaining_workflow),
+    remainingCommunity: count(raw.remaining_community),
+    nextEligibleAt: workflowTimestamp(raw.next_eligible_at),
+    serverNow: serverTime(raw.server_now),
+  };
+}
+export function fromManualWorkflowReceipt(
+  value: unknown,
+): ManualWorkflowReceipt {
+  const raw = record(value);
+  if (typeof raw.accepted !== "boolean")
+    throw new Error("Missing workflow decision.");
+  const runId = optionalText(raw.run_id);
+  const reason = optionalText(raw.reason);
+  if ((raw.accepted && !runId) || (!raw.accepted && !reason))
+    throw new Error("Incomplete workflow decision.");
+  return {
+    accepted: raw.accepted,
+    runId,
+    reason,
+    revision: count(raw.revision),
+    limits: fromManualLimits(raw.limits),
+  };
+}
+const executionStates = new Set([
+  "queued",
+  "running",
+  "completed",
+  "failed",
+  "timed_out",
+  "stalled",
+]);
+export function fromAgentScheduledWorkflows(
+  value: unknown,
+): AgentScheduledWorkflowsPage {
+  const raw = record(value);
+  if (!Array.isArray(raw.workflows))
+    throw new Error("Missing scheduled workflows.");
+  return {
+    next: optionalText(raw.next),
+    serverNow: serverTime(raw.server_now),
+    workflows: raw.workflows.map((entry) => {
+      const row = record(entry);
+      if (!Array.isArray(row.agent_targets) || typeof row.enabled !== "boolean")
+        throw new Error("Invalid scheduled workflow.");
+      const run = row.last_run == null ? null : record(row.last_run);
+      return {
+        workflowId: text(row.workflow_id),
+        name: text(row.name),
+        definitionHash: text(row.definition_hash),
+        agentTargets: row.agent_targets.map(text),
+        channelId: text(row.channel_id),
+        schedule: record(row.schedule),
+        timezone: text(row.timezone),
+        nextScheduledAt: workflowTimestamp(row.next_scheduled_at),
+        enabled: row.enabled,
+        blockReason: optionalText(row.block_reason),
+        limits: fromManualLimits(row.limits),
+        revision: count(row.revision),
+        lastRun: run
+          ? {
+              id: text(run.id),
+              executionState: (executionStates.has(String(run.execution_state))
+                ? run.execution_state
+                : "unknown") as WorkflowExecutionState,
+              safeErrorCode: optionalText(run.safe_error_code),
+              origin: optionalText(run.origin),
+              requester: optionalText(run.requester),
+              startedAt: workflowTimestamp(run.started_at),
+              completedAt: workflowTimestamp(run.completed_at),
+              acceptedAt: workflowTimestamp(run.accepted_at),
+              deadlineAt: workflowTimestamp(run.deadline_at),
+              revision: count(run.revision ?? 0),
+              results: Array.isArray(run.results)
+                ? run.results.map((value) => {
+                    const result = record(value);
+                    return {
+                      taskId: text(result.task_id),
+                      channelId: text(result.channel_id),
+                      eventId: text(result.event_id),
+                    };
+                  })
+                : [],
+            }
+          : null,
+      };
+    }),
+  };
+}
+function rawManualScope(scope: ManualWorkflowScope) {
+  return { relay_url: scope.relayUrl, owner_pubkey: scope.ownerPubkey };
+}
+export async function getAgentScheduledWorkflows(
+  scope: ManualWorkflowScope,
+  agentPubkey: string,
+  cursor: string | null,
+): Promise<AgentScheduledWorkflowsPage> {
+  return fromAgentScheduledWorkflows(
+    await invokeTauri("get_agent_scheduled_workflows", {
+      scope: rawManualScope(scope),
+      agentPubkey,
+      cursor,
+    }),
+  );
+}
+export async function prepareManualWorkflow(
+  scope: ManualWorkflowScope,
+  workflowId: string,
+  definitionHash: string,
+): Promise<PreparedManualWorkflow> {
+  return invokeTauri("prepare_manual_workflow", {
+    scope: rawManualScope(scope),
+    workflowId,
+    definitionHash,
+  });
+}
+export async function submitManualWorkflow(
+  request: PreparedManualWorkflow,
+): Promise<ManualWorkflowReceipt> {
+  return fromManualWorkflowReceipt(
+    await invokeTauri("submit_manual_workflow", { request }),
+  );
+}

@@ -649,3 +649,37 @@ a launch; a recovered grant is used only to acknowledge verified stopping.
 When stopping cannot be proven locally across a previous container/PID namespace,
 use the pinned-controller [verified stop recovery procedure](workflow-stop-recovery.md).
 Unverified execution remains stalled and retains its concurrency locks.
+
+The web workspace agent settings render `AgentScheduledWorkflows` independently
+of the profile edit form. Desktop renders its corresponding section inside
+`HostedAgentEditDialog`, using the current identity and relay membership rather
+than a cached profile owner. Both sections are restricted to the exact community
+owner, list immutable agent associations, and show the actual run outcome and
+correlated result links separately from dispatch history. Cron schedules show
+their next UTC occurrence; interval schedules retain an unknown next occurrence
+without a verified scheduler anchor. Nullable schedule fields in the relay
+summary are a wire-format concern, not relaxed workflow-definition validation.
+
+Web queries are scoped by relay URL, viewer and agent; desktop additionally
+includes community identity/reinitialization. Panel cleanup and scope changes
+cancel/remove the corresponding query and discard prior request state. These
+hooks introduce no module-level singleton requiring `resetCommunityState`.
+Visible panels refresh every 15 seconds, on focus/reconnect, and on kind46042
+invalidation. Status events trigger an authorized read; their content never
+becomes authoritative execution state. Summary errors hide cached details.
+
+Run now prepares one signed kind46020 event with the displayed definition hash
+and a nonce tag. Synchronous pending guards reject double clicks. A lost receipt
+retains that exact envelope for explicit same-request retry; reconnect never
+replays a command. Web sends through the generic NIP98 `POST /events` bridge;
+desktop uses scoped native prepare/submit commands, refuses a pending rate-limit
+wait, and bounds send plus response-body time. Both verify identity/relay scope
+around signing and asynchronous work. Offline, stale, unsupported and blocked
+states disable new starts; the server always rechecks admission and allowances.
+
+Regression coverage includes policy/DTO tests and browser settings scenarios in
+`web/tests/e2e/workspace-workflows.spec.ts`, desktop policy/native command tests,
+and `desktop/tests/e2e/agent-scheduled-workflows.spec.ts`. Release acceptance also
+requires `scripts/test-manual-workflow-ci.sh` against the exact Linux relay/agent
+images and PostgreSQL17; UI fixtures cannot establish runtime isolation,
+completion, fallback or stop-proof guarantees.

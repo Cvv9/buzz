@@ -342,6 +342,7 @@ jobs:
         with:
           path: |
             target/ci/buzz-relay
+            target/ci/buzz
             target/ci/git-credential-nostr
             target/ci/backend-integration-tests.tar.zst
           key: relay-artifacts-${{ runner.os }}-${{ hashFiles('crates/**', 'migrations/**', 'Dockerfile', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', '.github/workflows/ci.yml') }}
@@ -371,7 +372,7 @@ jobs:
         env:
           RUSTC_WRAPPER: sccache
         run: |
-          cargo build --profile ci -p buzz-relay -p git-credential-nostr
+          cargo build --profile ci -p buzz-relay -p buzz-cli -p git-credential-nostr
           cargo nextest archive \
             --cargo-profile ci \
             -p buzz-db \
@@ -379,6 +380,7 @@ jobs:
             -p buzz-test-client \
             --lib \
             --test e2e_event_reminder \
+            --test e2e_workflow_manual_runs \
             --archive-file target/ci/backend-integration-tests.tar.zst
       - name: Save relay artifacts cache
         # PR-scoped exact-source entries cannot warm main or other PRs and churn
@@ -388,6 +390,7 @@ jobs:
         with:
           path: |
             target/ci/buzz-relay
+            target/ci/buzz
             target/ci/git-credential-nostr
             target/ci/backend-integration-tests.tar.zst
           key: relay-artifacts-${{ runner.os }}-${{ hashFiles('crates/**', 'migrations/**', 'Dockerfile', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/config.toml', '.github/workflows/ci.yml') }}
@@ -397,6 +400,7 @@ jobs:
           name: desktop-e2e-relay
           path: |
             target/ci/buzz-relay
+            target/ci/buzz
             target/ci/git-credential-nostr
             target/ci/backend-integration-tests.tar.zst
           if-no-files-found: error
@@ -597,15 +601,156 @@ jobs:
           fi
           echo "Desktop E2E Integration shards passed"
 
-  backend-integration:
-    name: Backend Integration (relay e2e)
+  manual-workflow-integration:
+    name: Manual Workflow Integration (PostgreSQL 17)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs: [changes, desktop-e2e-relay]
     if: github.event_name == 'push' || needs.changes.outputs.rust == 'true'
     permissions:
       contents: read
+    # This empty database belongs only to this job. Do not apply the desired-state
+    # schema used by the older integration suites: these fixtures exercise the
+    # embedded SQLx migration chain, including manual execution serving fences.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: buzz
+          POSTGRES_PASSWORD: buzz_test_only
+          POSTGRES_DB: buzz_manual_tests_v1
+        ports:
+          - 55441:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U buzz -d buzz_manual_tests_v1"
+          --health-interval 2s --health-timeout 5s --health-retries 30
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 56441:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s --health-timeout 5s --health-retries 30
+    env:
+      DATABASE_URL: postgres://buzz:buzz_test_only@127.0.0.1:55441/buzz_manual_tests_v1
+      REDIS_URL: redis://127.0.0.1:56441
+      RELAY_URL: ws://127.0.0.1:55341
+      BUZZ_TEST_CLI: ${{ github.workspace }}/target/ci/buzz
     steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@0fd46367812ee04360509b4169d9f659d6892bb2 # v2.79.15
+        with:
+          tool: cargo-nextest@0.9.136
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Download relay and test artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: desktop-e2e-relay
+          path: target/ci
+      - name: Verify isolated PostgreSQL 17 TCP readiness
+        run: |
+          ready=false
+          for attempt in $(seq 1 60); do
+            if PGCONNECT_TIMEOUT=2 psql "$DATABASE_URL" -XAtw -v ON_ERROR_STOP=1 -c 'SELECT 1' >/dev/null 2>&1; then
+              ready=true
+              break
+            fi
+            sleep 1
+          done
+          $ready
+          version=$(psql "$DATABASE_URL" -XAtw -v ON_ERROR_STOP=1 -c 'SHOW server_version_num')
+          [[ "$version" =~ ^17[0-9]{4}$ ]]
+          printf 'PostgreSQL server_version_num=%s\n' "$version"
+      - name: Manual admission, summary, and execution ledger regressions
+        shell: bash
+        # Module filters include controller recovery tests whose function names
+        # do not start with workflow_execution. The first fixture runs the
+        # authoritative migrator against the empty database, before relay boot.
+        run: |
+          cargo nextest run \
+            --archive-file target/ci/backend-integration-tests.tar.zst \
+            -E 'package(buzz-db) and (test(/workflow_manual::tests::/) or test(/workflow_manual_reads::tests::/) or test(/workflow_execution::tests::/))' \
+            --test-threads 1 --run-ignored ignored-only 2>&1 | tee /tmp/buzz-manual-ledger-tests.log
+          psql "$DATABASE_URL" -XAtw -v ON_ERROR_STOP=1 \
+            -c 'SELECT version,success FROM _sqlx_migrations ORDER BY version' > /tmp/buzz-manual-migrations.log
+          test "$(psql "$DATABASE_URL" -XAtw -v ON_ERROR_STOP=1 \
+            -c 'SELECT count(*) FROM _sqlx_migrations WHERE version BETWEEN 36 AND 39 AND success')" = 4
+      - name: Start membership-enforced isolated relay
+        env:
+          BUZZ_AUTO_MIGRATE: "true"
+          BUZZ_BIND_ADDR: 127.0.0.1:55341
+          BUZZ_HEALTH_PORT: "55342"
+          BUZZ_METRICS_PORT: "55343"
+          BUZZ_REQUIRE_AUTH_TOKEN: "true"
+          BUZZ_REQUIRE_RELAY_MEMBERSHIP: "true"
+          BUZZ_ALLOW_INSECURE_DEV_PUBKEY: "false"
+          BUZZ_GIT_CONFORMANCE_PROBE: "false"
+          # Public test identity only; no provider or production credentials.
+          RELAY_OWNER_PUBKEY: 79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798
+          BUZZ_RELAY_PRIVATE_KEY: "0000000000000000000000000000000000000000000000000000000000000001"
+          BUZZ_GIT_REPO_PATH: /tmp/buzz-manual-relay-repos
+          BUZZ_GIT_PACK_CACHE_PATH: /tmp/buzz-manual-relay-pack-cache
+          RUST_LOG: buzz_relay=info
+        run: |
+          chmod +x ./target/ci/buzz-relay "$BUZZ_TEST_CLI"
+          psql "$DATABASE_URL" -XAtw -v ON_ERROR_STOP=1 -c "
+            INSERT INTO communities (id,host)
+            VALUES ('00000000-0000-4000-8000-00000000c0de','127.0.0.1:55341')
+            ON CONFLICT (lower(host)) DO NOTHING;"
+          nohup ./target/ci/buzz-relay > /tmp/buzz-manual-relay.log 2>&1 &
+          echo $! > /tmp/buzz-manual-relay.pid
+          for attempt in $(seq 1 90); do
+            if ! kill -0 "$(cat /tmp/buzz-manual-relay.pid)" 2>/dev/null; then
+              cat /tmp/buzz-manual-relay.log
+              exit 1
+            fi
+            if curl -fsS http://127.0.0.1:55342/_readiness >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/buzz-manual-relay.log
+          exit 1
+      - name: Signed HTTP, WebSocket, CLI and revoked claim recovery
+        shell: bash
+        run: |
+          cargo nextest run \
+            --archive-file target/ci/backend-integration-tests.tar.zst \
+            -E 'binary(e2e_workflow_manual_runs)' \
+            --test-threads 1 --run-ignored ignored-only 2>&1 | tee /tmp/buzz-manual-transport-tests.log
+      - name: Upload manual workflow evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: manual-workflow-integration-evidence
+          path: /tmp/buzz-manual-*.log
+          if-no-files-found: ignore
+      - name: Stop isolated relay
+        if: always()
+        run: |
+          if [ -f /tmp/buzz-manual-relay.pid ]; then
+            kill "$(cat /tmp/buzz-manual-relay.pid)" 2>/dev/null || true
+          fi
+
+  backend-integration:
+    name: Backend Integration (relay e2e)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [changes, desktop-e2e-relay, manual-workflow-integration]
+    if: always() && (github.event_name == 'push' || needs.changes.outputs.rust == 'true')
+    permissions:
+      contents: read
+    steps:
+      - name: Require manual workflow integration
+        env:
+          MANUAL_WORKFLOW_RESULT: ${{ needs.manual-workflow-integration.result }}
+          RELAY_ARTIFACT_RESULT: ${{ needs.desktop-e2e-relay.result }}
+        run: |
+          test "$MANUAL_WORKFLOW_RESULT" = success
+          test "$RELAY_ARTIFACT_RESULT" = success
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
       - name: Install cargo-nextest

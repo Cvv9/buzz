@@ -312,3 +312,190 @@ fn run_reads_serialize_to_backend_envelopes() {
         serde_json::json!({ "approvals": [] })
     );
 }
+
+fn prepared_manual(keys: &Keys) -> PreparedManualWorkflow {
+    let hash = "ab".repeat(32);
+    PreparedManualWorkflow {
+        scope: ManualWorkflowScope {
+            relay_url: "wss://relay.test".into(),
+            owner_pubkey: keys.public_key().to_hex(),
+        },
+        workflow_id: WF.into(),
+        definition_hash: hash.clone(),
+        event: events::build_manual_workflow_trigger(WF, &hash)
+            .unwrap()
+            .sign_with_keys(keys)
+            .unwrap(),
+    }
+}
+
+#[test]
+fn manual_workflow_nonce_is_unique_and_retry_keeps_signed_bytes() {
+    let keys = Keys::generate();
+    let first = prepared_manual(&keys);
+    let second = prepared_manual(&keys);
+    validate_prepared_manual(&first).unwrap();
+    validate_prepared_manual(&second).unwrap();
+    assert_ne!(first.event.id, second.event.id);
+    let bytes = serde_json::to_vec(&first).unwrap();
+    let retry: PreparedManualWorkflow = serde_json::from_slice(&bytes).unwrap();
+    validate_prepared_manual(&retry).unwrap();
+    assert_eq!(bytes, serde_json::to_vec(&retry).unwrap());
+    assert_eq!(first.event.id, retry.event.id);
+    assert_eq!(
+        serde_json::from_str::<Value>(&retry.event.content).unwrap(),
+        serde_json::json!({"expected_definition_hash":"ab".repeat(32)})
+    );
+}
+
+#[test]
+fn manual_workflow_envelope_rejects_tampering_and_other_operations() {
+    let keys = Keys::generate();
+    let mut request = prepared_manual(&keys);
+    request.definition_hash = "cd".repeat(32);
+    assert!(validate_prepared_manual(&request).is_err());
+    let mut request = prepared_manual(&keys);
+    request.scope.owner_pubkey = Keys::generate().public_key().to_hex();
+    assert!(validate_prepared_manual(&request).is_err());
+    let mut request = prepared_manual(&keys);
+    request.event = EventBuilder::new(Kind::Custom(46020), serde_json::json!({"expected_definition_hash":request.definition_hash,"extra":"side effect"}).to_string()).tags(request.event.tags.clone()).sign_with_keys(&keys).unwrap();
+    assert!(validate_prepared_manual(&request).is_err());
+    let mut request = prepared_manual(&keys);
+    request.event = EventBuilder::new(Kind::Custom(40002), "write")
+        .sign_with_keys(&keys)
+        .unwrap();
+    assert!(validate_prepared_manual(&request).is_err());
+}
+
+#[test]
+fn manual_workflow_scope_refuses_either_identity_or_relay_change() {
+    let scope = ManualWorkflowScope {
+        relay_url: "wss://a.test/".into(),
+        owner_pubkey: "ab".repeat(32),
+    };
+    check_manual_scope_values(&scope, "wss://a.test", &scope.owner_pubkey).unwrap();
+    assert!(check_manual_scope_values(&scope, "wss://b.test", &scope.owner_pubkey).is_err());
+    assert!(check_manual_scope_values(&scope, "wss://a.test", &"cd".repeat(32)).is_err());
+}
+
+#[test]
+fn manual_workflow_receipt_retains_denial_and_allowance_without_guessing_state() {
+    let limits = serde_json::json!({"remaining_workflow":0,"remaining_community":7,"next_eligible_at":null,"server_now":"2026-09-20T00:00:00Z"});
+    let decision = serde_json::json!({"accepted":false,"run_id":null,"reason":"workflow_daily_limit","revision":0,"limits":limits});
+    let response = serde_json::json!({"accepted":false,"event_id":"event","message":format!("response:{decision}")});
+    assert_eq!(manual_receipt(&response, "event").unwrap(), decision);
+    assert!(manual_receipt(&response, "different event").is_err());
+    let accepted =
+        serde_json::json!({"accepted":true,"run_id":WF,"reason":null,"revision":1,"limits":limits});
+    let response = serde_json::json!({"accepted":true,"event_id":"event","message":format!("response:{accepted}")});
+    let receipt = manual_receipt(&response, "event").unwrap();
+    assert_eq!(receipt, accepted);
+    assert!(receipt.get("status").is_none());
+}
+
+#[tokio::test]
+async fn manual_workflow_wait_rechecks_scope_before_any_send() {
+    use std::cell::Cell;
+    let changed = Cell::new(false);
+    let checks = Cell::new(0);
+    let scope = ManualWorkflowScope {
+        relay_url: "wss://a.test".into(),
+        owner_pubkey: "ab".repeat(32),
+    };
+    let result = wait_for_manual_scope(
+        || {
+            checks.set(checks.get() + 1);
+            check_manual_scope_values(
+                &scope,
+                if changed.get() {
+                    "wss://b.test"
+                } else {
+                    "wss://a.test"
+                },
+                &scope.owner_pubkey,
+            )
+        },
+        async {
+            changed.set(true);
+        },
+    )
+    .await;
+    assert!(result.is_err());
+    assert_eq!(checks.get(), 2);
+    let waited = Cell::new(false);
+    let result = wait_for_manual_scope(|| Err("wrong initial scope".into()), async {
+        waited.set(true);
+    })
+    .await;
+    assert!(result.is_err());
+    assert!(!waited.get());
+}
+
+#[tokio::test(start_paused = true)]
+async fn manual_workflow_rate_limit_never_queues_a_later_write() {
+    let _serial = crate::relay_admission::TEST_SERIAL.lock().await;
+    crate::relay_admission::reset_gate_for_workspace_change();
+    manual_write_gate().unwrap();
+    crate::relay_admission::activate_rate_limit(Some(300));
+    let started = tokio::time::Instant::now();
+    assert!(manual_write_gate().is_err());
+    assert_eq!(tokio::time::Instant::now(), started);
+    crate::relay_admission::reset_gate_for_workspace_change();
+    manual_write_gate().unwrap();
+}
+
+#[tokio::test(start_paused = true)]
+async fn manual_workflow_stalled_response_body_times_out() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = [0; 2048];
+        let bytes_read = socket.read(&mut request).await.unwrap();
+        assert!(bytes_read > 0);
+        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1024\r\nContent-Type: application/json\r\n\r\n{").await.unwrap();
+        std::future::pending::<()>().await;
+    });
+    let response = reqwest::Client::new()
+        .get(format!("http://{address}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let started = tokio::time::Instant::now();
+    let result = manual_response_with_deadline(async {
+        response
+            .json::<Value>()
+            .await
+            .map_err(|error| error.to_string())
+    })
+    .await;
+    assert!(result.unwrap_err().contains("retry the same request"));
+    assert_eq!(started.elapsed(), std::time::Duration::from_secs(20));
+    server.abort();
+}
+
+/// Boundary 9: the real scoped publisher rejects a NIP-49 backup before HTTP I/O.
+#[tokio::test]
+async fn manual_workflow_egress_blocks_key_backup() {
+    let _serial = crate::relay_admission::TEST_SERIAL.lock().await;
+    crate::relay_admission::reset_gate_for_workspace_change();
+    let state = crate::app_state::build_app_state();
+    let scope = ManualWorkflowScope {
+        relay_url: "ws://127.0.0.1:9".into(), // No listener: a connection error is not a pass.
+        owner_pubkey: state.signing_keys().unwrap().public_key().to_hex(),
+    };
+    *state.relay_url_override.lock().unwrap() = Some(scope.relay_url.clone());
+    // NIP-49 spec vector, including its valid uppercase encoding.
+    let backup = "ncryptsec1qgg9947rlpvqu76pj5ecreduf9jxhselq2nae2kghhvd5g7dgjtcxfqtd67p9m0w57lspw8gsq6yphnm8623nsl8xn9j4jdzz84zm3frztj3z7s35vpzmqf6ksu8r89qk5z2zxfmu5gv8th8wclt0h4p";
+    for value in [backup.to_string(), backup.to_ascii_uppercase()] {
+        let body = serde_json::to_vec(&serde_json::json!({"content": value})).unwrap();
+        let err =
+            manual_scoped_request(&state, &scope, reqwest::Method::POST, "/events", Some(body))
+                .await
+                .unwrap_err();
+        assert!(err.contains("key-backup material"), "{err}");
+        assert!(err.contains("manual workflow"), "{err}");
+    }
+}

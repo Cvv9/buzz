@@ -2,6 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   isNewerWorkflowHead,
+  parseAgentScheduledWorkflowPage,
+  parseManualWorkflowDecision,
+  manualWorkflowTriggerTemplate,
+  workflowResultHref,
+  canRunScheduledWorkflow,
+  manualWorkflowReason,
   parseWorkflowApprovalRequestEvent,
   parseWorkflowDefinition,
   parseWorkflowDefinitionEvent,
@@ -232,5 +238,295 @@ test("workflow replacement heads use NIP-16 lowest event id tie-break", () => {
       { created_at: 100, id: "a" },
     ),
     false,
+  );
+});
+
+test("explicit immutable agent bindings survive YAML parsing and enabled edits", () => {
+  const yaml = `${YAML}    agent_targets: [${VIEWER}, ${OTHER_VIEWER}]\n`;
+  const parsed = parseWorkflowDefinition(yaml);
+  assert.deepEqual(
+    parsed.steps[0]?.action === "send_message"
+      ? parsed.steps[0].agent_targets
+      : null,
+    [VIEWER, OTHER_VIEWER],
+  );
+  assert.match(setWorkflowDefinitionEnabled(yaml, false), new RegExp(VIEWER));
+  const unbound = parseWorkflowDefinition(`${YAML}    agent_targets: []\n`);
+  assert.deepEqual(
+    unbound.steps[0]?.action === "send_message"
+      ? unbound.steps[0].agent_targets
+      : null,
+    [],
+  );
+  for (const targets of [
+    `[${VIEWER}, ${VIEWER}]`,
+    "[display-name]",
+    `[${VIEWER.toUpperCase()}]`,
+  ]) {
+    assert.throws(() =>
+      parseWorkflowDefinition(`${YAML}    agent_targets: ${targets}\n`),
+    );
+  }
+});
+
+const SUMMARY_NOW = "2026-09-20T06:00:00Z";
+function scheduledSummary(overrides: Record<string, unknown> = {}) {
+  return {
+    workflow_id: WORKFLOW_ID,
+    name: "Morning brief",
+    definition_hash: EVENT_ID,
+    agent_targets: [VIEWER],
+    channel_id: CHANNEL_ID,
+    schedule: { on: "schedule", interval: "24h", cron: null },
+    timezone: "UTC",
+    next_scheduled_at: null,
+    enabled: true,
+    last_run: null,
+    block_reason: null,
+    revision: 0,
+    limits: {
+      remaining_workflow: 3,
+      remaining_community: 10,
+      next_eligible_at: null,
+      server_now: SUMMARY_NOW,
+    },
+    ...overrides,
+  };
+}
+function summaryPage(row = scheduledSummary()) {
+  return { workflows: [row], next: null, server_now: SUMMARY_NOW };
+}
+
+test("scheduled summaries preserve actual unknown evidence and strip unsafe historical fields", () => {
+  const row = scheduledSummary({
+    last_run: {
+      id: WORKFLOW_ID,
+      execution_state: "unknown",
+      origin: "scheduled",
+      requester: null,
+      accepted_at: null,
+      deadline_at: null,
+      created_at: 10,
+      safe_error_code: null,
+      revision: 0,
+      results: [],
+      status: "completed",
+      execution_trace: "PRIVATE_TRACE",
+      error_message: "PROVIDER_SECRET",
+    },
+  });
+  const result = parseAgentScheduledWorkflowPage(summaryPage(row));
+  assert.equal(result.workflows[0]?.last_run?.execution_state, "unknown");
+  assert.equal(result.workflows[0]?.next_scheduled_at, null);
+  assert.doesNotMatch(
+    JSON.stringify(result),
+    /PRIVATE_TRACE|PROVIDER_SECRET|completed/,
+  );
+  assert.throws(() =>
+    parseAgentScheduledWorkflowPage({
+      ...summaryPage(row),
+      workflows: [row, row],
+    }),
+  );
+  assert.throws(() =>
+    parseAgentScheduledWorkflowPage(
+      summaryPage(scheduledSummary({ definition_hash: "bad", enabled: true })),
+    ),
+  );
+  assert.throws(() =>
+    parseAgentScheduledWorkflowPage(
+      summaryPage(scheduledSummary({ limits: { remaining_workflow: 99 } })),
+    ),
+  );
+});
+
+test("result links require valid same-destination references and ignore supplied URLs", () => {
+  const last = {
+    id: WORKFLOW_ID,
+    execution_state: "completed",
+    origin: "manual",
+    requester: VIEWER,
+    accepted_at: SUMMARY_NOW,
+    deadline_at: SUMMARY_NOW,
+    created_at: 10,
+    safe_error_code: null,
+    revision: 2,
+    results: [
+      {
+        channel_id: CHANNEL_ID,
+        event_id: EVENT_ID,
+        url: "javascript:alert(1)",
+      },
+    ],
+  };
+  const parsed = parseAgentScheduledWorkflowPage(
+    summaryPage(scheduledSummary({ last_run: last })),
+  );
+  const result = parsed.workflows[0]?.last_run?.results[0];
+  assert.ok(result);
+  assert.equal(
+    workflowResultHref(result.channel_id, result.event_id),
+    `/?channel=${CHANNEL_ID}&thread=${EVENT_ID}`,
+  );
+  assert.throws(() => workflowResultHref(CHANNEL_ID, "javascript:alert(1)"));
+  assert.throws(() =>
+    parseAgentScheduledWorkflowPage(
+      summaryPage(
+        scheduledSummary({
+          last_run: {
+            ...last,
+            results: [{ channel_id: WORKFLOW_ID, event_id: EVENT_ID }],
+          },
+        }),
+      ),
+    ),
+  );
+});
+
+test("manual command content has only expected hash and a distinct request tag", () => {
+  const first = manualWorkflowTriggerTemplate(
+    WORKFLOW_ID,
+    EVENT_ID,
+    CHANNEL_ID,
+  );
+  const second = manualWorkflowTriggerTemplate(
+    WORKFLOW_ID,
+    EVENT_ID,
+    WORKFLOW_ID,
+  );
+  assert.deepEqual(JSON.parse(first.content), {
+    expected_definition_hash: EVENT_ID,
+  });
+  assert.deepEqual(first.tags, [
+    ["d", WORKFLOW_ID],
+    ["request", CHANNEL_ID],
+  ]);
+  assert.notDeepEqual(first.tags, second.tags);
+  assert.throws(() =>
+    manualWorkflowTriggerTemplate(WORKFLOW_ID, "bad", CHANNEL_ID),
+  );
+});
+
+test("accepted and rejected decisions remain typed; malformed admission is never success", () => {
+  const limits = scheduledSummary().limits;
+  assert.equal(
+    parseManualWorkflowDecision({
+      accepted: true,
+      run_id: WORKFLOW_ID,
+      reason: null,
+      revision: 1,
+      limits,
+    }).accepted,
+    true,
+  );
+  assert.equal(
+    parseManualWorkflowDecision({
+      accepted: false,
+      run_id: null,
+      reason: "workflow_cooldown",
+      revision: 0,
+      limits,
+    }).reason,
+    "workflow_cooldown",
+  );
+  assert.throws(() =>
+    parseManualWorkflowDecision({
+      accepted: true,
+      run_id: null,
+      reason: null,
+      revision: 1,
+      limits,
+    }),
+  );
+  assert.throws(() =>
+    parseManualWorkflowDecision({
+      accepted: "true",
+      run_id: WORKFLOW_ID,
+      reason: null,
+      revision: 1,
+      limits,
+    }),
+  );
+  assert.throws(() =>
+    parseManualWorkflowDecision({
+      accepted: false,
+      run_id: null,
+      reason: null,
+      revision: 1,
+      limits,
+    }),
+  );
+});
+
+test("elapsed cooldown never unlocks a row locally and unknown reasons stay disabled", () => {
+  const ready = parseAgentScheduledWorkflowPage(summaryPage()).workflows[0];
+  assert.ok(ready);
+  assert.equal(canRunScheduledWorkflow(ready), true);
+  assert.equal(
+    canRunScheduledWorkflow({
+      ...ready,
+      block_reason: "workflow_cooldown",
+      limits: { ...ready.limits, next_eligible_at: "2000-01-01T00:00:00Z" },
+    }),
+    false,
+  );
+  assert.equal(
+    canRunScheduledWorkflow({ ...ready, block_reason: "new_server_reason" }),
+    false,
+  );
+  assert.equal(canRunScheduledWorkflow({ ...ready, enabled: false }), false);
+  assert.equal(
+    canRunScheduledWorkflow({
+      ...ready,
+      limits: { ...ready.limits, remaining_workflow: 0 },
+    }),
+    false,
+  );
+  assert.match(manualWorkflowReason("workflow_cooldown"), /cooldown/);
+  assert.doesNotMatch(
+    manualWorkflowReason("arbitrary_provider_secret"),
+    /arbitrary_provider_secret/,
+  );
+});
+
+test("summary DTO accepts Rust null schedule options without loosening YAML definitions", () => {
+  const interval = parseAgentScheduledWorkflowPage(
+    summaryPage(
+      scheduledSummary({
+        schedule: { on: "schedule", cron: null, interval: "24h" },
+      }),
+    ),
+  );
+  assert.deepEqual(interval.workflows[0]?.schedule, {
+    on: "schedule",
+    interval: "24h",
+  });
+  const cron = parseAgentScheduledWorkflowPage(
+    summaryPage(
+      scheduledSummary({
+        schedule: { on: "schedule", cron: "0 0 9 * * *", interval: null },
+      }),
+    ),
+  );
+  assert.deepEqual(cron.workflows[0]?.schedule, {
+    on: "schedule",
+    cron: "0 0 9 * * *",
+  });
+  assert.throws(() =>
+    parseAgentScheduledWorkflowPage(
+      summaryPage(
+        scheduledSummary({
+          schedule: { on: "schedule", cron: null, interval: null },
+        }),
+      ),
+    ),
+  );
+  assert.throws(() =>
+    parseWorkflowDefinition(
+      YAML.replace(
+        "  on: message_posted",
+        "  on: schedule\n  cron: null\n  interval: 24h",
+      ),
+    ),
   );
 });

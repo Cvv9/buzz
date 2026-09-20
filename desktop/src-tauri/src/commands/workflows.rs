@@ -466,6 +466,257 @@ fn workflow_from_event(ev: &nostr::Event) -> WorkflowWire {
     )
 }
 
+/// Active relay and identity captured by the settings surface.
+#[derive(Debug, Clone, serde::Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManualWorkflowScope {
+    pub relay_url: String,
+    pub owner_pubkey: String,
+}
+
+/// A signed request retained in memory for exact retries, never a private key.
+#[derive(Debug, Clone, serde::Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreparedManualWorkflow {
+    pub scope: ManualWorkflowScope,
+    pub workflow_id: String,
+    pub definition_hash: String,
+    pub event: nostr::Event,
+}
+
+fn check_manual_scope_values(
+    scope: &ManualWorkflowScope,
+    relay_url: &str,
+    owner_pubkey: &str,
+) -> Result<(), String> {
+    if crate::relay::relay_http_base_url(&scope.relay_url)
+        != crate::relay::relay_http_base_url(relay_url)
+        || scope.owner_pubkey != owner_pubkey
+    {
+        return Err("Workflow scope changed; refresh before trying again.".into());
+    }
+    Ok(())
+}
+
+fn manual_scope_keys(state: &AppState, scope: &ManualWorkflowScope) -> Result<nostr::Keys, String> {
+    let keys = state.signing_keys()?;
+    check_manual_scope_values(
+        scope,
+        &crate::relay::relay_ws_url_with_override(state),
+        &keys.public_key().to_hex(),
+    )?;
+    Ok(keys)
+}
+
+fn validate_prepared_manual(request: &PreparedManualWorkflow) -> Result<(), String> {
+    request
+        .event
+        .verify()
+        .map_err(|_| "Invalid workflow signature.")?;
+    let workflow =
+        uuid::Uuid::parse_str(&request.workflow_id).map_err(|_| "Invalid workflow id.")?;
+    if workflow.is_nil()
+        || request.event.pubkey.to_hex() != request.scope.owner_pubkey
+        || request.event.kind != nostr::Kind::Custom(46020)
+    {
+        return Err("Invalid workflow request identity or kind.".into());
+    }
+    nostr::EventId::from_hex(&request.definition_hash)
+        .map_err(|_| "Invalid workflow definition hash.")?;
+    let content: Value = serde_json::from_str(&request.event.content)
+        .map_err(|_| "Invalid workflow request content.")?;
+    if content != serde_json::json!({"expected_definition_hash":request.definition_hash}) {
+        return Err("Invalid workflow request content.".into());
+    }
+    let tags: Vec<_> = request
+        .event
+        .tags
+        .iter()
+        .map(|tag| tag.as_slice())
+        .collect();
+    if tags.len() != 2
+        || tags[0] != ["d", request.workflow_id.as_str()]
+        || tags[1].len() != 2
+        || tags[1][0] != "nonce"
+        || uuid::Uuid::parse_str(&tags[1][1]).is_err()
+    {
+        return Err("Invalid workflow request tags.".into());
+    }
+    Ok(())
+}
+
+/// Fetch only authorized scheduled summaries under a captured relay/identity.
+#[tauri::command]
+pub async fn get_agent_scheduled_workflows(
+    agent_pubkey: String,
+    cursor: Option<String>,
+    scope: ManualWorkflowScope,
+    state: State<'_, AppState>,
+) -> Result<Value, String> {
+    let agent = nostr::PublicKey::from_hex(&agent_pubkey).map_err(|_| "Invalid agent pubkey.")?;
+    let mut path = format!("/workflows?agent_pubkey={}&limit=20", agent.to_hex());
+    if let Some(cursor) = cursor {
+        let cursor = uuid::Uuid::parse_str(&cursor).map_err(|_| "Invalid workflow cursor.")?;
+        path.push_str(&format!("&cursor={cursor}"));
+    }
+    manual_scoped_request(&state, &scope, reqwest::Method::GET, &path, None).await
+}
+
+/// Sign one fresh manual command. Subsequent retries submit this same envelope.
+#[tauri::command]
+pub async fn prepare_manual_workflow(
+    workflow_id: String,
+    definition_hash: String,
+    scope: ManualWorkflowScope,
+    state: State<'_, AppState>,
+) -> Result<PreparedManualWorkflow, String> {
+    let keys = manual_scope_keys(&state, &scope)?;
+    let event = events::build_manual_workflow_trigger(&workflow_id, &definition_hash)?
+        .sign_with_keys(&keys)
+        .map_err(|_| "Could not sign workflow request.")?;
+    let prepared = PreparedManualWorkflow {
+        scope,
+        workflow_id,
+        definition_hash,
+        event,
+    };
+    validate_prepared_manual(&prepared)?;
+    manual_scope_keys(&state, &prepared.scope)?;
+    Ok(prepared)
+}
+
+/// Publish exact prepared bytes and preserve both acceptance and denial receipts.
+#[tauri::command]
+pub async fn submit_manual_workflow(
+    request: PreparedManualWorkflow,
+    state: State<'_, AppState>,
+) -> Result<Value, String> {
+    validate_prepared_manual(&request)?;
+    let body = serde_json::to_vec(&request.event).map_err(|_| "Invalid workflow request.")?;
+    let response = manual_scoped_request(
+        &state,
+        &request.scope,
+        reqwest::Method::POST,
+        "/events",
+        Some(body),
+    )
+    .await?;
+    manual_receipt(&response, &request.event.id.to_hex())
+}
+
+fn manual_receipt(response: &Value, event_id: &str) -> Result<Value, String> {
+    if response.get("event_id").and_then(Value::as_str) != Some(event_id) {
+        return Err("Workflow response identity mismatch; retry the same request.".into());
+    }
+    let message = response
+        .get("message")
+        .and_then(Value::as_str)
+        .ok_or("Workflow response missing; retry the same request.")?;
+    let receipt: Value = parse_command_response(message)
+        .map_err(|_| "Workflow outcome unknown; check status or retry the same request.")?;
+    let accepted = receipt
+        .get("accepted")
+        .and_then(Value::as_bool)
+        .ok_or("Workflow outcome unknown; retry the same request.")?;
+    if response.get("accepted").and_then(Value::as_bool) != Some(accepted)
+        || receipt.get("revision").and_then(Value::as_i64).is_none()
+        || !receipt.get("limits").is_some_and(Value::is_object)
+        || (accepted
+            && receipt
+                .get("run_id")
+                .and_then(Value::as_str)
+                .and_then(|id| uuid::Uuid::parse_str(id).ok())
+                .is_none())
+        || (!accepted && receipt.get("reason").and_then(Value::as_str).is_none())
+    {
+        return Err("Workflow outcome unknown; retry the same request.".into());
+    }
+    Ok(receipt)
+}
+
+fn manual_write_gate() -> Result<(), String> {
+    use futures_util::FutureExt;
+    crate::relay_admission::wait_for_rate_limit()
+        .now_or_never()
+        .ok_or_else(|| "Workflow is rate limited. Retry this same request when connected.".into())
+}
+
+async fn wait_for_manual_scope(
+    check: impl Fn() -> Result<(), String>,
+    wait: impl std::future::Future<Output = ()>,
+) -> Result<(), String> {
+    check()?;
+    wait.await;
+    check()
+}
+
+// Bound the complete exchange, including a response body that stops arriving.
+async fn manual_response_with_deadline(
+    exchange: impl std::future::Future<Output = Result<Value, String>>,
+) -> Result<Value, String> {
+    tokio::time::timeout(std::time::Duration::from_secs(20), exchange)
+        .await
+        .map_err(|_| {
+            "Workflow outcome unconfirmed after timeout. Check status or retry the same request."
+                .to_string()
+        })?
+}
+
+// This path deliberately captures the destination and signing identity BEFORE
+// the admission wait, rechecks them afterwards, and never re-resolves the URL.
+async fn manual_scoped_request(
+    state: &AppState,
+    scope: &ManualWorkflowScope,
+    method: reqwest::Method,
+    path: &str,
+    body: Option<Vec<u8>>,
+) -> Result<Value, String> {
+    let keys = manual_scope_keys(state, scope)?;
+    let url = format!(
+        "{}{}",
+        crate::relay::relay_http_base_url(&scope.relay_url),
+        path
+    );
+    if method == reqwest::Method::POST {
+        // Never turn a manual click into delayed background work.
+        manual_write_gate()?;
+        manual_scope_keys(state, scope)?;
+    } else {
+        wait_for_manual_scope(
+            || manual_scope_keys(state, scope).map(|_| ()),
+            crate::relay_admission::wait_for_rate_limit(),
+        )
+        .await?;
+    }
+    let bytes = body.unwrap_or_default();
+    let auth = crate::relay::build_nip98_auth_header_for_keys(&keys, &method, &url, &bytes)?;
+    crate::egress_guard::assert_no_key_backup_bytes(&bytes, "manual workflow")?;
+    manual_response_with_deadline(async {
+        let response = state
+            .http_client
+            .request(method, &url)
+            .header("Authorization", auth)
+            .header("Content-Type", "application/json")
+            .body(bytes)
+            .send()
+            .await
+            .map_err(|_| {
+                "Workflow request could not be confirmed. Check status before retrying."
+            })?;
+        manual_scope_keys(state, scope)?;
+        if !response.status().is_success() {
+            return Err(
+                "Workflow request unavailable. Refresh access and retry the same request if needed."
+                    .into(),
+            );
+        }
+        let result = crate::relay::parse_json_response(response).await?;
+        manual_scope_keys(state, scope)?;
+        Ok(result)
+    })
+    .await
+}
+
 #[cfg(test)]
 #[path = "workflows_tests.rs"]
 mod tests;

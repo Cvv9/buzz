@@ -1,3 +1,4 @@
+import type { MockScheduledWorkflows } from "../../src/testing/e2eBridgeScheduledWorkflows";
 import type { Page } from "@playwright/test";
 import type { ChannelTemplate, RelayEvent } from "../../src/shared/api/types";
 import type { AgentUsageSeries } from "../../src/shared/api/tauriArchive";
@@ -200,6 +201,7 @@ type MockBridgeOptions = {
   acpAuthMethodsError?: string;
   /** When set, the `delete_custom_harness` mock command throws with this message. */
   workflowUpdateError?: string;
+  scheduledWorkflows?: MockScheduledWorkflows;
   deleteCustomHarnessError?: string;
   connectAcpRuntimeResult?: { launched: boolean };
   connectAcpRuntimeDelayMs?: number;

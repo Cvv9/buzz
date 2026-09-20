@@ -566,12 +566,27 @@ mod tests {
             && constraint.columns == ["delivered_at", "id"]
     }
 
+    const WORKFLOW_GLOBAL_IDENTITY_INDEX: &str = "CREATE UNIQUE INDEX workflow_credentials_global_identity ON workflow_run_credentials(ephemeral_pubkey)";
+
+    fn is_allowed_workflow_identity_exception(constraint: &ConstraintLint) -> bool {
+        // Scoped read keys must never become another tenant's ordinary identity.
+        // This exact, unconditional index closes cross-community claim races;
+        // the credential rows and every other key remain community-scoped.
+        constraint.table == "workflow_run_credentials"
+            && constraint.kind == ConstraintKind::Unique
+            && constraint.columns == ["ephemeral_pubkey"]
+            && normalize_sql(&constraint.description)
+                == normalize_sql(WORKFLOW_GLOBAL_IDENTITY_INDEX)
+    }
+
     fn scoped_constraint_violations(sql: &str) -> Vec<ConstraintLint> {
         let scoped_tables = scoped_tables(sql);
         scoped_constraint_lints(sql, &scoped_tables)
             .into_iter()
             .filter(|constraint| {
-                if is_allowed_partition_primary_key_exception(constraint) {
+                if is_allowed_partition_primary_key_exception(constraint)
+                    || is_allowed_workflow_identity_exception(constraint)
+                {
                     return false;
                 }
                 constraint.columns.first().map(String::as_str) != Some("community_id")
@@ -1168,6 +1183,52 @@ mod tests {
     }
 
     #[test]
+    fn workflow_global_identity_lint_exception_is_exact_and_required() {
+        let fixture = format!(
+            "CREATE TABLE workflow_run_credentials (
+                community_id UUID NOT NULL,
+                ephemeral_pubkey BYTEA NOT NULL,
+                agent_pubkey BYTEA NOT NULL,
+                PRIMARY KEY (community_id, ephemeral_pubkey)
+            ); {WORKFLOW_GLOBAL_IDENTITY_INDEX};"
+        );
+        assert!(scoped_constraint_violations(&fixture).is_empty());
+        for invalid_index in [
+            WORKFLOW_GLOBAL_IDENTITY_INDEX
+                .replace("workflow_credentials_global_identity", "other_index"),
+            WORKFLOW_GLOBAL_IDENTITY_INDEX.replace("(ephemeral_pubkey)", "(agent_pubkey)"),
+            format!("{WORKFLOW_GLOBAL_IDENTITY_INDEX} WHERE ephemeral_pubkey IS NOT NULL"),
+        ] {
+            let invalid = fixture.replace(WORKFLOW_GLOBAL_IDENTITY_INDEX, &invalid_index);
+            assert_eq!(scoped_constraint_violations(&invalid).len(), 1, "{invalid}");
+        }
+        let other_table = fixture.replace("workflow_run_credentials", "other_credentials");
+        assert_eq!(scoped_constraint_violations(&other_table).len(), 1);
+        let unrelated_unique = format!(
+            "{fixture} ALTER TABLE workflow_run_credentials ADD CONSTRAINT agent_unique UNIQUE (agent_pubkey);"
+        );
+        assert_eq!(scoped_constraint_violations(&unrelated_unique).len(), 1);
+
+        // An exception must not let either bootstrap path drop the security
+        // constraint; require exactly one declaration in migrations and schema.
+        for sql in [
+            migration_sql(),
+            include_str!("../../../schema/schema.sql").to_owned(),
+        ] {
+            let constraints = scoped_constraint_lints(&sql, &scoped_tables(&sql));
+            assert_eq!(
+                constraints
+                    .iter()
+                    .filter(|constraint| is_allowed_workflow_identity_exception(constraint))
+                    .count(),
+                1,
+                "both bootstrap paths require the global ephemeral identity index"
+            );
+            assert!(scoped_constraint_violations(&sql).is_empty());
+        }
+    }
+
+    #[test]
     fn all_non_operator_global_tables_have_not_null_community_id() {
         let sql = migration_sql();
         let sql = sql.as_str();
@@ -1507,6 +1568,11 @@ mod tests {
         let mut expected_fences = migration.fence_attachments.clone();
         expected_fences.remove("product_feedback");
         expected_fences.remove("rate_limit_violations");
+        let migration_0039 = MIGRATOR
+            .iter()
+            .find(|migration| migration.version == 39)
+            .expect("embedded migration 0039");
+        expected_fences.extend(surface(migration_0039.sql.as_ref()).fence_attachments);
         assert_eq!(
             expected_fences, schema.fence_attachments,
             "write-fence attachment targets differ after recovery policy"

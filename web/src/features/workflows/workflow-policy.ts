@@ -16,7 +16,12 @@ export type WorkflowTrigger =
   | { on: "webhook" };
 
 export type WorkflowAction =
-  | { action: "send_message"; text: string; channel?: string }
+  | {
+      action: "send_message";
+      text: string;
+      channel?: string;
+      agent_targets?: string[];
+    }
   | { action: "send_dm"; to: string; text: string }
   | { action: "set_channel_topic"; topic: string }
   | { action: "add_reaction"; emoji: string }
@@ -233,14 +238,42 @@ function parseAction(step: Record<string, unknown>): WorkflowAction {
     case "send_message": {
       allowedKeys(
         step,
-        ["id", "name", "if", "timeout_secs", "action", "text", "channel"],
+        [
+          "id",
+          "name",
+          "if",
+          "timeout_secs",
+          "action",
+          "text",
+          "channel",
+          "agent_targets",
+        ],
         "step",
       );
       const channel = optionalString(step.channel, "step.channel");
       if (channel) workflowUuid(channel, "step.channel");
-      return channel
-        ? { action, text: string(step.text, "step.text"), channel }
-        : { action, text: string(step.text, "step.text") };
+      const targets = step.agent_targets;
+      if (
+        targets !== undefined &&
+        (!Array.isArray(targets) ||
+          targets.some(
+            (target) =>
+              typeof target !== "string" || !EVENT_ID_PATTERN.test(target),
+          ) ||
+          new Set(targets).size !== targets.length)
+      ) {
+        invalid(
+          "step.agent_targets must contain distinct lowercase public keys.",
+        );
+      }
+      return {
+        action,
+        text: string(step.text, "step.text"),
+        ...(channel ? { channel } : {}),
+        ...(targets === undefined
+          ? {}
+          : { agent_targets: targets as string[] }),
+      };
     }
     case "send_dm":
       allowedKeys(
@@ -577,4 +610,282 @@ export function parseWorkflowApprovalRequestEvent(
     content: event.content,
     createdAt: event.created_at,
   };
+}
+
+export type ManualWorkflowLimits = {
+  remaining_workflow: number;
+  remaining_community: number;
+  next_eligible_at: string | null;
+  server_now: string;
+};
+export type ManualWorkflowDecision = {
+  accepted: boolean;
+  run_id: string | null;
+  reason: string | null;
+  revision: number;
+  limits: ManualWorkflowLimits;
+};
+export type ScheduledWorkflowRun = {
+  id: string;
+  execution_state:
+    | "unknown"
+    | "queued"
+    | "running"
+    | "completed"
+    | "failed"
+    | "timed_out"
+    | "stalled";
+  origin: "manual" | "scheduled" | "event";
+  requester: string | null;
+  accepted_at: string | null;
+  deadline_at: string | null;
+  created_at: number;
+  safe_error_code: string | null;
+  revision: number;
+  results: { channel_id: string; event_id: string }[];
+};
+export type AgentScheduledWorkflow = {
+  workflow_id: string;
+  name: string;
+  definition_hash: string;
+  agent_targets: string[];
+  channel_id: string;
+  schedule: Extract<WorkflowTrigger, { on: "schedule" }>;
+  timezone: "UTC";
+  next_scheduled_at: string | null;
+  enabled: boolean;
+  last_run: ScheduledWorkflowRun | null;
+  limits: ManualWorkflowLimits;
+  block_reason: string | null;
+  revision: number;
+};
+export type AgentScheduledWorkflowPage = {
+  workflows: AgentScheduledWorkflow[];
+  next: string | null;
+  server_now: string;
+};
+
+function summaryRecord(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) throw new Error("Invalid workflow summary.");
+  return value;
+}
+function summaryText(value: unknown): string {
+  if (typeof value !== "string" || !value.trim())
+    throw new Error("Invalid workflow summary text.");
+  return value;
+}
+function summaryOptionalText(value: unknown): string | null {
+  return value === null ? null : summaryText(value);
+}
+function summaryUuid(value: unknown): string {
+  const text = summaryText(value);
+  if (!isWorkflowUuid(text) || text !== text.toLowerCase())
+    throw new Error("Invalid workflow reference.");
+  return text;
+}
+function summaryKey(value: unknown): string {
+  const text = summaryText(value);
+  if (!EVENT_ID_PATTERN.test(text)) throw new Error("Invalid workflow key.");
+  return text;
+}
+function summaryInteger(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0)
+    throw new Error("Invalid workflow count.");
+  return value;
+}
+function summaryTime(value: unknown): string {
+  const text = summaryText(value);
+  if (!/^\d{4}-\d\d-\d\dT/.test(text) || !Number.isFinite(Date.parse(text)))
+    throw new Error("Invalid workflow time.");
+  return text;
+}
+function summaryOptionalTime(value: unknown): string | null {
+  return value === null ? null : summaryTime(value);
+}
+function parseManualLimits(value: unknown): ManualWorkflowLimits {
+  const limits = summaryRecord(value);
+  const remaining_workflow = summaryInteger(limits.remaining_workflow);
+  const remaining_community = summaryInteger(limits.remaining_community);
+  if (remaining_workflow > 3 || remaining_community > 10)
+    throw new Error("Invalid workflow allowance.");
+  return {
+    remaining_workflow,
+    remaining_community,
+    next_eligible_at: summaryOptionalTime(limits.next_eligible_at),
+    server_now: summaryTime(limits.server_now),
+  };
+}
+/** Parse only the structured relay admission receipt; acceptance is not completion. */
+export function parseManualWorkflowDecision(
+  value: unknown,
+): ManualWorkflowDecision {
+  const decision = summaryRecord(value);
+  if (typeof decision.accepted !== "boolean")
+    throw new Error("Missing workflow admission decision.");
+  const run_id = decision.run_id === null ? null : summaryUuid(decision.run_id);
+  const reason = summaryOptionalText(decision.reason);
+  if (
+    (decision.accepted && (!run_id || reason !== null)) ||
+    (!decision.accepted && !reason)
+  )
+    throw new Error("Inconsistent workflow admission decision.");
+  return {
+    accepted: decision.accepted,
+    run_id,
+    reason,
+    revision: summaryInteger(decision.revision),
+    limits: parseManualLimits(decision.limits),
+  };
+}
+function parseScheduledRun(value: unknown): ScheduledWorkflowRun {
+  const run = summaryRecord(value);
+  const execution_state = summaryText(run.execution_state);
+  if (
+    ![
+      "unknown",
+      "queued",
+      "running",
+      "completed",
+      "failed",
+      "timed_out",
+      "stalled",
+    ].includes(execution_state)
+  )
+    throw new Error("Unknown workflow state.");
+  if (!["manual", "scheduled", "event"].includes(String(run.origin)))
+    throw new Error("Unknown workflow origin.");
+  if (!Array.isArray(run.results)) throw new Error("Invalid workflow results.");
+  return {
+    id: summaryUuid(run.id),
+    execution_state: execution_state as ScheduledWorkflowRun["execution_state"],
+    origin: run.origin as ScheduledWorkflowRun["origin"],
+    requester: run.requester === null ? null : summaryKey(run.requester),
+    accepted_at: summaryOptionalTime(run.accepted_at),
+    deadline_at: summaryOptionalTime(run.deadline_at),
+    created_at: summaryInteger(run.created_at),
+    safe_error_code: summaryOptionalText(run.safe_error_code),
+    revision: summaryInteger(run.revision),
+    results: run.results.map((item) => {
+      const result = summaryRecord(item);
+      return {
+        channel_id: summaryUuid(result.channel_id),
+        event_id: summaryKey(result.event_id),
+      };
+    }),
+  };
+}
+/** Validate the summary's safe fields without exposing detailed traces or provider text. */
+export function parseAgentScheduledWorkflowPage(
+  value: unknown,
+): AgentScheduledWorkflowPage {
+  const page = summaryRecord(value);
+  if (!Array.isArray(page.workflows)) throw new Error("Invalid workflow list.");
+  const workflows = page.workflows.map((value): AgentScheduledWorkflow => {
+    const row = summaryRecord(value);
+    // Relay DTOs serialize the unused schedule Option as null. Definition
+    // validation stays strict; normalize only these two summary fields.
+    const { cron, interval, ...trigger } = summaryRecord(row.schedule);
+    const schedule = parseTrigger({
+      ...trigger,
+      ...(cron == null ? {} : { cron }),
+      ...(interval == null ? {} : { interval }),
+    });
+    if (
+      schedule.on !== "schedule" ||
+      row.timezone !== "UTC" ||
+      typeof row.enabled !== "boolean" ||
+      !Array.isArray(row.agent_targets)
+    )
+      throw new Error("Invalid scheduled workflow.");
+    const channel_id = summaryUuid(row.channel_id);
+    const last_run =
+      row.last_run === null ? null : parseScheduledRun(row.last_run);
+    if (last_run?.results.some((result) => result.channel_id !== channel_id))
+      throw new Error("Workflow result is outside its destination.");
+    return {
+      workflow_id: summaryUuid(row.workflow_id),
+      name: summaryText(row.name),
+      definition_hash: summaryKey(row.definition_hash),
+      agent_targets: row.agent_targets.map(summaryKey),
+      channel_id,
+      schedule,
+      timezone: "UTC",
+      next_scheduled_at: summaryOptionalTime(row.next_scheduled_at),
+      enabled: row.enabled,
+      last_run,
+      limits: parseManualLimits(row.limits),
+      block_reason: summaryOptionalText(row.block_reason),
+      revision: summaryInteger(row.revision),
+    };
+  });
+  if (
+    new Set(workflows.map((row) => row.workflow_id)).size !== workflows.length
+  )
+    throw new Error("Duplicate workflow summary.");
+  return {
+    workflows,
+    next: page.next === null ? null : summaryUuid(page.next),
+    server_now: summaryTime(page.server_now),
+  };
+}
+/** A fresh user activation has its own event identity, even within the same second. */
+export function manualWorkflowTriggerTemplate(
+  workflowId: string,
+  definitionHash: string,
+  nonce: string,
+) {
+  return {
+    kind: 46020,
+    tags: [
+      ["d", summaryUuid(workflowId)],
+      ["request", summaryUuid(nonce)],
+    ],
+    content: JSON.stringify({
+      expected_definition_hash: summaryKey(definitionHash),
+    }),
+  };
+}
+/** Construct only an internal, validated result route, never a server-supplied URL. */
+export function workflowResultHref(channel: string, event: string): string {
+  return `/?channel=${summaryUuid(channel)}&thread=${summaryKey(event)}`;
+}
+/** Stable safe explanations; unknown server codes keep activation disabled. */
+export function manualWorkflowReason(reason: string): string {
+  const reasons: Record<string, string> = {
+    workflow_disabled: "This workflow is paused.",
+    workflow_owner_required: "Only this workflow’s owner can run it.",
+    association_unresolved: "The agent association needs an owner update.",
+    unsupported_manual_profile:
+      "This workflow does not support manual execution.",
+    permission_revoked:
+      "Current agent or channel permissions do not allow this run.",
+    definition_changed: "The workflow changed. Refresh before running it.",
+    workflow_cooldown: "The 15-minute cooldown is active.",
+    workflow_daily_limit: "The workflow’s rolling 24-hour allowance is used.",
+    community_daily_limit: "The workspace’s rolling 24-hour allowance is used.",
+    workflow_active: "This workflow already has unfinished work.",
+    agent_active_limit: "This agent already has an active manual run.",
+    community_active_limit:
+      "Two manual runs are already active in this workspace.",
+    runner_unavailable: "The runner is not ready for supervised execution.",
+    execution_failed: "The execution failed.",
+    deadline_exceeded: "The execution deadline was reached.",
+    legacy_execution_unknown: "Earlier work has not been confirmed stopped.",
+  };
+  return (
+    reasons[reason] ??
+    "The relay cannot allow this run yet. Refresh for current status."
+  );
+}
+/** Server denial remains authoritative after its displayed countdown reaches zero. */
+export function canRunScheduledWorkflow(row: AgentScheduledWorkflow): boolean {
+  return (
+    row.enabled &&
+    row.block_reason === null &&
+    row.limits.remaining_workflow > 0 &&
+    row.limits.remaining_community > 0 &&
+    !["queued", "running", "stalled"].includes(
+      row.last_run?.execution_state ?? "",
+    )
+  );
 }

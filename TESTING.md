@@ -420,15 +420,42 @@ provider. After activating Hermit:
 ```sh
 cargo test -p buzz-core -p buzz-sdk -p buzz-workflow
 cargo test -p buzz-db workflow_manual -- --ignored --nocapture
-cargo test -p buzz-relay workflow_manual -- --ignored --nocapture
+cargo test -p buzz-db workflow_execution::tests -- --ignored --test-threads=1
+# Requires a built CLI and a membership-enforced isolated relay; RELAY_URL
+# must be a loopback ws:// URL and BUZZ_TEST_CLI its absolute executable path.
+cargo test -p buzz-test-client --test e2e_workflow_manual_runs -- --ignored --test-threads=1
 ```
 
 The DB suite covers concurrent distinct signed requests, same-agent and community
 concurrency, rolling allowances and exact boundaries, definition/owner/channel
 changes, scheduler collision claims, replayable signed outbox intent and deletion
-retention. The relay test submits signed events through the shared ingress and
-proves old runners remain blocked. Capability rows in these tests are test-only
-fixtures; they do not prove safe ACP execution. Phase 2 must separately prove
-claims, process stopping, scoped credentials and actual completion before enabling
-the runtime capability handler. Never clear stalled evidence merely because a
-lease expires or a runner is online; old work needs positively verified stopping.
+retention. Execution tests cover claims, shared attempt budgets, stopped evidence,
+controller recovery and journal-loss recovery. The transport suite submits real
+signed HTTP/WebSocket events and invokes the CLI, including revoked-access claim
+recovery. Capability rows remain test fixtures; they do not prove process isolation.
+
+CI's `Manual Workflow Integration (PostgreSQL 17)` job runs all 37 ignored DB
+cases and both transport cases from the archived test binaries against a fresh
+migrated database. The existing backend integration gate requires its success.
+Fresh desired-state setup uses `schema/schema.sql`; keep its affected columns,
+constraints, indexes and serving fences aligned with additive migrations.
+
+The separate image gate takes already-built Linux/amd64 images:
+
+```sh
+scripts/test-manual-workflow-ci.sh <relay-image> <agent-image>
+```
+
+It creates isolated PostgreSQL17, Redis and relay containers, enforces membership
+and signed authentication, and runs the manual/event harness with fake provider
+responses. The harness verifies the shared attempt budget, fallback, escaped
+child termination, stored results and restart/replay behavior. Artifacts retain
+image IDs, migration versions, logs and results; cleanup touches only resources
+owned by that invocation. Both hosted-runtime publication and relay promotion
+require this gate. Never clear stalled evidence because a lease expires or a
+runner is online; old work needs positively verified stopping.
+
+Client regression entry points are `web/tests/e2e/workspace-workflows.spec.ts`
+and `desktop/tests/e2e/agent-scheduled-workflows.spec.ts`. Use a fresh desktop
+`pnpm build:e2e` bundle and serialize web/desktop preview servers on port4173.
+These browser fixtures test settings behavior, not provider execution or billing.

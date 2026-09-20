@@ -74,10 +74,11 @@ fn error_names_the_boundary_context() {
 // (no listener exists at the target address; a distinctive guard error — not
 // a connection error — proves the abort happened first).
 //
-// Boundaries 6 and 7 (`submit_engram_event` twins) are module-private inside
+// Boundaries 6, 7, and 9 are module-private inside
 // `commands`; their injection tests live next to them:
 //   - commands/team_snapshot/tests.rs::egress_guard_boundary
 //   - commands/personas/snapshot/import.rs::egress_guard_tests
+//   - commands/workflows_tests.rs::manual_workflow_egress_blocks_key_backup
 
 /// Boundary 1: `relay/submit.rs` `submit_event_at_with_keys` (the funnel for
 /// all `submit_event*` variants).
@@ -268,7 +269,9 @@ const EVENTS_INVENTORY: &[(&str, usize, usize)] = &[
     ("src/commands/team_snapshot.rs", 1, 1),            // boundary 6
     ("src/commands/personas/snapshot/import.rs", 2, 1), // boundary 7 + its in-file injection-test fixture URL
     ("src/native_websocket.rs", 0, 2),                  // boundary 8 (WS frames; no events URL)
+    ("src/commands/workflows.rs", 1, 1),                // boundary 9
     // Test-only fixtures — no production egress, no guard:
+    ("src/commands/workflows_tests.rs", 1, 0),
     ("src/relay_admission.rs", 1, 0),
     ("src/archive/mod_tests.rs", 1, 0),
     ("src/managed_agents/persona_events/tests.rs", 1, 0),
@@ -438,6 +441,7 @@ fn ncryptsec_handling_is_confined_to_allowlisted_files() {
         "src/huddle/pipeline.rs",
         "src/commands/team_snapshot.rs",
         "src/commands/team_snapshot/tests.rs",
+        "src/commands/workflows_tests.rs", // boundary 9 injection fixture only
         "src/commands/personas/snapshot/import.rs",
         "src/native_websocket.rs",
     ];
