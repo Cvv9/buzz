@@ -239,13 +239,13 @@ fn private_directory(path: &Path, uid: u32) -> Result<()> {
                 path.display()
             );
         }
+        Ok(())
     }
     #[cfg(not(unix))]
     {
         let _ = (path, uid);
         bail!("unsupported isolation platform");
     }
-    Ok(())
 }
 
 #[cfg(target_os = "linux")]
