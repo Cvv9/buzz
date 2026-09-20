@@ -5,9 +5,18 @@ import {
   queryEvents,
   subscribeEvents,
 } from "@/shared/lib/nostr-client";
-import { relayWsUrl } from "@/shared/lib/relay-url";
+import { relayHttpBaseUrl, relayWsUrl } from "@/shared/lib/relay-url";
+import { getUnlockedBrowserIdentity } from "@/shared/lib/browser-identity";
+import { makeNip98AuthHeader } from "@/shared/lib/nip98";
+import { signNostrEvent } from "@/shared/lib/nostr-signer";
+import { verifyEvent } from "nostr-tools/pure";
 import {
   isNewerWorkflowHead,
+  type AgentScheduledWorkflowPage,
+  type ManualWorkflowDecision,
+  parseAgentScheduledWorkflowPage,
+  parseManualWorkflowDecision,
+  manualWorkflowTriggerTemplate,
   isWorkflowUuid,
   parseWorkflowApprovalRequestEvent,
   parseWorkflowDefinition,
@@ -362,4 +371,193 @@ export function subscribeToWorkflowApprovalRequests(
     { kinds: [KIND_WORKFLOW_APPROVAL_REQUESTED], "#p": [pubkey] },
     onEvent,
   );
+}
+
+/** Current browser/relay partition for an authorized settings request. */
+export type WorkflowRequestScope = { viewerPubkey: string; relayBase: string };
+export type PreparedManualWorkflowRequest = {
+  event: NostrEvent;
+  scope: WorkflowRequestScope;
+};
+
+function assertWorkflowScope(
+  scope: WorkflowRequestScope,
+  signal?: AbortSignal,
+) {
+  signal?.throwIfAborted();
+  if (
+    getUnlockedBrowserIdentity()?.pubkey !== scope.viewerPubkey ||
+    relayHttpBaseUrl() !== scope.relayBase
+  ) {
+    throw new Error(
+      "The account or workspace changed. Open its current settings again.",
+    );
+  }
+  if (!navigator.onLine)
+    throw new Error("You are offline. No workflow request was queued.");
+}
+async function workflowAuthorization(
+  url: string,
+  method: string,
+  scope: WorkflowRequestScope,
+  signal?: AbortSignal,
+  body?: string,
+) {
+  assertWorkflowScope(scope, signal);
+  const header = await makeNip98AuthHeader(url, method, {
+    requireNip07: true,
+    ...(body === undefined ? {} : { body }),
+  });
+  assertWorkflowScope(scope, signal);
+  const signed = JSON.parse(atob(header.slice("Nostr ".length))) as NostrEvent;
+  if (signed.pubkey !== scope.viewerPubkey || !verifyEvent(signed))
+    throw new Error(
+      "The signing account does not match this workspace session.",
+    );
+  return header;
+}
+/** Read only the owner-authorized, safe workflow summary projection. */
+export async function listAgentScheduledWorkflows(
+  scope: WorkflowRequestScope,
+  agentPubkey: string,
+  cursor: string | null,
+  signal: AbortSignal,
+): Promise<AgentScheduledWorkflowPage> {
+  if (!/^[0-9a-f]{64}$/.test(agentPubkey))
+    throw new Error("Invalid agent public key.");
+  const url = new URL(`${scope.relayBase.replace(/\/+$/, "")}/workflows`);
+  url.searchParams.set("agent_pubkey", agentPubkey);
+  url.searchParams.set("limit", "50");
+  if (cursor)
+    url.searchParams.set("cursor", requireWorkflowId(cursor, "Cursor"));
+  const authorization = await workflowAuthorization(
+    url.href,
+    "GET",
+    scope,
+    signal,
+  );
+  assertWorkflowScope(scope, signal);
+  const response = await fetch(url.href, {
+    headers: { Authorization: authorization, Accept: "application/json" },
+    signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]),
+    cache: "no-store",
+  });
+  assertWorkflowScope(scope, signal);
+  if (!response.ok)
+    throw new Error(
+      response.status === 403
+        ? "Only the current workspace owner with channel access can view these workflows."
+        : "Could not load scheduled workflows. Try again.",
+    );
+  const value: unknown = await response.json();
+  assertWorkflowScope(scope, signal);
+  const page = parseAgentScheduledWorkflowPage(value);
+  if (
+    page.workflows.some(
+      (row) =>
+        row.agent_targets.length > 0 &&
+        !row.agent_targets.includes(agentPubkey),
+    )
+  ) {
+    throw new Error("The workflow summary does not match this agent.");
+  }
+  return page;
+}
+/** Prepare exactly one signed command; retries retain this envelope unchanged. */
+export async function prepareManualWorkflowRequest(
+  scope: WorkflowRequestScope,
+  workflowId: string,
+  definitionHash: string,
+  signal: AbortSignal,
+): Promise<PreparedManualWorkflowRequest> {
+  assertWorkflowScope(scope, signal);
+  const event = await signNostrEvent(
+    manualWorkflowTriggerTemplate(
+      workflowId,
+      definitionHash,
+      crypto.randomUUID(),
+    ),
+    { requireNip07: true },
+  );
+  assertWorkflowScope(scope, signal);
+  if (event.pubkey !== scope.viewerPubkey || !verifyEvent(event))
+    throw new Error(
+      "The signing account does not match this workspace session.",
+    );
+  return { event, scope };
+}
+/** An acknowledgement may have been lost; retain the prepared request for an explicit retry. */
+export class WorkflowRequestUncertainError extends Error {
+  constructor() {
+    super(
+      "The relay did not confirm this request. Refresh its status or retry the same request.",
+    );
+  }
+}
+/** Submit through the existing Nostr bridge, with at most one same-event transport retry. */
+export async function submitManualWorkflowRequest(
+  prepared: PreparedManualWorkflowRequest,
+  signal: AbortSignal,
+): Promise<ManualWorkflowDecision> {
+  const { event, scope } = prepared;
+  const url = `${scope.relayBase.replace(/\/+$/, "")}/events`;
+  const body = JSON.stringify(event);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const authorization = await workflowAuthorization(
+      url,
+      "POST",
+      scope,
+      signal,
+      body,
+    );
+    assertWorkflowScope(scope, signal);
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: authorization,
+          "Content-Type": "application/json",
+        },
+        body,
+        signal: AbortSignal.any([signal, AbortSignal.timeout(12_000)]),
+      });
+    } catch {
+      assertWorkflowScope(scope, signal);
+      if (attempt === 0) continue;
+      throw new WorkflowRequestUncertainError();
+    }
+    assertWorkflowScope(scope, signal);
+    if (response.status >= 500) {
+      if (attempt === 0) continue;
+      throw new WorkflowRequestUncertainError();
+    }
+    if (!response.ok)
+      throw new Error(
+        "The relay rejected this workflow request. Refresh permissions and status before trying again.",
+      );
+    const value: unknown = await response.json().catch(() => null);
+    assertWorkflowScope(scope, signal);
+    if (
+      !value ||
+      typeof value !== "object" ||
+      !("message" in value) ||
+      typeof value.message !== "string" ||
+      !value.message.startsWith("response:") ||
+      !("event_id" in value) ||
+      value.event_id !== event.id
+    )
+      throw new WorkflowRequestUncertainError();
+    try {
+      const decision = parseManualWorkflowDecision(
+        JSON.parse(value.message.slice("response:".length)),
+      );
+      if (!("accepted" in value) || value.accepted !== decision.accepted)
+        throw new Error("Mismatched receipt.");
+      return decision;
+    } catch {
+      throw new WorkflowRequestUncertainError();
+    }
+  }
+  throw new WorkflowRequestUncertainError();
 }

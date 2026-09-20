@@ -323,6 +323,7 @@ pub async fn upsert_workflow(
     definition_json: &str,
     definition_hash: &[u8],
 ) -> Result<()> {
+    let mut tx = pool.begin().await?;
     let row = sqlx::query(
         r#"
         INSERT INTO workflows
@@ -333,7 +334,8 @@ pub async fn upsert_workflow(
             definition = EXCLUDED.definition,
             definition_hash = EXCLUDED.definition_hash,
             updated_at = NOW()
-        WHERE workflows.owner_pubkey = EXCLUDED.owner_pubkey
+        WHERE workflows.manual_deleted_at IS NULL
+          AND workflows.owner_pubkey = EXCLUDED.owner_pubkey
           AND workflows.channel_id IS NOT DISTINCT FROM EXCLUDED.channel_id
         RETURNING id
         "#,
@@ -345,7 +347,7 @@ pub async fn upsert_workflow(
     .bind(channel_id)
     .bind(definition_json)
     .bind(definition_hash)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?;
 
     if row.is_none() {
@@ -354,6 +356,14 @@ pub async fn upsert_workflow(
         )));
     }
 
+    sqlx::query("DELETE FROM workflow_agent_bindings WHERE community_id=$1 AND workflow_id=$2")
+        .bind(community_id.as_uuid())
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("INSERT INTO workflow_agent_bindings(community_id,workflow_id,definition_hash,step_id,agent_pubkey,destination_channel,provenance) SELECT w.community_id,w.id,w.definition_hash,step->>'id',decode(target,'hex'),COALESCE((step->>'channel')::uuid,w.channel_id),'explicit_owner_definition' FROM workflows w CROSS JOIN LATERAL jsonb_array_elements(w.definition->'steps') step CROSS JOIN LATERAL jsonb_array_elements_text(COALESCE(step->'agent_targets','[]')) target WHERE w.community_id=$1 AND w.id=$2 AND step->>'action'='send_message' ON CONFLICT DO NOTHING")
+        .bind(community_id.as_uuid()).bind(id).execute(&mut *tx).await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -502,21 +512,23 @@ pub async fn claim_scheduled_workflow_fire(
     workflow_id: Uuid,
     scheduled_for: DateTime<Utc>,
 ) -> Result<Option<ScheduledWorkflowFireClaim>> {
+    let mut tx = pool.begin().await?;
+    crate::workflow_manual::lock_admission(&mut tx, community_id).await?;
+    let exists: Option<Uuid> = sqlx::query_scalar("SELECT id FROM workflows WHERE community_id=$1 AND id=$2 AND enabled AND status='active' AND manual_deleted_at IS NULL FOR UPDATE")
+        .bind(community_id.as_uuid()).bind(workflow_id).fetch_optional(&mut *tx).await?;
+    if exists.is_none() {
+        return Ok(None);
+    }
+    let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_runs WHERE community_id=$1 AND workflow_id=$2 AND origin='manual' AND execution_state IN ('queued','running','stalled'))")
+        .bind(community_id.as_uuid()).bind(workflow_id).fetch_one(&mut *tx).await?;
+    let outcome = if active { "skipped_active" } else { "started" };
     let row = sqlx::query(
-        r#"
-        INSERT INTO scheduled_workflow_fires (community_id, workflow_id, scheduled_for)
-        SELECT w.community_id, w.id, $3
-        FROM workflows w
-        WHERE w.community_id = $1 AND w.id = $2
-        ON CONFLICT (community_id, workflow_id, scheduled_for) DO NOTHING
-        RETURNING community_id, workflow_id, scheduled_for, claimed_at
-        "#,
-    )
-    .bind(community_id.as_uuid())
-    .bind(workflow_id)
-    .bind(scheduled_for)
-    .fetch_optional(pool)
-    .await?;
+        "INSERT INTO scheduled_workflow_fires(community_id,workflow_id,scheduled_for,outcome) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING RETURNING community_id,workflow_id,scheduled_for,claimed_at"
+    ).bind(community_id.as_uuid()).bind(workflow_id).bind(scheduled_for).bind(outcome).fetch_optional(&mut *tx).await?;
+    tx.commit().await?;
+    if active {
+        return Ok(None);
+    }
 
     row.map(|row| {
         let community_id: Uuid = row.try_get("community_id")?;
@@ -633,7 +645,7 @@ pub async fn update_workflow(
         r#"
         UPDATE workflows
         SET name = $1, definition = $2::jsonb, definition_hash = $3
-        WHERE community_id = $4 AND id = $5
+        WHERE community_id = $4 AND id = $5 AND manual_deleted_at IS NULL
         "#,
     )
     .bind(name)
@@ -665,7 +677,7 @@ pub async fn update_workflow_status(
         r#"
         UPDATE workflows
         SET status = $1::workflow_status
-        WHERE community_id = $2 AND id = $3
+        WHERE community_id = $2 AND id = $3 AND manual_deleted_at IS NULL
         "#,
     )
     .bind(status.to_string())
@@ -695,7 +707,7 @@ pub async fn set_workflow_enabled(
         r#"
         UPDATE workflows
         SET enabled = $1
-        WHERE community_id = $2 AND id = $3
+        WHERE community_id = $2 AND id = $3 AND manual_deleted_at IS NULL
         "#,
     )
     .bind(enabled)
@@ -747,16 +759,7 @@ pub async fn disable_workflows_for_owner_in_channel(
 /// deletion path uses [`delete_workflow_for_owner`], which returns the
 /// `channel_id` needed for invalidation. (No current callers.)
 pub async fn delete_workflow(pool: &PgPool, community_id: CommunityId, id: Uuid) -> Result<()> {
-    let affected = sqlx::query("DELETE FROM workflows WHERE community_id = $1 AND id = $2")
-        .bind(community_id.as_uuid())
-        .bind(id)
-        .execute(pool)
-        .await?
-        .rows_affected();
-
-    if affected == 0 {
-        return Err(DbError::NotFound(format!("workflow {id}")));
-    }
+    delete_workflow_retaining_manual_ledger(pool, community_id, id, None).await?;
     Ok(())
 }
 
@@ -775,20 +778,35 @@ pub async fn delete_workflow_for_owner(
     id: Uuid,
     owner_pubkey: &[u8],
 ) -> Result<Option<Uuid>> {
-    let row = sqlx::query(
-        "DELETE FROM workflows WHERE community_id = $1 AND id = $2 AND owner_pubkey = $3 \
-         RETURNING channel_id",
-    )
-    .bind(community_id.as_uuid())
-    .bind(id)
-    .bind(owner_pubkey)
-    .fetch_optional(pool)
-    .await?;
+    delete_workflow_retaining_manual_ledger(pool, community_id, id, Some(owner_pubkey)).await
+}
 
-    match row {
-        Some(row) => Ok(row.try_get("channel_id")?),
-        None => Err(DbError::NotFound(format!("workflow {id}"))),
+/// Deletion keeps manual charges and unresolved executions durable. A tombstoned
+/// workflow cannot be resurrected by a delayed owner-signed definition update.
+async fn delete_workflow_retaining_manual_ledger(
+    pool: &PgPool,
+    community: CommunityId,
+    id: Uuid,
+    owner: Option<&[u8]>,
+) -> Result<Option<Uuid>> {
+    let mut tx = pool.begin().await?;
+    crate::workflow_manual::lock_admission(&mut tx, community).await?;
+    let row=sqlx::query("SELECT channel_id FROM workflows WHERE community_id=$1 AND id=$2 AND ($3::bytea IS NULL OR owner_pubkey=$3) FOR UPDATE")
+        .bind(community.as_uuid()).bind(id).bind(owner).fetch_optional(&mut *tx).await?.ok_or_else(||DbError::NotFound("workflow".into()))?;
+    let must_retain:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_runs WHERE community_id=$1 AND workflow_id=$2 AND (origin='manual' OR execution_state IN ('queued','running','stalled') OR (execution_state IS NULL AND status IN ('pending','running','waiting_approval')))) OR EXISTS(SELECT 1 FROM scheduled_workflow_fires WHERE community_id=$1 AND workflow_id=$2 AND outcome='started' AND workflow_run_id IS NULL)")
+        .bind(community.as_uuid()).bind(id).fetch_one(&mut *tx).await?;
+    if must_retain {
+        sqlx::query("UPDATE workflows SET enabled=FALSE,status='archived',manual_deleted_at=COALESCE(manual_deleted_at,NOW()),updated_at=NOW() WHERE community_id=$1 AND id=$2")
+            .bind(community.as_uuid()).bind(id).execute(&mut *tx).await?;
+    } else {
+        sqlx::query("DELETE FROM workflows WHERE community_id=$1 AND id=$2")
+            .bind(community.as_uuid())
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
     }
+    tx.commit().await?;
+    Ok(row.try_get("channel_id")?)
 }
 
 // -- Workflow Run CRUD --------------------------------------------------------
@@ -806,22 +824,11 @@ pub async fn create_workflow_run(
     trigger_context: Option<&serde_json::Value>,
 ) -> Result<Uuid> {
     let id = Uuid::new_v4();
-
-    sqlx::query(
-        r#"
-        INSERT INTO workflow_runs
-            (community_id, id, workflow_id, status, trigger_event_id, current_step, execution_trace, trigger_context)
-        VALUES ($1, $2, $3, 'pending', $4, 0, '[]', $5)
-        "#,
-    )
-    .bind(community_id.as_uuid())
-    .bind(id)
-    .bind(workflow_id)
-    .bind(trigger_event_id)
-    .bind(trigger_context)
-    .execute(pool)
-    .await?;
-
+    let inserted=sqlx::query("INSERT INTO workflow_runs(community_id,id,workflow_id,status,trigger_event_id,current_step,execution_trace,trigger_context,definition_hash,definition_snapshot,origin) SELECT $1,$2,$3,'pending',$4,0,'[]',$5,definition_hash,definition,CASE WHEN definition->'trigger'->>'on'='schedule' THEN 'scheduled' ELSE 'event' END FROM workflows WHERE community_id=$1 AND id=$3 AND enabled AND status='active' AND manual_deleted_at IS NULL")
+        .bind(community_id.as_uuid()).bind(id).bind(workflow_id).bind(trigger_event_id).bind(trigger_context).execute(pool).await?.rows_affected();
+    if inserted == 0 {
+        return Err(DbError::NotFound("workflow".into()));
+    }
     Ok(id)
 }
 
@@ -931,6 +938,7 @@ pub async fn update_workflow_run(
         r#"
         UPDATE workflow_runs
         SET status        = $1::run_status,
+            dispatch_complete = $1::text IN ('completed','failed','cancelled'),
             current_step  = $2,
             execution_trace = $3,
             error_code    = $4,

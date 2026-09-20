@@ -29,6 +29,7 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Verify versioned source
         env:
@@ -38,6 +39,7 @@ jobs:
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
           actual="$(sed -n 's/^version = "\(.*\)"/\1/p' crates/buzz-relay/Cargo.toml | head -n1)"
           test "$actual" = "$VERSION"
+          scripts/verify-release-ref.sh relay-v "$VERSION"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
@@ -53,7 +55,7 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ github.token }}
 
-      - name: Build and publish hosted agent runtime
+      - name: Build hosted agent candidate by digest
         id: build
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
@@ -61,13 +63,46 @@ jobs:
           file: ./Dockerfile
           target: agent-runtime
           platforms: linux/amd64
-          push: true
-          tags: ${{ env.IMAGE_NAME }}:${{ inputs.version }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           provenance: mode=max
           sbom: true
           cache-from: type=gha,scope=hosted-agent-runtime-amd64
           cache-to: type=gha,scope=hosted-agent-runtime-amd64,mode=max
 
+      - name: Build companion relay from the same source and binary cache
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          file: ./Dockerfile
+          target: runtime
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: buzz-relay-ci:integration
+          build-args: |
+            VITE_BUZZ_RELEASES_REPOSITORY=${{ github.repository }}
+          cache-from: type=gha,scope=hosted-agent-runtime-amd64
+      - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
+      - name: Install locked harness dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends postgresql-client
+          pnpm --filter buzz-web... install --frozen-lockfile
+      - name: Verify exact candidate on PostgreSQL 17
+        id: integration
+        env:
+          IMAGE: ${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+        run: |
+          docker pull "$IMAGE"
+          scripts/test-manual-workflow-ci.sh buzz-relay-ci:integration "$IMAGE"
+      - name: Upload integrated workflow evidence
+        if: always() && steps.integration.outputs.artifacts != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: published-runtime-linux-pg17
+          path: ${{ steps.integration.outputs.artifacts }}
+          if-no-files-found: error
+          retention-days: 14
       - name: Smoke test published runtime
         env:
           IMAGE: ${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
@@ -85,6 +120,14 @@ jobs:
             test "$(id -u node)" = 1000
             test "$(id -g node)" = 1000
           '
+          scripts/test-agent-runtime-isolation.sh "$IMAGE"
+          scripts/test-manual-mcp-session.sh "$IMAGE"
+          docker run --rm --platform linux/amd64 --network none --read-only \
+            --tmpfs /tmp:rw,nosuid,nodev,size=128m -v "$PWD/deploy/compose:/compose:ro" \
+            --entrypoint node "$IMAGE" /compose/tests/codex-acp-wire-smoke.mjs
+          docker run --rm --platform linux/amd64 --network none \
+            -v "$PWD/deploy/compose:/compose:ro" --entrypoint node "$IMAGE" \
+            --test /compose/tests/codex-acp-terminal-errors.test.mjs
 
       - name: Attest hosted agent runtime provenance
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
@@ -92,6 +135,22 @@ jobs:
           subject-name: ${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
+
+      - name: Promote verified candidate to an unused version
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # Only a definitive registry 404 permits creating this immutable tag.
+          repository="${IMAGE_NAME#ghcr.io/}"
+          token=$(curl --fail --silent --show-error --max-time 30 "https://ghcr.io/token?service=ghcr.io&scope=repository:$repository:pull" | jq -er .token)
+          status=$(curl --silent --show-error --max-time 30 --output /dev/null --write-out '%{http_code}' \
+            --head --header "Authorization: Bearer $token" \
+            --header 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json' \
+            "https://ghcr.io/v2/$repository/manifests/$VERSION")
+          test "$status" = 404 || { echo "Version $VERSION unavailable for publication (HTTP $status)" >&2; exit 1; }
+          docker buildx imagetools create --tag "$IMAGE_NAME:$VERSION" "$IMAGE_NAME@$DIGEST"
 
       - name: Publish immutable deployment pin
         env:

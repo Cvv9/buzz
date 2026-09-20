@@ -48,3 +48,22 @@ pub fn build_approval_deny(token: &str, note: Option<&str>) -> Result<EventBuild
     let tags = vec![tag(vec!["t", token])?];
     Ok(EventBuilder::new(Kind::Custom(46031), note.unwrap_or("")).tags(tags))
 }
+
+/// Kind 46020 with a fixed definition hash and unique nonce tag.
+pub fn build_manual_workflow_trigger(
+    workflow_id: &str,
+    definition_hash: &str,
+) -> Result<EventBuilder, String> {
+    let workflow = uuid::Uuid::parse_str(workflow_id).map_err(|_| "Invalid workflow id.")?;
+    if workflow.is_nil() {
+        return Err("Invalid workflow id.".into());
+    }
+    EventId::from_hex(definition_hash).map_err(|_| "Invalid workflow definition hash.")?;
+    let nonce = uuid::Uuid::new_v4().to_string();
+    let tags = vec![tag(vec!["d", workflow_id])?, tag(vec!["nonce", &nonce])?];
+    Ok(EventBuilder::new(
+        Kind::Custom(46020),
+        serde_json::json!({"expected_definition_hash":definition_hash}).to_string(),
+    )
+    .tags(tags))
+}

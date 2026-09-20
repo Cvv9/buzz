@@ -68,6 +68,9 @@ pub async fn handle_command(
         KIND_DM_HIDE => handle_dm_hide(tenant, state, &event, &auth).await,
         KIND_WORKFLOW_DEF => handle_workflow_def(tenant, state, &event, &auth).await,
         KIND_WORKFLOW_TRIGGER => handle_workflow_trigger(tenant, state, &event, &auth).await,
+        KIND_WORKFLOW_EXECUTION_CONTROL => {
+            crate::workflow_execution::handle_control(tenant, state, &event).await
+        }
         KIND_APPROVAL_GRANT => handle_approval_grant(tenant, state, &event, &auth).await,
         KIND_APPROVAL_DENY => handle_approval_deny(tenant, state, &event, &auth).await,
         _ => Err(IngestError::Rejected(format!(
@@ -890,169 +893,82 @@ async fn handle_workflow_trigger(
     event: &Event,
     auth: &IngestAuth,
 ) -> Result<IngestResult, IngestError> {
-    let self_bytes = auth.pubkey().to_bytes().to_vec();
-
-    // 1. Extract workflow reference from `d` tag or `e` tag
-    let workflow_id_str = extract_d_tag(event)
+    let workflow_id = extract_d_tag(event)
         .or_else(|| extract_e_tag(event))
-        .ok_or_else(|| {
-            IngestError::Rejected("invalid: missing workflow reference (d or e tag)".into())
-        })?;
-    let workflow_id = Uuid::parse_str(&workflow_id_str)
-        .map_err(|_| IngestError::Rejected("invalid: bad workflow_id format".into()))?;
-
-    // 2. Validate workflow exists — scoped to the caller's community. The same
-    // workflow UUID can exist in another community; a bare-id lookup could load
-    // B's workflow and then satisfy the membership check below against B's
-    // colliding channel, letting B trigger A's workflow.
-    let community_id = tenant.community();
+        .and_then(|value| Uuid::parse_str(&value).ok())
+        .ok_or_else(|| IngestError::Rejected("invalid: missing workflow UUID".into()))?;
     let workflow = state
         .db
-        .get_workflow(community_id, workflow_id)
+        .get_workflow(tenant.community(), workflow_id)
         .await
         .map_err(|_| IngestError::Rejected("invalid: workflow not found".into()))?;
-
-    // 3. Manual triggers execute with the workflow owner's authority, so only
-    // the owner may start them. Channel membership alone is insufficient: a
-    // member could otherwise invoke another user's webhook or message actions.
-    if workflow.owner_pubkey != self_bytes {
+    if workflow.owner_pubkey != auth.pubkey().to_bytes() {
         return Err(IngestError::Rejected(
-            "forbidden: not authorized to trigger this workflow".into(),
+            "forbidden: workflow owner required".into(),
         ));
     }
-
-    // SEC-006: manual triggers must honor the workflow's lifecycle state and
-    // recheck the owner's *current* channel authority before creating a run.
-    // Without this, a disabled workflow — including one disabled because its
-    // owner was removed from the channel — could still be fired by the owner.
-    if !workflow.enabled || workflow.status != buzz_db::workflow::WorkflowStatus::Active {
-        return Err(IngestError::Rejected(
-            "forbidden: workflow is disabled or inactive".into(),
-        ));
-    }
-    let def: buzz_workflow::WorkflowDef = serde_json::from_value(workflow.definition.clone())
-        .map_err(|e| IngestError::Internal(format!("error: corrupt workflow definition: {e}")))?;
-    let Some(wf_channel_id) = workflow.channel_id else {
-        // No channel scope means no channel authority to verify — fail closed.
-        return Err(IngestError::Rejected(
-            "forbidden: workflow has no channel scope".into(),
-        ));
-    };
-    state
-        .workflow_engine
-        .check_owner_authority(community_id, wf_channel_id, &workflow.owner_pubkey, &def)
-        .await
-        .map_err(|_| {
-            IngestError::Rejected("forbidden: not authorized to trigger this workflow".into())
-        })?;
-
-    // Persist the command event under the workflow channel even though the
-    // trigger event itself only carries the workflow UUID. Storing channel
-    // triggers as global events leaks workflow IDs to unrelated relay members.
-    let tx = match persist_command_event(&state.db, tenant, event, workflow.channel_id).await? {
-        PersistResult::Duplicate => {
-            return Ok(IngestResult {
-                event_id: event.id.to_hex(),
-                accepted: true,
-                message: "duplicate: already processed".into(),
-            });
-        }
-        PersistResult::Inserted(tx) => tx,
-    };
-
-    // 4. Execute: create workflow run
-    let mut trigger_ctx = TriggerContext {
-        channel_id: workflow
+    if auth.channel_ids().is_some_and(|allowed| {
+        workflow
             .channel_id
-            .map(|id| id.to_string())
-            .unwrap_or_default(),
-        author: hex::encode(&self_bytes),
-        ..Default::default()
-    };
-    if !event.content.is_empty() {
-        if let Ok(serde_json::Value::Object(map)) = serde_json::from_str(&event.content) {
-            for (k, v) in map {
-                let val_str = match v {
-                    serde_json::Value::String(s) => s,
-                    other => other.to_string(),
-                };
-                trigger_ctx.webhook_fields.insert(k, val_str);
-            }
-        }
+            .is_none_or(|channel| !allowed.contains(&channel))
+    }) {
+        return Err(IngestError::Rejected(
+            "forbidden: workflow is outside the token channel scope".into(),
+        ));
     }
-    let trigger_ctx_json = serde_json::to_value(&trigger_ctx).ok();
-
-    let event_id_bytes = event.id.as_bytes().to_vec();
-    let run_id = state
+    #[derive(serde::Deserialize, Default)]
+    #[serde(deny_unknown_fields)]
+    struct TriggerOptions {
+        expected_definition_hash: Option<String>,
+    }
+    let options: TriggerOptions = if event.content.is_empty() {
+        TriggerOptions::default()
+    } else {
+        serde_json::from_str(&event.content)
+            .map_err(|_| IngestError::Rejected("invalid: unsupported manual inputs".into()))?
+    };
+    let def: buzz_workflow::WorkflowDef = serde_json::from_value(workflow.definition.clone())
+        .map_err(|_| IngestError::Rejected("invalid: unsupported workflow definition".into()))?;
+    let profile = workflow
+        .channel_id
+        .ok_or("association_unresolved")
+        .and_then(|channel| def.manual_tasks(channel));
+    let profile_error = profile.as_ref().err().copied();
+    let tasks: Vec<_> = profile
+        .unwrap_or_default()
+        .into_iter()
+        .map(|task| buzz_db::workflow_manual::ManualTaskSpec {
+            step_id: task.step_id,
+            agent_pubkey: task.agent_pubkey,
+            channel_id: task.channel_id,
+            text: task.text,
+        })
+        .collect();
+    let decision = state
         .db
-        .create_workflow_run(
-            community_id,
+        .admit_manual_workflow(
+            tenant.community(),
             workflow_id,
-            Some(&event_id_bytes),
-            trigger_ctx_json.as_ref(),
+            event,
+            &workflow.definition_hash,
+            options.expected_definition_hash.as_deref(),
+            &tasks,
+            profile_error,
+            &state.relay_keypair,
         )
         .await
-        .map_err(|e| IngestError::Internal(format!("error: db create_workflow_run: {e}")))?;
-
-    // Commit: event + run creation succeeded atomically.
-    tx.commit()
-        .await
-        .map_err(|e| IngestError::Internal(format!("error: commit transaction: {e}")))?;
-
-    // 5. Spawn workflow execution
-    let engine = Arc::clone(&state.workflow_engine);
-    let db = state.db.clone();
-    let def_value = workflow.definition.clone();
-    let trigger_ctx_clone = trigger_ctx.clone();
-    tokio::spawn(async move {
-        let def: buzz_workflow::WorkflowDef = match serde_json::from_value(def_value) {
-            Ok(d) => d,
-            Err(e) => {
-                tracing::error!("workflow_trigger: failed to parse definition: {e}");
-                if let Err(db_err) = db
-                    .update_workflow_run(
-                        community_id,
-                        run_id,
-                        RunStatus::Failed,
-                        0,
-                        &serde_json::json!([]),
-                        Some(buzz_db::workflow::WorkflowRunFailure {
-                            code: "invalid_definition",
-                            message: &format!("definition parse error: {e}"),
-                        }),
-                    )
-                    .await
-                {
-                    tracing::error!("workflow_trigger: failed to mark run as failed: {db_err}");
-                }
-                return;
-            }
-        };
-
-        let result = buzz_workflow::executor::execute_from_step(
-            &engine,
-            community_id,
-            run_id,
-            &def,
-            &trigger_ctx_clone,
-            0,
-            None,
-        )
-        .await;
-        engine
-            .finalize_run(community_id, run_id, result, None)
-            .await;
-    });
-
-    // 6. Return response
+        .map_err(|error| match error {
+            DbError::AccessDenied(_) => IngestError::Rejected(
+                "forbidden: current community/workflow owner and channel access required".into(),
+            ),
+            _ => IngestError::Internal(format!("error: manual workflow admission: {error}")),
+        })?;
     Ok(IngestResult {
         event_id: event.id.to_hex(),
-        accepted: true,
+        accepted: decision.accepted,
         message: format!(
             "response:{}",
-            serde_json::json!({
-                "run_id": run_id.to_string(),
-            })
+            serde_json::to_string(&decision).map_err(|e| IngestError::Internal(e.to_string()))?
         ),
     })
 }

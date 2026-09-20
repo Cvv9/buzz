@@ -2103,6 +2103,15 @@ mod retry_policy_tests {
     /// serialized event bytes (and a fresh NIP-98 auth per attempt).
     #[tokio::test]
     async fn stored_event_body_loss_is_retried_with_same_event_bytes() {
+        assert_body_loss_reuses_event(false).await;
+    }
+
+    #[tokio::test]
+    async fn workflow_trigger_body_loss_reuses_signed_request_identity() {
+        assert_body_loss_reuses_event(true).await;
+    }
+
+    async fn assert_body_loss_reuses_event(workflow_trigger: bool) {
         use tokio::io::AsyncReadExt;
         use tokio::io::AsyncWriteExt;
 
@@ -2151,7 +2160,18 @@ mod retry_policy_tests {
 
         let base = format!("http://{addr}");
         let client = test_client(&base);
-        let event = make_stored_event(client.keys());
+        let event = if workflow_trigger {
+            buzz_sdk::build_workflow_manual_trigger(
+                uuid::Uuid::new_v4(),
+                Some(&"ab".repeat(32)),
+                &serde_json::Map::new(),
+            )
+            .unwrap()
+            .sign_with_keys(client.keys())
+            .unwrap()
+        } else {
+            make_stored_event(client.keys())
+        };
         let result = client.submit_event(event).await;
         assert!(
             result.is_ok(),

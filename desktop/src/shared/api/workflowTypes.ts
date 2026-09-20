@@ -80,3 +80,72 @@ export type ApprovalActionResponse = {
   runId: string;
   workflowId: string;
 };
+
+/** Actual execution state; dispatch history is a separate projection. */
+export type WorkflowExecutionState =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "timed_out"
+  | "stalled"
+  | "unknown";
+export type ManualWorkflowScope = { relayUrl: string; ownerPubkey: string };
+/** Public signed bytes only. Never edit or re-sign this envelope during a retry. */
+export type PreparedManualWorkflow = {
+  scope: { relay_url: string; owner_pubkey: string };
+  workflow_id: string;
+  definition_hash: string;
+  event: { id: string; [key: string]: unknown };
+};
+export type ManualWorkflowLimits = {
+  remainingWorkflow: number;
+  remainingCommunity: number;
+  nextEligibleAt: number | null;
+  serverNow: number;
+};
+export type ManualWorkflowReceipt = {
+  accepted: boolean;
+  runId: string | null;
+  reason: string | null;
+  revision: number;
+  limits: ManualWorkflowLimits;
+};
+export type WorkflowResultReference = {
+  taskId: string;
+  channelId: string;
+  eventId: string;
+};
+export type ScheduledWorkflowRun = {
+  id: string;
+  executionState: WorkflowExecutionState;
+  safeErrorCode: string | null;
+  origin: string | null;
+  requester: string | null;
+  startedAt: number | null;
+  completedAt: number | null;
+  acceptedAt: number | null;
+  deadlineAt: number | null;
+  revision: number;
+  results: WorkflowResultReference[];
+};
+export type AgentScheduledWorkflow = {
+  workflowId: string;
+  name: string;
+  definitionHash: string;
+  agentTargets: string[];
+  channelId: string;
+  schedule: Record<string, unknown>;
+  timezone: string;
+  nextScheduledAt: number | null;
+  enabled: boolean;
+  lastRun: ScheduledWorkflowRun | null;
+  limits: ManualWorkflowLimits;
+  blockReason: string | null;
+  revision: number;
+};
+export type AgentScheduledWorkflowsPage = {
+  workflows: AgentScheduledWorkflow[];
+  next: string | null;
+  serverNow: number;
+};

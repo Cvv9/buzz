@@ -1251,7 +1251,7 @@ dependencies = [
 
 [[package]]
 name = "buzz-relay"
-version = "0.2.17"
+version = "0.2.18"
 dependencies = [
  "anyhow",
  "async-compression",
@@ -1397,6 +1397,7 @@ dependencies = [
  "anyhow",
  "base64 0.22.1",
  "buzz-core",
+ "buzz-db",
  "buzz-media",
  "buzz-runtime-controller",
  "buzz-sdk",

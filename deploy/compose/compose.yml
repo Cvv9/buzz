@@ -12,6 +12,8 @@ x-varvik-agent-environment: &varvik-agent-environment
   BUZZ_ACP_ALLOWED_RESPOND_TO: owner-only,anyone
   BUZZ_ACP_SUBSCRIBE: mentions
   BUZZ_ACP_LAZY_POOL: "true"
+  BUZZ_ACP_WORKFLOW_COMMUNITY_ID: ${BUZZ_ACP_WORKFLOW_COMMUNITY_ID:-}
+  BUZZ_ACP_WORKFLOW_RELAY_PUBKEY: ${BUZZ_ACP_WORKFLOW_RELAY_PUBKEY:-}
   # Enables authenticated owner control frames for per-agent model changes.
   BUZZ_ACP_RELAY_OBSERVER: "true"
   # The runner accepts runtime revisions only from this relay-advertised pin.
@@ -49,6 +51,7 @@ x-varvik-agent-service: &varvik-agent-service
   read_only: true
   tmpfs:
     - /tmp:rw,nosuid,nodev,size=256m
+    - /home/buzz-manual:rw,nosuid,nodev,size=256m,uid=1002,gid=1002,mode=0700
   cap_drop:
     - ALL
   cap_add:
@@ -57,6 +60,7 @@ x-varvik-agent-service: &varvik-agent-service
     - FOWNER
     - SETGID
     - SETUID
+    - KILL
   security_opt:
     - no-new-privileges:true
 
@@ -214,6 +218,7 @@ services:
         to submit to Sylars.
     volumes:
       - buzz-agent-engineering-codex-data:/home/node/.codex
+      - buzz-agent-engineering-codex-data-harness:/var/lib/buzz-harness
 
   agent-market-intelligence:
     <<: *varvik-agent-service
@@ -241,6 +246,7 @@ services:
         is unavailable.
     volumes:
       - buzz-agent-research-codex-data:/home/node/.codex
+      - buzz-agent-research-codex-data-harness:/var/lib/buzz-harness
 
   agent-opportunity-scout:
     <<: *varvik-agent-service
@@ -268,6 +274,7 @@ services:
         to a source that is unavailable.
     volumes:
       - buzz-agent-opportunity-scout-codex-data:/home/node/.codex
+      - buzz-agent-opportunity-scout-codex-data-harness:/var/lib/buzz-harness
 
   agent-bid-partnerships:
     <<: *varvik-agent-service
@@ -292,6 +299,7 @@ services:
         approve work, or invent credentials and case studies.
     volumes:
       - buzz-agent-bid-partnerships-codex-data:/home/node/.codex
+      - buzz-agent-bid-partnerships-codex-data-harness:/var/lib/buzz-harness
 
   agent-gtm-discovery:
     <<: *varvik-agent-service
@@ -318,6 +326,7 @@ services:
         human authorization.
     volumes:
       - buzz-agent-gtm-discovery-codex-data:/home/node/.codex
+      - buzz-agent-gtm-discovery-codex-data-harness:/var/lib/buzz-harness
 
   agent-people-culture:
     <<: *varvik-agent-service
@@ -344,6 +353,7 @@ services:
         authorized human and keep the public reply minimal.
     volumes:
       - buzz-agent-people-culture-codex-data:/home/node/.codex
+      - buzz-agent-people-culture-codex-data-harness:/var/lib/buzz-harness
 
   agent-chief-of-staff:
     <<: *varvik-agent-service
@@ -373,6 +383,7 @@ services:
         merge, deploy, or claim access to an unavailable system.
     volumes:
       - buzz-agent-command-codex-data:/home/node/.codex
+      - buzz-agent-command-codex-data-harness:/var/lib/buzz-harness
 
   agent-operations-desk:
     <<: *varvik-agent-service
@@ -406,6 +417,7 @@ services:
         Those actions remain behind verified human approval in Buzz.
     volumes:
       - buzz-agent-watchdog-codex-data:/home/node/.codex
+      - buzz-agent-watchdog-codex-data-harness:/var/lib/buzz-harness
 
   agent-personal-varun:
     <<: *varvik-agent-service
@@ -432,6 +444,7 @@ services:
         scheduled summaries in brief-varun.
     volumes:
       - buzz-agent-personal-varun-codex-data:/home/node/.codex
+      - buzz-agent-personal-varun-codex-data-harness:/var/lib/buzz-harness
 
   agent-personal-vikram:
     <<: *varvik-agent-service
@@ -456,6 +469,7 @@ services:
         calendar, inbox, or Sylars data unless its connector is available.
     volumes:
       - buzz-agent-personal-vikram-codex-data:/home/node/.codex
+      - buzz-agent-personal-vikram-codex-data-harness:/var/lib/buzz-harness
 
   agent-personal-adhika:
     <<: *varvik-agent-service
@@ -480,6 +494,7 @@ services:
         calendar, inbox, or Sylars data unless its connector is available.
     volumes:
       - buzz-agent-personal-adhika-codex-data:/home/node/.codex
+      - buzz-agent-personal-adhika-codex-data-harness:/var/lib/buzz-harness
 
   agent-personal-swathi:
     <<: *varvik-agent-service
@@ -504,6 +519,7 @@ services:
         calendar, inbox, or Sylars data unless its connector is available.
     volumes:
       - buzz-agent-personal-swathi-codex-data:/home/node/.codex
+      - buzz-agent-personal-swathi-codex-data-harness:/var/lib/buzz-harness
 
   agent-personal-raja:
     <<: *varvik-agent-service
@@ -528,6 +544,7 @@ services:
         calendar, inbox, or Sylars data unless its connector is available.
     volumes:
       - buzz-agent-personal-raja-codex-data:/home/node/.codex
+      - buzz-agent-personal-raja-codex-data-harness:/var/lib/buzz-harness
 
   postgres:
     image: postgres:17-alpine
@@ -669,6 +686,20 @@ volumes:
   buzz-git-data:
     labels:
       com.buzz.volume: git
+
+  buzz-agent-engineering-codex-data-harness:
+  buzz-agent-research-codex-data-harness:
+  buzz-agent-opportunity-scout-codex-data-harness:
+  buzz-agent-bid-partnerships-codex-data-harness:
+  buzz-agent-gtm-discovery-codex-data-harness:
+  buzz-agent-people-culture-codex-data-harness:
+  buzz-agent-command-codex-data-harness:
+  buzz-agent-watchdog-codex-data-harness:
+  buzz-agent-personal-varun-codex-data-harness:
+  buzz-agent-personal-vikram-codex-data-harness:
+  buzz-agent-personal-adhika-codex-data-harness:
+  buzz-agent-personal-swathi-codex-data-harness:
+  buzz-agent-personal-raja-codex-data-harness:
 
 networks:
   buzz-net:

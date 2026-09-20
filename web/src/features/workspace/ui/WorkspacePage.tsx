@@ -818,6 +818,7 @@ export function WorkspacePage({
           />
         ) : workspaceView === "agents" ? (
           <WorkspaceAgents
+            viewerPubkey={identity.pubkey}
             agents={agentsQuery.data ?? []}
             channels={channels}
             canManage={Boolean(

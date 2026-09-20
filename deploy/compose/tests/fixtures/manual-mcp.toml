@@ -1,0 +1,18 @@
+# Supervised manual workflow: external read tools only.
+[mcp_servers.project_intelligence]
+url = "https://forge.varunc.com/integrations/project-intelligence/mcp"
+bearer_token_env_var = "PROJECT_INTELLIGENCE_READ_TOKEN"
+required = true
+enabled_tools = ["knowledge_list_projects", "knowledge_get_freshness", "knowledge_search_portfolio", "knowledge_list_sources", "knowledge_get_source_freshness", "knowledge_search_all", "knowledge_get_architecture"]
+
+[mcp_servers.sylars_control]
+url = "https://forge.varunc.com/integrations/sylars/mcp"
+bearer_token_env_var = "SYLARS_CONTROL_READ_TOKEN"
+required = true
+enabled_tools = ["sylars_get_task", "sylars_list_tasks"]
+
+[mcp_servers.work_projection]
+url = "https://forge.varunc.com/integrations/ledger/mcp"
+bearer_token_env_var = "LEDGER_READ_TOKEN"
+required = true
+enabled_tools = ["work_list", "work_get", "work_reconcile_status"]

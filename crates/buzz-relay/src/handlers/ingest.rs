@@ -450,7 +450,7 @@ fn required_scope_for_kind(kind: u32, event: &Event) -> Result<Scope, &'static s
         | KIND_GIT_STATUS_DRAFT => Ok(Scope::MessagesWrite),
         // Command kinds — DM management, workflows, approvals
         KIND_DM_OPEN | KIND_DM_ADD_MEMBER | KIND_DM_HIDE => Ok(Scope::MessagesWrite),
-        KIND_WORKFLOW_DEF | KIND_WORKFLOW_TRIGGER => Ok(Scope::MessagesWrite),
+        KIND_WORKFLOW_DEF | KIND_WORKFLOW_TRIGGER | buzz_core::kind::KIND_WORKFLOW_EXECUTION_CONTROL => Ok(Scope::MessagesWrite),
         KIND_APPROVAL_GRANT | KIND_APPROVAL_DENY => Ok(Scope::MessagesWrite),
         _ => Err("restricted: unknown event kind"),
     }
@@ -2183,6 +2183,31 @@ async fn ingest_event_inner(
     if event.pubkey != *auth.pubkey() && !is_gift_wrap {
         return Err(IngestError::AuthFailed(
             "invalid: event pubkey does not match authenticated identity".into(),
+        ));
+    }
+
+    if state
+        .db
+        .is_workflow_credential(auth.pubkey().as_bytes())
+        .await
+        .map_err(|e| IngestError::Internal(e.to_string()))?
+    {
+        return Err(IngestError::AuthFailed(
+            "restricted: workflow read credential cannot write".into(),
+        ));
+    }
+    if event
+        .tags
+        .iter()
+        .any(|t| t.as_slice().first().is_some_and(|k| k == "workflow-result"))
+        && !state
+            .db
+            .validate_workflow_result(tenant.community(), &event)
+            .await
+            .map_err(|e| IngestError::Internal(e.to_string()))?
+    {
+        return Err(IngestError::Rejected(
+            "invalid: workflow result evidence".into(),
         ));
     }
 

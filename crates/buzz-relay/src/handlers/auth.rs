@@ -91,6 +91,43 @@ pub async fn handle_auth(event: nostr::Event, conn: Arc<ConnectionState>, state:
         Ok(mut auth_ctx) => {
             let pubkey = auth_ctx.pubkey;
 
+            match state.db.is_workflow_credential(pubkey.as_bytes()).await {
+                Ok(true) => {
+                    match state
+                        .db
+                        .workflow_read_scope(conn.tenant.community(), pubkey.as_bytes())
+                        .await
+                    {
+                        Ok(Some(scope)) => {
+                            auth_ctx.scopes = vec![buzz_auth::Scope::MessagesRead];
+                            auth_ctx.channel_ids = Some(vec![scope.channel_id]);
+                            *conn.auth_state.write().await = AuthState::Authenticated(auth_ctx);
+                            state
+                                .conn_manager
+                                .set_authenticated_pubkey(conn_id, pubkey.to_bytes().to_vec());
+                            conn.send(RelayMessage::ok(&event_id_hex, true, ""));
+                        }
+                        _ => {
+                            conn.send(RelayMessage::ok(
+                                &event_id_hex,
+                                false,
+                                "restricted: workflow credential expired or revoked",
+                            ));
+                        }
+                    }
+                    return;
+                }
+                Ok(false) => {}
+                Err(_) => {
+                    conn.send(RelayMessage::ok(
+                        &event_id_hex,
+                        false,
+                        "error: workflow authorization",
+                    ));
+                    return;
+                }
+            }
+
             // Community ban gate (NIP-42 seam). Runs immediately after auth
             // verification succeeds and before the allowlist and relay-membership
             // gates, per COMMUNITY_MODERATION_PLAN.md §0 decision 4 and the

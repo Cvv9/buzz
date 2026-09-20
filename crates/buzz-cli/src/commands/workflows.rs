@@ -154,43 +154,76 @@ pub async fn cmd_delete_workflow(client: &BuzzClient, workflow_id: &str) -> Resu
     Ok(())
 }
 
-/// Trigger a workflow — sign and submit a kind:46020 event.
-///
-/// When `inputs` is provided, it is parsed as a JSON object and used as the
-/// event content (MCP parity). When omitted, the event content is `{}`.
+/// Trigger fresh bounded work. Sign once; BuzzClient retries the exact event
+/// bytes while renewing only HTTP authentication, preserving admission identity.
 pub async fn cmd_trigger_workflow(
     client: &BuzzClient,
     workflow_id: &str,
     inputs: Option<&str>,
+    expected_definition_hash: Option<&str>,
 ) -> Result<(), CliError> {
-    let wf_uuid = parse_uuid(workflow_id)?;
+    let workflow = parse_uuid(workflow_id)?;
+    let inputs: serde_json::Value = serde_json::from_str(inputs.unwrap_or("{}"))
+        .map_err(|e| CliError::Usage(format!("--inputs is not valid JSON: {e}")))?;
+    let inputs = inputs
+        .as_object()
+        .ok_or_else(|| CliError::Usage("--inputs must be a JSON object".into()))?;
+    let builder =
+        buzz_sdk::build_workflow_manual_trigger(workflow, expected_definition_hash, inputs)
+            .map_err(sdk_err)?;
+    let event = client.sign_event(builder)?;
+    let response = client.submit_event(event).await?;
+    // Keep the authoritative run id, revision and limits in the receipt.
+    println!("{}", workflow_trigger_response(&response)?);
+    Ok(())
+}
 
-    if let Some(raw) = inputs {
-        // Parse and validate it is a JSON object, then build the event manually
-        // so we can embed the inputs as the event content.
-        let parsed: serde_json::Value = serde_json::from_str(raw)
-            .map_err(|e| CliError::Usage(format!("--inputs is not valid JSON: {e}")))?;
-        if !parsed.is_object() {
-            return Err(CliError::Usage("--inputs must be a JSON object".into()));
+fn workflow_trigger_response(response: &str) -> Result<serde_json::Value, CliError> {
+    let mut value: serde_json::Value = serde_json::from_str(response)
+        .map_err(|e| CliError::Other(format!("invalid workflow trigger response: {e}")))?;
+    if let Some(receipt) = value
+        .get("message")
+        .and_then(serde_json::Value::as_str)
+        .and_then(|m| m.strip_prefix("response:"))
+    {
+        let receipt: serde_json::Map<String, serde_json::Value> = serde_json::from_str(receipt)
+            .map_err(|e| CliError::Other(format!("invalid workflow admission receipt: {e}")))?;
+        if let Some(fields) = value.as_object_mut() {
+            fields.extend(receipt);
         }
-        let content = serde_json::to_string(&parsed).unwrap_or_default();
-        use nostr::{EventBuilder, Kind, Tag};
-        let tags = vec![Tag::parse(["d", &wf_uuid.to_string()])
-            .map_err(|e| CliError::Other(format!("tag error: {e}")))?];
-        let builder = EventBuilder::new(
-            Kind::Custom(buzz_sdk::kind::KIND_WORKFLOW_TRIGGER as u16),
-            &content,
-        )
-        .tags(tags);
-        let event = client.sign_event(builder)?;
-        let resp = client.submit_event(event).await?;
-        println!("{}", normalize_write_response(&resp));
-    } else {
-        let builder = buzz_sdk::build_workflow_trigger(wf_uuid).map_err(sdk_err)?;
-        let event = client.sign_event(builder)?;
-        let resp = client.submit_event(event).await?;
-        println!("{}", normalize_write_response(&resp));
     }
+    Ok(value)
+}
+
+fn scheduled_workflows_path(
+    agent: &str,
+    cursor: Option<&str>,
+    limit: u32,
+) -> Result<String, CliError> {
+    let agent = nostr::PublicKey::from_hex(agent)
+        .map_err(|_| CliError::Usage("--agent-pubkey must be a hex public key".into()))?;
+    if !(1..=100).contains(&limit) {
+        return Err(CliError::Usage("--limit must be between 1 and 100".into()));
+    }
+    let mut path = format!("/workflows?agent_pubkey={}&limit={limit}", agent.to_hex());
+    if let Some(cursor) = cursor {
+        path.push_str(&format!("&cursor={}", parse_uuid(cursor)?));
+    }
+    Ok(path)
+}
+
+/// Read one owner-authorized scheduled workflow page, preserving server limits
+/// and the next-page cursor instead of treating the first page as exhaustive.
+pub async fn cmd_scheduled_workflows(
+    client: &BuzzClient,
+    agent: &str,
+    cursor: Option<&str>,
+    limit: u32,
+) -> Result<(), CliError> {
+    let response = client
+        .get_authed(&scheduled_workflows_path(agent, cursor, limit)?)
+        .await?;
+    println!("{response}");
     Ok(())
 }
 
@@ -219,6 +252,16 @@ pub async fn cmd_approve_step(
 pub async fn dispatch(cmd: crate::WorkflowsCmd, client: &BuzzClient) -> Result<(), CliError> {
     use crate::WorkflowsCmd;
     match cmd {
+        WorkflowsCmd::Recover {
+            request,
+            container,
+            audit,
+        } => super::workflow_recovery::recover(client, &request, &container, &audit).await,
+        WorkflowsCmd::Scheduled {
+            agent_pubkey,
+            cursor,
+            limit,
+        } => cmd_scheduled_workflows(client, &agent_pubkey, cursor.as_deref(), limit).await,
         WorkflowsCmd::List { channel } => cmd_list_workflows(client, &channel).await,
         WorkflowsCmd::Get { workflow } => cmd_get_workflow(client, &workflow).await,
         WorkflowsCmd::Create { channel, yaml } => {
@@ -230,8 +273,18 @@ pub async fn dispatch(cmd: crate::WorkflowsCmd, client: &BuzzClient) -> Result<(
             yaml,
         } => cmd_update_workflow(client, &channel, &workflow, &yaml).await,
         WorkflowsCmd::Delete { workflow } => cmd_delete_workflow(client, &workflow).await,
-        WorkflowsCmd::Trigger { workflow, inputs } => {
-            cmd_trigger_workflow(client, &workflow, inputs.as_deref()).await
+        WorkflowsCmd::Trigger {
+            workflow,
+            inputs,
+            expected_definition_hash,
+        } => {
+            cmd_trigger_workflow(
+                client,
+                &workflow,
+                inputs.as_deref(),
+                expected_definition_hash.as_deref(),
+            )
+            .await
         }
         WorkflowsCmd::Runs { workflow, limit } => {
             cmd_get_workflow_runs(client, &workflow, limit).await
@@ -250,6 +303,30 @@ pub async fn dispatch(cmd: crate::WorkflowsCmd, client: &BuzzClient) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workflow_trigger_receipt_keeps_run_revision_and_authoritative_limits() {
+        let receipt = serde_json::json!({"accepted":true,"run_id":"run","revision":1,"limits":{"remaining_workflow":2}});
+        let response = serde_json::json!({"event_id":"event","accepted":true,"message":format!("response:{receipt}")});
+        let actual = workflow_trigger_response(&response.to_string()).unwrap();
+        assert_eq!(actual["event_id"], "event");
+        assert_eq!(actual["run_id"], "run");
+        assert_eq!(actual["revision"], 1);
+        assert_eq!(actual["limits"]["remaining_workflow"], 2);
+    }
+
+    #[test]
+    fn workflow_scheduled_path_validates_cursor_and_limit() {
+        let key = nostr::Keys::generate().public_key().to_hex();
+        let id = uuid::Uuid::new_v4();
+        assert_eq!(
+            scheduled_workflows_path(&key, Some(&id.to_string()), 10).unwrap(),
+            format!("/workflows?agent_pubkey={key}&limit=10&cursor={id}")
+        );
+        assert!(scheduled_workflows_path(&key, Some("not-a-uuid"), 10).is_err());
+        assert!(scheduled_workflows_path(&key, None, 101).is_err());
+        assert!(scheduled_workflows_path("not-a-key", None, 10).is_err());
+    }
 
     #[test]
     fn workflow_runs_path_targets_the_durable_relay_endpoint() {

@@ -9161,3 +9161,11 @@ mod tests {
         drop_scratch_db(&admin, pool, &name).await;
     }
 }
+
+pub mod workflow_manual;
+
+pub mod workflow_manual_reads;
+
+/// Durable supervised workflow execution and scoped credentials.
+pub mod workflow_execution;
+pub mod workflow_recovery;

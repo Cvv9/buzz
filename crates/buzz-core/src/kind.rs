@@ -781,6 +781,9 @@ pub const ALL_KINDS: &[u32] = &[
     KIND_WORKFLOW_FAILED,
     KIND_WORKFLOW_CANCELLED,
     KIND_WORKFLOW_AGENT_TASK,
+    KIND_WORKFLOW_EXECUTION_CONTROL,
+    KIND_WORKFLOW_EXECUTION_DECISION,
+    KIND_WORKFLOW_RUN_STATUS,
     KIND_WORKFLOW_APPROVAL_REQUESTED,
     KIND_WORKFLOW_APPROVAL_GRANTED,
     KIND_WORKFLOW_APPROVAL_DENIED,
@@ -826,7 +829,8 @@ pub const fn is_parameterized_replaceable(kind: u32) -> bool {
 /// Returns `true` if `kind` is a workflow execution event (46001–46012).
 /// These must not trigger workflows (prevents infinite loops).
 pub const fn is_workflow_execution_kind(kind: u32) -> bool {
-    kind >= KIND_WORKFLOW_TRIGGERED && kind <= KIND_WORKFLOW_APPROVAL_DENIED
+    (kind >= KIND_WORKFLOW_TRIGGERED && kind <= KIND_WORKFLOW_APPROVAL_DENIED)
+        || (kind >= KIND_WORKFLOW_EXECUTION_CONTROL && kind <= KIND_WORKFLOW_RUN_STATUS)
 }
 
 /// Returns `true` if `kind` is a NIP-43 relay membership admin command (9030–9032)
@@ -861,6 +865,7 @@ pub const fn is_command_kind(kind: u32) -> bool {
             | KIND_WORKFLOW_TRIGGER
             | KIND_APPROVAL_GRANT
             | KIND_APPROVAL_DENY
+            | KIND_WORKFLOW_EXECUTION_CONTROL
     )
 }
 
@@ -876,8 +881,17 @@ pub const fn is_relay_only_kind(kind: u32) -> bool {
             | KIND_THREAD_SUMMARY
             | KIND_WINDOW_BOUNDS
             | KIND_WORKFLOW_AGENT_TASK
+            | KIND_WORKFLOW_EXECUTION_DECISION
+            | KIND_WORKFLOW_RUN_STATUS
     )
 }
+
+/// Agent-signed bounded workflow execution control.
+pub const KIND_WORKFLOW_EXECUTION_CONTROL: u32 = 46040;
+/// Relay-only execution grant or cancellation.
+pub const KIND_WORKFLOW_EXECUTION_DECISION: u32 = 46041;
+/// Relay-only run status invalidation.
+pub const KIND_WORKFLOW_RUN_STATUS: u32 = 46042;
 
 /// Extract the kind from a nostr Event as u32.
 /// NIP-01 specifies kind as an unsigned integer; u32 covers the full range.

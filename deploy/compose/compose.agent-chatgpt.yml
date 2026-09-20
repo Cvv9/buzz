@@ -1,3 +1,5 @@
+# Root initialization copies provider authentication into separate private worker homes.
+# Full Buzz identity and durable workflow journals live only in supervisor volumes.
 services:
   agent-project-brain:
     volumes:

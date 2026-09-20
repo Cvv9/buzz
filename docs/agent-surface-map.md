@@ -596,3 +596,90 @@ instead of one refresh per author. Cleanup cancels the timer and subscriptions;
 no in-flight query result is shared across invalidations. Workspace startup
 waits for the initial roster/message author set before mounting this sync.
 The web profile and hosted-agent E2E tests cover live projection after updates.
+
+### Scheduled workflow manual execution control
+
+The agent settings read model is `GET /workflows?agent_pubkey=<hex>` (NIP-98,
+exact current community owner plus visible destinations). It joins explicit
+owner-signed `send_message.agent_targets` or current-definition bindings; agent
+display names never establish or change this association. Name-only legacy
+workflows require an owner-signed definition update before manual execution.
+
+Kind `46020` is the single manual admission path for UI, CLI and signed direct
+requests. `expected_definition_hash` is a reserved request field; arbitrary
+manual inputs and templates are unsupported. Supported definitions are enabled,
+scheduled, fixed text, same-channel `send_message` tasks with one or two explicit
+`(step, agent)` pairs and no conditional/other actions. Existing channel override
+restrictions remain enforced.
+
+Postgres owns request receipts, per-community admission serialization, rolling
+allowances, active target locks and signed-task outbox. Settings receipts and
+summary limits are read from that ledger. A charged workflow deletion creates a
+tombstone: it cannot erase allowances, clear an active run or resurrect through
+a delayed definition event. Community erasure retains its existing fence/purge
+policy and includes the new tenant-scoped tables.
+
+Kinds `46040` (agent execution control and pinned-controller recovery), `46041`
+(relay grant/cancel), and `46042` (relay status invalidation) are the versioned
+supervised-execution protocol.
+`workflow_runs.status` remains workflow **dispatch** status; `execution_state`
+and verified task results describe actual agent completion. Old evidence is
+unknown/stalled. Capability freshness must never release an unresolved execution
+lock. Relay control ingress accepts signed version-1 capabilities and execution
+claims from supported isolated runners. Manual task intent uses the supervised
+execution path and its shared attempt budget, separately from ordinary
+conversation retries.
+
+Supervised workflow execution uses kinds 46040–46042 and a durable task/grant
+outbox. The relay admits a manual child only through a versioned Linux isolation
+capability, per-run attempt ledger, and run-bound temporary public key. That key
+supports destination-channel `/query`/`/count` and WebSocket snapshot reads, with
+current permissions checked on each read; it cannot publish or invoke other
+HTTP operations. Channel membership discovery maps its own `p` filter to the
+original agent and confines metadata `d` filters to the destination. Manual
+result posts require exact signed task/grant/instance evidence and do not trigger
+another workflow. A dispatch trace does not release concurrency: completion or
+verified process-stop evidence does.
+
+`RecoverClaim` repairs a crash after a signed claim was saved but before its
+receipt was journaled. It carries the exact original signed claim and returns
+only its persisted receipt, or a durable `no_grant` result that fences a late
+arrival of that original claim. It never allocates another attempt or authorizes
+a launch; a recovered grant is used only to acknowledge verified stopping.
+When stopping cannot be proven locally across a previous container/PID namespace,
+use the pinned-controller [verified stop recovery procedure](workflow-stop-recovery.md).
+Unverified execution remains stalled and retains its concurrency locks.
+
+The web workspace agent settings render `AgentScheduledWorkflows` independently
+of the profile edit form. Desktop renders its corresponding section inside
+`HostedAgentEditDialog`, using the current identity and relay membership rather
+than a cached profile owner. Both sections are restricted to the exact community
+owner, list immutable agent associations, and show the actual run outcome and
+correlated result links separately from dispatch history. Cron schedules show
+their next UTC occurrence; interval schedules retain an unknown next occurrence
+without a verified scheduler anchor. Nullable schedule fields in the relay
+summary are a wire-format concern, not relaxed workflow-definition validation.
+
+Web queries are scoped by relay URL, viewer and agent; desktop additionally
+includes community identity/reinitialization. Panel cleanup and scope changes
+cancel/remove the corresponding query and discard prior request state. These
+hooks introduce no module-level singleton requiring `resetCommunityState`.
+Visible panels refresh every 15 seconds, on focus/reconnect, and on kind46042
+invalidation. Status events trigger an authorized read; their content never
+becomes authoritative execution state. Summary errors hide cached details.
+
+Run now prepares one signed kind46020 event with the displayed definition hash
+and a nonce tag. Synchronous pending guards reject double clicks. A lost receipt
+retains that exact envelope for explicit same-request retry; reconnect never
+replays a command. Web sends through the generic NIP98 `POST /events` bridge;
+desktop uses scoped native prepare/submit commands, refuses a pending rate-limit
+wait, and bounds send plus response-body time. Both verify identity/relay scope
+around signing and asynchronous work. Offline, stale, unsupported and blocked
+states disable new starts; the server always rechecks admission and allowances.
+
+Regression coverage includes policy/DTO tests and browser settings scenarios in
+`web/tests/e2e/workspace-workflows.spec.ts`, desktop policy/native command tests,
+and `desktop/tests/e2e/agent-scheduled-workflows.spec.ts`. Release acceptance also
+requires `scripts/test-manual-workflow-ci.sh` against the exact Linux relay/agent
+images and PostgreSQL17; UI fixtures cannot establish runtime isolation,
+completion, fallback or stop-proof guarantees.

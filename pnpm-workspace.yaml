@@ -22,6 +22,15 @@ overrides:
   # versions before 3.3.18 (zero-length custom generator can loop
   # indefinitely); keep the floor at the advisory's patched version.
   nanoid@<3.3.18: 3.3.18
+  # Keep the patched Tiptap 3.30.5 release coherent: React's optional menu
+  # ranges otherwise select newer extensions with incompatible exact peers.
+  "@tiptap/react>@tiptap/extension-bubble-menu": 3.30.5
+  "@tiptap/react>@tiptap/extension-floating-menu": 3.30.5
+  # Tiptap PM requires ^1.25.11; older compatible ^1.x edges otherwise retain
+  # a second model copy with incompatible Node/DOMOutputSpec TypeScript types.
+  prosemirror-model: 1.25.11
+  # Likewise keep EditorView/DecorationSet on one compatible ^1.x release.
+  prosemirror-view: 1.42.4
 patchedDependencies:
   isomorphic-git: patches/isomorphic-git.patch
   virtua@0.49.3: patches/virtua@0.49.3.patch

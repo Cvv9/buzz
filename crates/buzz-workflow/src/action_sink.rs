@@ -50,6 +50,8 @@ pub struct WorkflowMessageContext {
     pub run_id: String,
     /// Step identifier within the workflow definition.
     pub step_id: String,
+    /// Explicit immutable agent targets, when provided by the signed definition.
+    pub agent_targets: Vec<String>,
 }
 
 /// Interface for workflow actions that produce side effects.

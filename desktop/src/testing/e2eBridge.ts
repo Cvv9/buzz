@@ -1,3 +1,7 @@
+import {
+  handleScheduledWorkflowCommand,
+  type MockScheduledWorkflows,
+} from "./e2eBridgeScheduledWorkflows";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { emit, listen } from "@tauri-apps/api/event";
 import { mockIPC, mockWindows } from "@tauri-apps/api/mocks";
@@ -245,6 +249,7 @@ type E2eConfig = {
     acpAuthMethodsError?: string;
     /** When set, workflow updates fail with this message. */
     workflowUpdateError?: string;
+    scheduledWorkflows?: MockScheduledWorkflows;
     /** When set, the `delete_custom_harness` mock command throws with this message. */
     deleteCustomHarnessError?: string;
     connectAcpRuntimeResult?: RawConnectAcpRuntimeResult;
@@ -13398,6 +13403,15 @@ export function maybeInstallE2eTauriMocks() {
       case "delete_workflow":
         return handleDeleteWorkflow(
           payload as Parameters<typeof handleDeleteWorkflow>[0],
+        );
+      case "get_agent_scheduled_workflows":
+      case "prepare_manual_workflow":
+      case "submit_manual_workflow":
+        return handleScheduledWorkflowCommand(
+          command,
+          payload,
+          activeConfig?.mock?.scheduledWorkflows,
+          getMockMemberPubkey(activeConfig),
         );
       case "trigger_workflow":
         return handleTriggerWorkflow(

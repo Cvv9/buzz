@@ -1,3 +1,4 @@
+import { AgentScheduledWorkflows } from "./AgentScheduledWorkflows";
 import { Modal } from "@/shared/ui/modal";
 import {
   Bot,
@@ -33,6 +34,7 @@ type Props = {
   agents: readonly WorkspaceProfile[];
   channels: readonly WorkspaceChannel[];
   canManage: boolean;
+  viewerPubkey: string;
   busy?: boolean;
   error?: string | null;
   onSetChannelAccess: (
@@ -50,6 +52,7 @@ export function WorkspaceAgents({
   agents,
   channels,
   canManage,
+  viewerPubkey,
   busy = false,
   error,
   onSetChannelAccess,
@@ -158,6 +161,11 @@ export function WorkspaceAgents({
                 onSetChannelAccess={onSetChannelAccess}
               />
             )}
+            <AgentScheduledWorkflows
+              agentPubkey={selected.pubkey}
+              viewerPubkey={viewerPubkey}
+              canManage={canManage}
+            />
           </div>
         </div>
       ) : (

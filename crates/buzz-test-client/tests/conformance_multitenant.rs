@@ -1820,54 +1820,11 @@ mod workflows {
         panic!("POST workflow trigger to {http_base} returned HTTP {status}: {body}");
     }
 
-    /// Obligation (trigger-confinement half): a workflow id defined under
-    /// community A is triggerable only under A. Firing A's id under host B —
-    /// even by a caller who is a legitimate member of the *same channel UUID* in
-    /// B — must fail closed, because trigger resolution is
-    /// `get_workflow(host_community, id)` and the row lives in A's community
-    /// only. The mirror positive (A fires its own id) must succeed, proving the
-    /// rejection is the community fence and not a workflow that is simply
-    /// untriggerable.
-    ///
-    /// Wire-observable shape (single keypair K; the fence under test must be
-    /// `community_id`, never `pubkey` or channel membership):
-    ///   1. Create the **same** channel UUID `U` in A and in B. PK is
-    ///      `(community_id, id)`, so both inserts succeed and K is bootstrapped
-    ///      as owner-member of `U` on *each* side (`create_channel_with_id`).
-    ///      This deliberately removes "not a member of U in B" as an alternate
-    ///      cause of the B rejection — K *is* a member of U in B.
-    ///   2. Define a workflow in `U` under **A** (kind:30620). The server
-    ///      generates `W` and returns it. `W` is an A-community row.
-    ///   3. Fire `W` under host **B** (kind:46020, `d`=W) as K. Must be
-    ///      rejected — `accepted == false` and the generic `workflow not found`
-    ///      message — because `get_workflow(B_community, W)` finds nothing: `W`
-    ///      exists only in A. K's membership of U-in-B is irrelevant; the
-    ///      lookup never reaches the membership check.
-    ///   4. Fire `W` under host **A** as K. Must be accepted — the positive
-    ///      half proves the rejection in (3) is community confinement, not a
-    ///      workflow that can never trigger. (This also exercises the
-    ///      same-community happy path through the very fence we're testing.)
-    ///
-    /// Mutate-bite (would-it-fail-without-the-fix): drop the community fence on
-    /// the trigger lookup at
-    /// `crates/buzz-relay/src/handlers/command_executor.rs:703`
-    /// (`get_workflow(community_id, workflow_id)` → bare-id lookup, e.g.
-    /// `get_workflow_any(workflow_id)`). Then B's trigger in step 3 loads A's
-    /// workflow row, passes the membership check against B's colliding channel
-    /// `U` (K is a member there), and **accepts** — step 3's `accepted == false`
-    /// assertion goes RED. Restore the `community_id` argument → GREEN. This is
-    /// the exact invariant commit `c81b89355` documents at that call site.
-    ///
-    /// NOTE — approval-token isolation is a **separate, not-yet-wire-live**
-    /// obligation, deliberately left as a `pending_lane` below. The grant
-    /// handler (`get_approval_by_stored_hash(community, hash)`) is already
-    /// community-scoped, but nothing *mints* a pending approval over the wire:
-    /// the executor's approval gate is an explicit TODO
-    /// (`crates/buzz-workflow/src/lib.rs` — "approval gates not yet implemented,
-    /// see WF-08") and `create_approval` is only reached from unit tests. A
-    /// green end-to-end approval-isolation test therefore cannot be exercised
-    /// today; writing one would violate this file's contract (a green run can
-    /// never be faked by an empty/DB-only body). It lands with WF-08.
+    /// Manual trigger lookups remain host-confined even when channel UUID and
+    /// requester match across tenants. B must report workflow-not-found; A must
+    /// recognize its definition and apply the new community-owner/manual-profile
+    /// restrictions. The positive admitted workflow path is independently covered
+    /// by `workflow_manual_signed_ingress_keeps_old_runners_closed_and_replays_receipts`.
     #[tokio::test]
     #[ignore]
     async fn workflow_trigger_is_community_confined() {
@@ -1911,18 +1868,14 @@ mod workflows {
              oracle); got: {b_msg:?}"
         );
 
-        // (4) Mirror positive: fire W under host A as K. Must be accepted —
-        // proves the B rejection is community confinement, not an
-        // untriggerable workflow, and exercises the same-community happy path
-        // through the fence under test.
+        // A recognizes its workflow, then rejects this legacy unrestricted
+        // message workflow under the bounded-manual policy. This random channel
+        // owner is not the exact community owner; channel ownership is insufficient.
         let a_resp = trigger_workflow(&http_a, &keys, &workflow_id).await;
-        assert_eq!(
-            a_resp["accepted"].as_bool(),
-            Some(true),
-            "host A rejected a trigger for its own workflow id — positive control failed, \
-             so the B rejection cannot be attributed to community confinement. response: \
-             {a_resp}"
-        );
+        assert_eq!(a_resp["accepted"].as_bool(), Some(false));
+        let a_msg = a_resp["message"].as_str().unwrap_or_default();
+        assert!(a_msg.contains("current community/workflow owner") || a_msg.contains("unsupported_manual_profile"), "same-community workflow must be recognized and fail the current manual policy, got {a_resp}");
+        assert!(!a_msg.contains("workflow not found"));
     }
 
     /// Obligation (approval-token half): an approval token (its stored hash)

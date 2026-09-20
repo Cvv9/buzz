@@ -373,6 +373,7 @@ CREATE TABLE workflows (
     enabled         BOOLEAN NOT NULL DEFAULT TRUE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    manual_deleted_at TIMESTAMPTZ,
     PRIMARY KEY (community_id, id),
     FOREIGN KEY (community_id, owner_pubkey) REFERENCES users (community_id, pubkey),
     FOREIGN KEY (community_id, channel_id) REFERENCES channels (community_id, id)
@@ -399,6 +400,16 @@ CREATE TABLE workflow_runs (
     error_message       TEXT,
     error_code          TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    origin              TEXT NOT NULL DEFAULT 'event' CHECK (origin IN ('manual','scheduled','event')),
+    requester           BYTEA,
+    accepted_at         TIMESTAMPTZ,
+    deadline_at         TIMESTAMPTZ,
+    definition_hash     BYTEA,
+    definition_snapshot JSONB,
+    execution_state     TEXT CHECK (execution_state IN ('queued','running','completed','failed','timed_out','stalled')),
+    dispatch_complete   BOOLEAN NOT NULL DEFAULT FALSE,
+    safe_error_code     TEXT,
+    revision            BIGINT NOT NULL DEFAULT 0,
     PRIMARY KEY (community_id, id),
     FOREIGN KEY (community_id, workflow_id)
         REFERENCES workflows (community_id, id) ON DELETE CASCADE
@@ -457,6 +468,7 @@ CREATE TABLE scheduled_workflow_fires (
     scheduled_for   TIMESTAMPTZ NOT NULL,
     claimed_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     workflow_run_id UUID,
+    outcome         TEXT NOT NULL DEFAULT 'started' CHECK (outcome IN ('started','skipped_active')),
     PRIMARY KEY (community_id, workflow_id, scheduled_for),
     FOREIGN KEY (community_id, workflow_id)
         REFERENCES workflows (community_id, id) ON DELETE CASCADE,
@@ -467,6 +479,141 @@ CREATE TABLE scheduled_workflow_fires (
 -- The interval anchor reads MAX(scheduled_for) per workflow; the janitor prunes
 -- by claimed_at globally (operator concern). See plan §5 retention coupling.
 CREATE INDEX idx_scheduled_fires_claimed_at ON scheduled_workflow_fires (claimed_at);
+
+-- ── Durable workflow execution ────────────────────────────────────────────────
+-- Consolidated migrations 0036–0038. Dispatch is not completion; admission,
+-- signed control receipts, attempt stop evidence, and read identities survive
+-- retries and workflow tombstones. Fresh schemas have no legacy runs to backfill.
+
+CREATE INDEX idx_workflow_manual_active ON workflow_runs (community_id, workflow_id, origin)
+    WHERE execution_state IN ('queued','running','stalled');
+CREATE INDEX idx_workflow_manual_allowance ON workflow_runs (community_id, accepted_at)
+    WHERE origin = 'manual';
+
+CREATE TABLE workflow_admission_mutex (
+    community_id UUID NOT NULL PRIMARY KEY REFERENCES communities(id) ON DELETE CASCADE
+);
+CREATE TABLE workflow_agent_bindings (
+    community_id UUID NOT NULL REFERENCES communities(id),
+    workflow_id UUID NOT NULL,
+    definition_hash BYTEA NOT NULL,
+    step_id TEXT NOT NULL,
+    agent_pubkey BYTEA NOT NULL CHECK (length(agent_pubkey) = 32),
+    destination_channel UUID NOT NULL,
+    provenance TEXT NOT NULL CHECK (provenance IN ('explicit_owner_definition','verified_task_evidence')),
+    PRIMARY KEY (community_id, workflow_id, step_id, agent_pubkey),
+    FOREIGN KEY (community_id, workflow_id) REFERENCES workflows(community_id,id) ON DELETE CASCADE,
+    FOREIGN KEY (community_id, destination_channel) REFERENCES channels(community_id,id),
+    FOREIGN KEY (community_id, agent_pubkey) REFERENCES users(community_id,pubkey)
+);
+CREATE TABLE workflow_manual_requests (
+    community_id UUID NOT NULL REFERENCES communities(id),
+    request_event_id BYTEA NOT NULL CHECK (length(request_event_id) = 32),
+    workflow_id UUID NOT NULL,
+    requester BYTEA NOT NULL CHECK (length(requester) = 32),
+    decision JSONB NOT NULL,
+    run_id UUID,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (community_id, request_event_id),
+    FOREIGN KEY (community_id, workflow_id) REFERENCES workflows(community_id,id) ON DELETE CASCADE,
+    FOREIGN KEY (community_id, run_id) REFERENCES workflow_runs(community_id,id) ON DELETE CASCADE
+);
+CREATE TABLE workflow_run_tasks (
+    community_id UUID NOT NULL REFERENCES communities(id),
+    run_id UUID NOT NULL,
+    task_id UUID NOT NULL,
+    step_id TEXT NOT NULL,
+    agent_pubkey BYTEA NOT NULL CHECK (length(agent_pubkey) = 32),
+    channel_id UUID NOT NULL,
+    task_event_id BYTEA,
+    state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued','running','completed','failed','timed_out','stalled')),
+    result_event_id BYTEA,
+    runner_instance UUID,
+    attempt_count INT NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    PRIMARY KEY (community_id, run_id, task_id),
+    UNIQUE (community_id, run_id, step_id, agent_pubkey),
+    FOREIGN KEY (community_id, run_id) REFERENCES workflow_runs(community_id,id) ON DELETE CASCADE,
+    FOREIGN KEY (community_id, channel_id) REFERENCES channels(community_id,id),
+    FOREIGN KEY (community_id, agent_pubkey) REFERENCES users(community_id,pubkey)
+);
+CREATE INDEX idx_workflow_tasks_active_target ON workflow_run_tasks(community_id,agent_pubkey,run_id);
+CREATE TABLE workflow_run_attempts (
+    community_id UUID NOT NULL REFERENCES communities(id),
+    run_id UUID NOT NULL,
+    ordinal INT NOT NULL CHECK (ordinal > 0),
+    task_id UUID NOT NULL,
+    grant_id UUID NOT NULL,
+    instance_id UUID NOT NULL,
+    claimed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    deadline_at TIMESTAMPTZ NOT NULL,
+    stopped_at TIMESTAMPTZ,
+    started_at TIMESTAMPTZ,
+    grant_decision JSONB,
+    outcome TEXT,
+    PRIMARY KEY (community_id, run_id, ordinal),
+    UNIQUE (community_id, grant_id),
+    FOREIGN KEY (community_id, run_id, task_id) REFERENCES workflow_run_tasks(community_id,run_id,task_id) ON DELETE CASCADE
+);
+CREATE TABLE workflow_run_outbox (
+    community_id UUID NOT NULL REFERENCES communities(id),
+    id UUID NOT NULL,
+    run_id UUID NOT NULL,
+    event_id BYTEA NOT NULL CHECK (length(event_id) = 32),
+    signed_event JSONB NOT NULL,
+    delivered_at TIMESTAMPTZ,
+    acknowledged_at TIMESTAMPTZ,
+    PRIMARY KEY (community_id,id),
+    UNIQUE (community_id,event_id),
+    FOREIGN KEY (community_id,run_id) REFERENCES workflow_runs(community_id,id) ON DELETE CASCADE
+);
+CREATE TABLE workflow_execution_capabilities (
+    community_id UUID NOT NULL REFERENCES communities(id),
+    agent_pubkey BYTEA NOT NULL CHECK (length(agent_pubkey) = 32),
+    instance_id UUID NOT NULL,
+    protocol_version INT NOT NULL CHECK (protocol_version = 1),
+    max_turn_duration_secs BIGINT NOT NULL DEFAULT 7200 CHECK (max_turn_duration_secs BETWEEN 1 AND 604800),
+    expires_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (community_id,agent_pubkey),
+    FOREIGN KEY (community_id,agent_pubkey) REFERENCES users(community_id,pubkey) ON DELETE CASCADE
+);
+CREATE TABLE workflow_run_credentials (
+    community_id UUID NOT NULL REFERENCES communities(id),
+    ephemeral_pubkey BYTEA NOT NULL CHECK (length(ephemeral_pubkey) = 32),
+    run_id UUID NOT NULL,
+    agent_pubkey BYTEA NOT NULL CHECK (length(agent_pubkey) = 32),
+    attempt_ordinal INT NOT NULL CHECK (attempt_ordinal > 0),
+    expires_at TIMESTAMPTZ NOT NULL,
+    revoked_at TIMESTAMPTZ,
+    PRIMARY KEY (community_id,ephemeral_pubkey),
+    FOREIGN KEY (community_id,run_id,attempt_ordinal) REFERENCES workflow_run_attempts(community_id,run_id,ordinal) ON DELETE CASCADE,
+    FOREIGN KEY (community_id,agent_pubkey) REFERENCES users(community_id,pubkey)
+);
+
+CREATE TABLE workflow_execution_receipts (
+    community_id UUID NOT NULL REFERENCES communities(id),
+    event_id BYTEA NOT NULL CHECK (length(event_id)=32),
+    agent_pubkey BYTEA NOT NULL CHECK (length(agent_pubkey)=32),
+    response JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (community_id,event_id)
+);
+-- A credential must never become an ordinary identity in another community.
+CREATE UNIQUE INDEX workflow_credentials_global_identity ON workflow_run_credentials(ephemeral_pubkey);
+
+-- Controller attestations contain public identifiers/hashes, never provider logs or keys.
+CREATE TABLE workflow_recovery_receipts (
+    community_id UUID NOT NULL REFERENCES communities(id),
+    event_id BYTEA NOT NULL CHECK (length(event_id)=32),
+    controller_pubkey BYTEA NOT NULL CHECK (length(controller_pubkey)=32),
+    target_agent BYTEA NOT NULL CHECK (length(target_agent)=32),
+    evidence_id BYTEA NOT NULL CHECK (length(evidence_id)=32),
+    container_id TEXT NOT NULL CHECK (container_id ~ '^[0-9a-f]{64}$'),
+    control JSONB NOT NULL,
+    response JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (community_id,event_id),
+    UNIQUE (community_id,evidence_id)
+);
 
 -- ── API tokens ────────────────────────────────────────────────────────────────
 -- Conformance: "API tokens and NIP-98 replay". token_hash uniqueness scoped to
@@ -1669,3 +1816,14 @@ SELECT attach_community_write_fence('users');
 SELECT attach_community_write_fence('workflow_approvals');
 SELECT attach_community_write_fence('workflow_runs');
 SELECT attach_community_write_fence('workflows');
+-- Execution tables added after the initial community deletion fence (0039).
+SELECT attach_community_write_fence('workflow_admission_mutex'::regclass);
+SELECT attach_community_write_fence('workflow_agent_bindings'::regclass);
+SELECT attach_community_write_fence('workflow_manual_requests'::regclass);
+SELECT attach_community_write_fence('workflow_run_tasks'::regclass);
+SELECT attach_community_write_fence('workflow_run_attempts'::regclass);
+SELECT attach_community_write_fence('workflow_run_outbox'::regclass);
+SELECT attach_community_write_fence('workflow_execution_capabilities'::regclass);
+SELECT attach_community_write_fence('workflow_run_credentials'::regclass);
+SELECT attach_community_write_fence('workflow_execution_receipts'::regclass);
+SELECT attach_community_write_fence('workflow_recovery_receipts'::regclass);

@@ -169,3 +169,5 @@ const NON_CONVERSATIONAL_UNREAD_KINDS: ReadonlySet<number> = new Set([
 export function isConversationalUnreadKind(kind: number | undefined): boolean {
   return kind === undefined || !NON_CONVERSATIONAL_UNREAD_KINDS.has(kind);
 }
+
+export const KIND_WORKFLOW_RUN_STATUS = 46042;

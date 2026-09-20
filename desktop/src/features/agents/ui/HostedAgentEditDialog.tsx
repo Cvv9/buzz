@@ -14,6 +14,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/shared/ui/dialog";
+import { useAgentScheduledWorkflows } from "@/features/workflows/agentScheduledWorkflowHooks";
+import { AgentScheduledWorkflows } from "./AgentScheduledWorkflows";
+import { useIdentityQuery } from "@/shared/api/hooks";
+import { useMyRelayMembershipQuery } from "@/features/community-members/hooks";
+import { useChannelsQuery } from "@/features/channels/hooks";
 import { Input } from "@/shared/ui/input";
 import { UserAvatar } from "@/shared/ui/UserAvatar";
 
@@ -28,6 +33,18 @@ export function HostedAgentEditDialog({
   onSaved: () => Promise<void> | void;
   open: boolean;
 }) {
+  const identity = useIdentityQuery();
+  const membership = useMyRelayMembershipQuery();
+  const channels = useChannelsQuery();
+  const communityOwner =
+    membership.data?.role === "owner" &&
+    membership.data.pubkey === identity.data?.pubkey;
+  const workflows = useAgentScheduledWorkflows(
+    agent.pubkey,
+    identity.data?.pubkey,
+    communityOwner,
+    open,
+  );
   const runtime = getHostedAgentRuntimePresentation(agent);
   const [name, setName] = React.useState(agent.name);
   const [avatarUrl, setAvatarUrl] = React.useState(agent.avatarUrl ?? "");
@@ -46,7 +63,10 @@ export function HostedAgentEditDialog({
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
-      <DialogContent data-testid="hosted-agent-edit-dialog">
+      <DialogContent
+        className="max-h-[85dvh] overflow-y-auto"
+        data-testid="hosted-agent-edit-dialog"
+      >
         <DialogHeader>
           <DialogTitle>Edit hosted agent</DialogTitle>
           <DialogDescription>
@@ -132,6 +152,14 @@ export function HostedAgentEditDialog({
               writes a second model or effort preference.
             </p>
           </div>
+
+          {communityOwner ? (
+            <AgentScheduledWorkflows
+              model={workflows}
+              channels={channels.data ?? []}
+              onNavigate={() => onOpenChange(false)}
+            />
+          ) : null}
 
           {error ? <p className="text-sm text-destructive">{error}</p> : null}
         </div>

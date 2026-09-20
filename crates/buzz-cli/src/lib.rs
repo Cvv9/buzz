@@ -947,6 +947,30 @@ pub enum UsersCmd {
 
 #[derive(Subcommand)]
 pub enum WorkflowsCmd {
+    /// Trusted host operator: verify a stopped container and recover exact workflow evidence
+    Recover {
+        /// Strict controller recovery JSON request
+        #[arg(long)]
+        request: String,
+        /// Full immutable ID of the stopped old Docker container
+        #[arg(long)]
+        container: String,
+        /// New path for the redacted signed recovery audit
+        #[arg(long)]
+        audit: String,
+    },
+    /// List an agent's scheduled workflows, actual results, and manual limits (owner only)
+    Scheduled {
+        /// Immutable agent public key as hex
+        #[arg(long)]
+        agent_pubkey: String,
+        /// Last workflow UUID returned by the previous page
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Page size (1 to 100)
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+    },
     /// List workflows in a channel
     List {
         /// Channel UUID
@@ -997,6 +1021,9 @@ pub enum WorkflowsCmd {
         /// JSON object of input variables passed to the workflow as event content
         #[arg(long)]
         inputs: Option<String>,
+        /// Expected definition hash from scheduled workflow summaries
+        #[arg(long)]
+        expected_definition_hash: Option<String>,
     },
     /// List runs for a workflow
     Runs {
@@ -2413,7 +2440,18 @@ mod tests {
         );
         assert_eq!(
             names(&cmd, "workflows"),
-            vec!["approve", "create", "delete", "get", "list", "runs", "trigger", "update"]
+            vec![
+                "approve",
+                "create",
+                "delete",
+                "get",
+                "list",
+                "recover",
+                "runs",
+                "scheduled",
+                "trigger",
+                "update"
+            ]
         );
         assert_eq!(names(&cmd, "feed"), vec!["get"]);
         assert_eq!(
@@ -2510,7 +2548,7 @@ mod tests {
             ("social", 7),
             ("upload", 1),
             ("users", 5),
-            ("workflows", 8),
+            ("workflows", 10),
         ];
 
         let cmd = Cli::command();

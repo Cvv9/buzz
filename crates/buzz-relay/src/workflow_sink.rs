@@ -296,8 +296,30 @@ impl ActionSink for RelayActionSink {
                     Some((name, nostr::PublicKey::from_slice(&u.pubkey).ok()?.to_hex()))
                 })
                 .collect();
-            let mentioned_pubkeys = resolve_mention_pubkeys(&text, &named_members);
+            let mentioned_pubkeys = if context.agent_targets.is_empty() {
+                resolve_mention_pubkeys(&text, &named_members)
+            } else {
+                for target in &context.agent_targets {
+                    let key = nostr::PublicKey::from_hex(target).map_err(|_| {
+                        ActionSinkError::InvalidInput("invalid agent target".into())
+                    })?;
+                    if !members.iter().any(|member| member.pubkey == key.to_bytes())
+                        || state
+                            .db
+                            .get_agent_channel_policy(community_id, &key.to_bytes())
+                            .await
+                            .map_err(|e| ActionSinkError::Database(e.to_string()))?
+                            .is_none_or(|(_, owner)| owner != Some(author_pubkey_bytes.clone()))
+                    {
+                        return Err(ActionSinkError::InvalidInput(
+                            "target agent is not currently admitted".into(),
+                        ));
+                    }
+                }
+                context.agent_targets.clone()
+            };
             let mut targets_agent = false;
+            let mut managed_targets = Vec::new();
             for mentioned in &mentioned_pubkeys {
                 let mentioned_bytes = nostr::PublicKey::from_hex(mentioned)
                     .map_err(|e| {
@@ -305,12 +327,16 @@ impl ActionSink for RelayActionSink {
                     })?
                     .to_bytes()
                     .to_vec();
-                targets_agent |= state
+                let managed = state
                     .db
                     .get_agent_channel_policy(tenant.community(), &mentioned_bytes)
                     .await
                     .map_err(|e| ActionSinkError::Database(e.to_string()))?
                     .is_some_and(|(_, owner)| owner.is_some());
+                if managed {
+                    targets_agent = true;
+                    managed_targets.push(mentioned.clone());
+                }
                 tags.push(
                     Tag::parse(["p", mentioned])
                         .map_err(|e| ActionSinkError::EventBuild(format!("mention p tag: {e}")))?,
@@ -358,16 +384,48 @@ impl ActionSink for RelayActionSink {
                     broadcast: false,
                 });
 
-            let (stored_event, was_inserted) = state
-                .db
-                .insert_event_with_thread_metadata(
-                    tenant.community(),
-                    &event,
-                    Some(channel_uuid),
-                    thread_meta,
-                )
-                .await
-                .map_err(|e| ActionSinkError::Database(e.to_string()))?;
+            let (stored_event, was_inserted) = if targets_agent {
+                let run = Uuid::parse_str(&context.run_id)
+                    .map_err(|_| ActionSinkError::InvalidInput("invalid workflow run".into()))?;
+                if let Some(id) = state
+                    .db
+                    .queue_supervised_workflow_tasks(
+                        community_id,
+                        run,
+                        &context.step_id,
+                        channel_uuid,
+                        &managed_targets,
+                        &event,
+                        &state.relay_keypair,
+                    )
+                    .await
+                    .map_err(|e| ActionSinkError::Database(e.to_string()))?
+                {
+                    return Ok(id);
+                }
+                state
+                    .db
+                    .persist_scheduled_workflow_task(
+                        community_id,
+                        &event,
+                        channel_uuid,
+                        run,
+                        &context.step_id,
+                        &managed_targets,
+                    )
+                    .await
+            } else {
+                state
+                    .db
+                    .insert_event_with_thread_metadata(
+                        tenant.community(),
+                        &event,
+                        Some(channel_uuid),
+                        thread_meta,
+                    )
+                    .await
+            }
+            .map_err(|e| ActionSinkError::Database(e.to_string()))?;
 
             // 5. Post-persist side effects (fan-out, search, audit)
             //    Only if actually inserted (idempotency guard).
@@ -703,6 +761,14 @@ mod integration_tests {
             .await
             .expect("add agent member");
 
+        // Real workflow/run provenance is required before emitting a task.
+        let workflow_id = uuid::Uuid::parse_str("2ecf7254-bde5-4e17-a392-86ca2d00e82d").unwrap();
+        let run_id = uuid::Uuid::parse_str("4f9c7a5a-2af2-4eb8-8c6f-4e4f3df7584b").unwrap();
+        state.db.upsert_workflow(community,workflow_id,Some(channel.id),&author.public_key().to_bytes(),"Agent health check",r#"{"name":"Agent health check","trigger":{"on":"schedule","cron":"0 9 * * *"},"steps":[]}"#,&[0;32]).await.unwrap();
+        let mut tx = state.db.begin_transaction().await.unwrap();
+        sqlx::query("INSERT INTO workflow_runs(community_id,id,workflow_id,origin) VALUES($1,$2,$3,'scheduled')").bind(community.as_uuid()).bind(run_id).bind(workflow_id).execute(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+
         let sink = RelayActionSink::new(&state);
         let event_id_hex = sink
             .send_message(
@@ -715,6 +781,7 @@ mod integration_tests {
                     workflow_name: "Agent health check".into(),
                     run_id: "4f9c7a5a-2af2-4eb8-8c6f-4e4f3df7584b".into(),
                     step_id: "ask-agent".into(),
+                    agent_targets: Vec::new(),
                 },
             )
             .await
@@ -797,6 +864,7 @@ mod integration_tests {
                     workflow_name: "Agent health check".into(),
                     run_id: "4f9c7a5a-2af2-4eb8-8c6f-4e4f3df7584b".into(),
                     step_id: "announce".into(),
+                    agent_targets: Vec::new(),
                 },
             )
             .await
@@ -815,6 +883,184 @@ mod integration_tests {
             announcement.event.kind.as_u16() as u32,
             KIND_STREAM_MESSAGE,
             "workflow announcements without a managed-agent target remain visible"
+        );
+    }
+    #[tokio::test]
+    #[ignore = "requires isolated Postgres and Redis"]
+    async fn workflow_manual_signed_ingress_keeps_old_runners_closed_and_replays_receipts() {
+        use crate::handlers::ingest::{ingest_event, HttpAuthMethod, IngestAuth};
+        use sha2::{Digest, Sha256};
+        let state = test_state().await;
+        let owner = nostr::Keys::generate();
+        let agent = nostr::Keys::generate();
+        let host = format!("manual-relay-{}.test", Uuid::new_v4());
+        let community = match state
+            .db
+            .create_community_with_owner(&host, &owner.public_key().to_hex())
+            .await
+            .unwrap()
+        {
+            CreateCommunityWithOwnerResult::Created(record) => record.id,
+            other => panic!("unexpected {other:?}"),
+        };
+        let tenant = buzz_core::TenantContext::resolved(community, host);
+        let channel = state
+            .db
+            .create_channel(
+                community,
+                "manual",
+                ChannelType::Stream,
+                ChannelVisibility::Private,
+                None,
+                &owner.public_key().to_bytes(),
+                None,
+            )
+            .await
+            .unwrap();
+        state
+            .db
+            .ensure_user(community, &agent.public_key().to_bytes())
+            .await
+            .unwrap();
+        state
+            .db
+            .ensure_user(community, &owner.public_key().to_bytes())
+            .await
+            .unwrap();
+        state
+            .db
+            .set_agent_owner(
+                community,
+                &agent.public_key().to_bytes(),
+                &owner.public_key().to_bytes(),
+            )
+            .await
+            .unwrap();
+        state
+            .db
+            .add_member(
+                community,
+                channel.id,
+                &agent.public_key().to_bytes(),
+                MemberRole::Bot,
+                Some(&owner.public_key().to_bytes()),
+            )
+            .await
+            .unwrap();
+        let workflow = Uuid::new_v4();
+        let definition=serde_json::json!({"name":"Isolated brief","trigger":{"on":"schedule","cron":"0 9 * * *"},"steps":[{"id":"brief","action":"send_message","text":"Produce test evidence","agent_targets":[agent.public_key().to_hex()]}]}).to_string();
+        let hash = Sha256::digest(definition.as_bytes()).to_vec();
+        state
+            .db
+            .upsert_workflow(
+                community,
+                workflow,
+                Some(channel.id),
+                &owner.public_key().to_bytes(),
+                "Isolated brief",
+                &definition,
+                &hash,
+            )
+            .await
+            .unwrap();
+        let auth = IngestAuth::Http {
+            pubkey: owner.public_key(),
+            scopes: vec![buzz_auth::Scope::MessagesWrite],
+            auth_method: HttpAuthMethod::Nip98,
+        };
+        let command = || {
+            EventBuilder::new(Kind::from(46020), "")
+                .tags([
+                    Tag::parse(["d", &workflow.to_string()]).unwrap(),
+                    Tag::parse(["nonce", &Uuid::new_v4().to_string()]).unwrap(),
+                ])
+                .sign_with_keys(&owner)
+                .unwrap()
+        };
+        let restricted = IngestAuth::Nip42 {
+            pubkey: owner.public_key(),
+            scopes: vec![buzz_auth::Scope::MessagesWrite],
+            channel_ids: Some(vec![Uuid::new_v4()]),
+            conn_id: Uuid::new_v4(),
+        };
+        assert!(
+            ingest_event(&state, &tenant, command(), restricted)
+                .await
+                .is_err(),
+            "owner credentials still respect token channel restrictions"
+        );
+        let rejected_event = command();
+        let rejected = ingest_event(&state, &tenant, rejected_event.clone(), auth.clone())
+            .await
+            .unwrap();
+        assert!(!rejected.accepted);
+        assert!(rejected.message.contains("runner_unavailable"));
+        // Test-only readiness fixture: production control ingress still fails closed.
+        let mut tx = state.db.begin_transaction().await.unwrap();
+        sqlx::query("INSERT INTO workflow_execution_capabilities(community_id,agent_pubkey,instance_id,protocol_version,expires_at) VALUES($1,$2,$3,1,NOW()+interval '90 seconds')").bind(community.as_uuid()).bind(agent.public_key().to_bytes().as_slice()).bind(Uuid::new_v4()).execute(&mut *tx).await.unwrap();
+        tx.commit().await.unwrap();
+        let still_rejected = ingest_event(&state, &tenant, rejected_event, auth.clone())
+            .await
+            .unwrap();
+        assert!(!still_rejected.accepted);
+        let event = command();
+        let accepted = ingest_event(&state, &tenant, event.clone(), auth.clone())
+            .await
+            .unwrap();
+        assert!(accepted.accepted, "{}", accepted.message);
+        let replay = ingest_event(&state, &tenant, event, auth.clone())
+            .await
+            .unwrap();
+        assert_eq!(replay.message, accepted.message);
+        let receipt: serde_json::Value =
+            serde_json::from_str(accepted.message.strip_prefix("response:").unwrap()).unwrap();
+        let run = Uuid::parse_str(receipt["run_id"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            state.db.workflow_actual_run(community, run).await.unwrap()["execution_state"],
+            "queued"
+        );
+        let second = ingest_event(&state, &tenant, command(), auth)
+            .await
+            .unwrap();
+        assert!(!second.accepted);
+        assert!(second.message.contains("workflow_active"));
+        let forged = nostr::Keys::generate();
+        let wrong = EventBuilder::new(Kind::from(46020), "")
+            .tags([Tag::parse(["d", &workflow.to_string()]).unwrap()])
+            .sign_with_keys(&forged)
+            .unwrap();
+        let auth = IngestAuth::Http {
+            pubkey: forged.public_key(),
+            scopes: vec![buzz_auth::Scope::MessagesWrite],
+            auth_method: HttpAuthMethod::Nip98,
+        };
+        assert!(ingest_event(&state, &tenant, wrong, auth).await.is_err());
+        let control = buzz_core::workflow_execution::ExecutionControl {
+            version: 1,
+            community_id: *community.as_uuid(),
+            agent_pubkey: agent.public_key().to_hex(),
+            instance_id: Uuid::new_v4(),
+            operation: buzz_core::workflow_execution::ExecutionOperation::Capability {
+                runtime_profile: "linux-uids-v1".into(),
+                max_turn_duration_secs: 7200,
+            },
+        };
+        let event = buzz_sdk::build_workflow_execution_control(&control)
+            .unwrap()
+            .sign_with_keys(&agent)
+            .unwrap();
+        assert!(
+            crate::workflow_execution::handle_control(&tenant, &state, &event)
+                .await
+                .unwrap()
+                .accepted
+        );
+        let legacy=EventBuilder::new(Kind::Custom(46040),serde_json::json!({"version":1,"community_id":community.as_uuid(),"agent_pubkey":agent.public_key().to_hex(),"instance_id":Uuid::new_v4(),"operation":{"op":"capability"}}).to_string()).sign_with_keys(&agent).unwrap();
+        assert!(
+            crate::workflow_execution::handle_control(&tenant, &state, &legacy)
+                .await
+                .is_err(),
+            "legacy capability lacks proven isolation contract"
         );
     }
 }
