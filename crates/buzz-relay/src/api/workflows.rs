@@ -6,9 +6,9 @@
 use std::sync::Arc;
 
 use axum::{
-    extract::{Path, Query, RawQuery, State},
+    extract::{Path, RawQuery, State},
     http::{HeaderMap, StatusCode},
-    response::Json,
+    response::{IntoResponse, Json, Response},
 };
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -17,10 +17,23 @@ use uuid::Uuid;
 
 use buzz_core::TenantContext;
 
+use buzz_auth::NipFiMode;
+
 use crate::{
-    api::{api_error, bridge, internal_error},
+    api::{
+        api_error as base_api_error, bridge, internal_error as base_internal_error,
+        parse_query_or_400,
+    },
+    nip_fi_http::admit_nip_fi_http_on_state,
     state::AppState,
 };
+
+fn api_error(status: StatusCode, message: &str) -> Response {
+    base_api_error(status, message).into_response()
+}
+fn internal_error(message: &str) -> Response {
+    base_internal_error(message).into_response()
+}
 
 const DEFAULT_RUN_LIMIT: i64 = 20;
 const MAX_RUN_LIMIT: i64 = 100;
@@ -40,12 +53,13 @@ fn request_path(path: &str, raw_query: Option<&str>) -> String {
     }
 }
 
+#[allow(clippy::result_large_err)]
 async fn authorize_read_identity(
     state: &Arc<AppState>,
     headers: &HeaderMap,
     path: &str,
     raw_query: Option<&str>,
-) -> Result<(TenantContext, Vec<u8>), (StatusCode, Json<Value>)> {
+) -> Result<(TenantContext, Vec<u8>), Response> {
     let raw_host = headers
         .get(axum::http::header::HOST)
         .and_then(|value| value.to_str().ok())
@@ -57,26 +71,51 @@ async fn authorize_read_identity(
                 StatusCode::NOT_FOUND,
                 "relay: no community is configured for this host",
             )
+            .into_response()
         })?;
 
     let path_with_query = request_path(path, raw_query);
     let url = bridge::nip98_expected_url(&state.config.relay_url, &tenant, &path_with_query);
-    let (pubkey, event_id_bytes) =
-        bridge::verify_bridge_auth(headers, "GET", &url, None, state.config.require_auth_token)?;
-    bridge::enforce_http_admission(state, &tenant, &pubkey).await?;
-    bridge::check_nip98_replay(state, &tenant, event_id_bytes).await?;
+    // In NIP-FI enforce/deny-protected mode a real NIP-98 event is mandatory —
+    // the X-Pubkey dev-mode fallback must never satisfy the pairing requirement.
+    // [NIP-FI.md:594-607, FI-TRACE-HTTP-INGRESS]
+    let nip_fi_active = !matches!(state.config.nip_fi.mode, NipFiMode::Off);
+
+    // NIP-FI admission. [FI-TRACE-AUTHORITY-UNIFORM]
+    let require_auth = state.config.require_auth_token || nip_fi_active;
+    let admission = admit_nip_fi_http_on_state(
+        state,
+        headers,
+        bridge::make_nip98_closure_for_admission(
+            headers.clone(),
+            "GET",
+            url,
+            None,
+            require_auth,
+            false,
+        ),
+    )?;
+    let pubkey = *admission.proven_pubkey();
+    let (event_id_bytes, signed_created_at) = admission.into_extra();
+
+    bridge::enforce_http_admission(state, &tenant, &pubkey)
+        .await
+        .map_err(|e| e.into_response())?;
+    bridge::check_nip98_replay(state, &tenant, event_id_bytes)
+        .await
+        .map_err(|e| e.into_response())?;
 
     let pubkey_bytes = pubkey.to_bytes().to_vec();
-    let auth_tag = headers
-        .get("x-auth-tag")
-        .and_then(|value| value.to_str().ok());
+    let auth_tag = super::relay_members::extract_auth_tag_header(headers);
     super::relay_members::enforce_relay_membership(
         state,
         tenant.community(),
         &pubkey_bytes,
         auth_tag,
+        signed_created_at,
     )
-    .await?;
+    .await
+    .map_err(|e| e.into_response())?;
 
     Ok((tenant, pubkey_bytes))
 }
@@ -87,7 +126,7 @@ async fn authorize_workflow_read(
     path: &str,
     raw_query: Option<&str>,
     workflow_id: Uuid,
-) -> Result<TenantContext, (StatusCode, Json<Value>)> {
+) -> Result<TenantContext, Response> {
     let (tenant, pubkey_bytes) = authorize_read_identity(state, headers, path, raw_query).await?;
 
     let workflow = state
@@ -96,22 +135,21 @@ async fn authorize_workflow_read(
         .await
         .map_err(|error| match error {
             buzz_db::error::DbError::NotFound(_) => {
-                api_error(StatusCode::NOT_FOUND, "workflow not found")
+                api_error(StatusCode::NOT_FOUND, "workflow not found").into_response()
             }
-            other => internal_error(&format!("get workflow for run read: {other}")),
+            other => internal_error(&format!("get workflow for run read: {other}")).into_response(),
         })?;
-    let channel_id = workflow
-        .channel_id
-        .ok_or_else(|| api_error(StatusCode::FORBIDDEN, "workflow is not channel-scoped"))?;
+    let channel_id = workflow.channel_id.ok_or_else(|| {
+        api_error(StatusCode::FORBIDDEN, "workflow is not channel-scoped").into_response()
+    })?;
     let accessible = state
         .get_accessible_channel_ids_cached(tenant.community(), &pubkey_bytes)
         .await
-        .map_err(|error| internal_error(&format!("workflow channel access lookup: {error}")))?;
+        .map_err(|error| {
+            internal_error(&format!("workflow channel access lookup: {error}")).into_response()
+        })?;
     if !accessible.contains(&channel_id) {
-        return Err(api_error(
-            StatusCode::FORBIDDEN,
-            "workflow is not accessible",
-        ));
+        return Err(api_error(StatusCode::FORBIDDEN, "workflow is not accessible").into_response());
     }
 
     Ok(tenant)
@@ -123,25 +161,47 @@ pub async fn workflow_runs(
     Path(workflow_id): Path<Uuid>,
     headers: HeaderMap,
     RawQuery(raw_query): RawQuery,
-    Query(query): Query<RunsQuery>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Response {
+    workflow_runs_inner(state, workflow_id, headers, raw_query)
+        .await
+        .into_response()
+}
+
+async fn workflow_runs_inner(
+    state: Arc<AppState>,
+    workflow_id: Uuid,
+    headers: HeaderMap,
+    raw_query: Option<String>,
+) -> Result<Json<Value>, Response> {
+    // Admission first: NIP-98 + NIP-FI must fire before any application-level
+    // validation — including query-string parsing — so the denial contract wins
+    // over request-validation errors. [FI-TRACE-HTTP-INGRESS]
+    // Raw query is preserved here; parsing happens after admission.
+    let path = format!("/workflows/{workflow_id}/runs");
+    let tenant =
+        authorize_workflow_read(&state, &headers, &path, raw_query.as_deref(), workflow_id).await?;
+
+    // Parse query string after admission so malformed params (e.g. ?limit=abc)
+    // cannot 400 before the NIP-FI gate fires.  A parse failure after
+    // admission is a caller error (400); defaulting silently would change
+    // query semantics.  [FI-TRACE-HTTP-INGRESS]
+    let query: RunsQuery =
+        parse_query_or_400(raw_query.as_deref()).map_err(|e| e.into_response())?;
+
     if query.before.is_some() != query.before_id.is_some() {
         return Err(api_error(
             StatusCode::BAD_REQUEST,
             "before and before_id must be supplied together",
-        ));
+        )
+        .into_response());
     }
     let limit = query.limit.unwrap_or(DEFAULT_RUN_LIMIT);
     if !(1..=MAX_RUN_LIMIT).contains(&limit) {
-        return Err(api_error(
-            StatusCode::BAD_REQUEST,
-            "limit must be between 1 and 100",
-        ));
+        return Err(
+            api_error(StatusCode::BAD_REQUEST, "limit must be between 1 and 100").into_response(),
+        );
     }
 
-    let path = format!("/workflows/{workflow_id}/runs");
-    let tenant =
-        authorize_workflow_read(&state, &headers, &path, raw_query.as_deref(), workflow_id).await?;
     let mut rows = state
         .db
         .list_workflow_runs_page(
@@ -152,7 +212,7 @@ pub async fn workflow_runs(
             limit + 1,
         )
         .await
-        .map_err(|error| internal_error(&format!("list workflow runs: {error}")))?;
+        .map_err(|error| internal_error(&format!("list workflow runs: {error}")).into_response())?;
 
     let has_more = rows.len() > limit as usize;
     rows.truncate(limit as usize);
@@ -178,7 +238,7 @@ pub async fn workflow_runs(
 }
 
 /// Owner-only summary pagination. Cursor is the last returned workflow UUID.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ScheduledQuery {
     agent_pubkey: String,
@@ -191,8 +251,11 @@ pub async fn agent_scheduled_workflows(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     RawQuery(raw_query): RawQuery,
-    Query(query): Query<ScheduledQuery>,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Result<Json<Value>, Response> {
+    let (tenant, requester) =
+        authorize_read_identity(&state, &headers, "/workflows", raw_query.as_deref()).await?;
+    let query: ScheduledQuery =
+        parse_query_or_400(raw_query.as_deref()).map_err(IntoResponse::into_response)?;
     let limit = query.limit.unwrap_or(DEFAULT_RUN_LIMIT);
     if !(1..=MAX_RUN_LIMIT).contains(&limit) {
         return Err(api_error(
@@ -206,8 +269,6 @@ pub async fn agent_scheduled_workflows(
             "agent_pubkey must be a hex public key",
         )
     })?;
-    let (tenant, requester) =
-        authorize_read_identity(&state, &headers, "/workflows", raw_query.as_deref()).await?;
     let member = state
         .db
         .get_relay_member(tenant.community(), &hex::encode(&requester))
@@ -273,7 +334,7 @@ pub async fn agent_scheduled_workflows(
         } else {
             let mut tx = state
                 .db
-                .begin_transaction()
+                .begin_event_write_transaction()
                 .await
                 .map_err(|e| internal_error(&e.to_string()))?;
             if !buzz_db::workflow_manual::check_manual_authority(
@@ -378,7 +439,7 @@ async fn actual_run_json(
     state: &AppState,
     community: buzz_core::CommunityId,
     run: &buzz_db::workflow::WorkflowRunRecord,
-) -> Result<Value, (StatusCode, Json<Value>)> {
+) -> Result<Value, Response> {
     let actual = state
         .db
         .workflow_actual_run(community, run.id)
@@ -404,7 +465,18 @@ pub async fn run_approvals(
     State(state): State<Arc<AppState>>,
     Path((workflow_id, run_id)): Path<(Uuid, Uuid)>,
     headers: HeaderMap,
-) -> Result<Json<Value>, (StatusCode, Json<Value>)> {
+) -> Response {
+    run_approvals_inner(state, workflow_id, run_id, headers)
+        .await
+        .into_response()
+}
+
+async fn run_approvals_inner(
+    state: Arc<AppState>,
+    workflow_id: Uuid,
+    run_id: Uuid,
+    headers: HeaderMap,
+) -> Result<Json<Value>, Response> {
     let path = format!("/workflows/{workflow_id}/runs/{run_id}/approvals");
     let tenant = authorize_workflow_read(&state, &headers, &path, None, workflow_id).await?;
 
@@ -414,19 +486,20 @@ pub async fn run_approvals(
         .await
         .map_err(|error| match error {
             buzz_db::error::DbError::NotFound(_) => {
-                api_error(StatusCode::NOT_FOUND, "workflow run not found")
+                api_error(StatusCode::NOT_FOUND, "workflow run not found").into_response()
             }
-            other => internal_error(&format!("get workflow run for approval read: {other}")),
+            other => internal_error(&format!("get workflow run for approval read: {other}"))
+                .into_response(),
         })?;
     if run.workflow_id != workflow_id {
-        return Err(api_error(StatusCode::NOT_FOUND, "workflow run not found"));
+        return Err(api_error(StatusCode::NOT_FOUND, "workflow run not found").into_response());
     }
 
     let approvals = state
         .db
         .get_run_approvals(tenant.community(), workflow_id, run_id)
         .await
-        .map_err(|error| internal_error(&format!("list run approvals: {error}")))?;
+        .map_err(|error| internal_error(&format!("list run approvals: {error}")).into_response())?;
     Ok(Json(serde_json::json!({
         "approvals": approvals.iter().map(approval_json).collect::<Vec<_>>(),
     })))

@@ -28,6 +28,8 @@ pub mod invite;
 pub mod kind;
 /// Network utilities — SSRF-safe IP classification.
 pub mod network;
+/// NIP-10 thread-marker parsing — shared `root`/`reply` marker resolver.
+pub mod nip10;
 /// Agent observer frame helpers.
 pub mod observer;
 /// NIP-AB device pairing — crypto primitives, message types, and errors.
@@ -40,6 +42,8 @@ pub mod private_managed_agent;
 pub mod relay;
 /// Tenant identity — the server-resolved community key carried on scoped paths.
 pub mod tenant;
+/// NIP-CW thread-mode normalized newest-first window contract.
+pub mod thread_window;
 /// Schnorr signature and event ID verification.
 pub mod verification;
 
@@ -80,5 +84,7 @@ pub mod test_helpers {
     }
 }
 
+/// NIP-AR channel artifact envelope and limits.
+pub mod artifact;
 pub mod workflow_execution;
 pub mod workflow_recovery;

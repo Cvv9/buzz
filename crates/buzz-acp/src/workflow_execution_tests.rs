@@ -387,6 +387,11 @@ fn final_result_is_agent_signed_and_correlated_to_exact_grant() {
     event.verify().unwrap();
     assert_eq!(event.pubkey, agent.public_key());
     assert_eq!(event.kind.as_u16(), 9);
+    assert!(
+        buzz_core::workflow_execution::workflow_reply_tags(&event.tags)
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         tag(&event, "workflow-grant").unwrap(),
         grant.grant_id.to_string()
@@ -399,6 +404,88 @@ fn final_result_is_agent_signed_and_correlated_to_exact_grant() {
         tag(&event, "workflow-result").unwrap(),
         task.event.id.to_hex()
     );
+}
+
+#[test]
+fn event_workflow_results_preserve_signed_direct_and_nested_reply_markers() {
+    let (relay, agent, community, task, grant) = fixture();
+    let parent = "a".repeat(64);
+    let root = "b".repeat(64);
+    for ancestry in [
+        vec![Tag::parse(["e", &parent, "", "reply"]).unwrap()],
+        vec![
+            Tag::parse(["e", &root, "", "root"]).unwrap(),
+            Tag::parse(["e", &parent, "", "reply"]).unwrap(),
+        ],
+    ] {
+        let mut tags = task.event.tags.clone().to_vec();
+        tags.retain(|tag| tag.as_slice()[0] != "workflow-origin");
+        tags.push(Tag::parse(["workflow-origin", "event"]).unwrap());
+        tags.extend(ancestry.clone());
+        let signed = EventBuilder::new(task.event.kind, &task.event.content)
+            .tags(tags)
+            .sign_with_keys(&relay)
+            .unwrap();
+        let parsed =
+            Task::parse(signed, &relay.public_key(), &agent.public_key(), community).unwrap();
+        let result = result_event(&agent, &parsed, &grant, "Threaded result").unwrap();
+        result.verify().unwrap();
+        assert_eq!(
+            buzz_core::workflow_execution::workflow_reply_tags(&result.tags).unwrap(),
+            ancestry
+        );
+        assert_eq!(
+            tag(&result, "workflow-result").unwrap(),
+            parsed.event.id.to_hex()
+        );
+    }
+}
+
+#[test]
+fn workflow_tasks_reject_ambiguous_malformed_and_untrusted_reply_ancestry() {
+    let (relay, agent, community, task, _) = fixture();
+    let parent = "a".repeat(64);
+    for (origin, ancestry) in [
+        (
+            "event",
+            vec![Tag::parse(["e", "bad", "", "reply"]).unwrap()],
+        ),
+        (
+            "event",
+            vec![Tag::parse(["e", &parent, "", "root"]).unwrap()],
+        ),
+        (
+            "event",
+            vec![Tag::parse(["e", &parent, "", "reply"]).unwrap(); 2],
+        ),
+        (
+            "manual",
+            vec![Tag::parse(["e", &parent, "", "reply"]).unwrap()],
+        ),
+        (
+            "scheduled",
+            vec![Tag::parse(["e", &parent, "", "reply"]).unwrap()],
+        ),
+    ] {
+        let mut tags = task.event.tags.clone().to_vec();
+        tags.retain(|tag| tag.as_slice()[0] != "workflow-origin");
+        tags.push(Tag::parse(["workflow-origin", origin]).unwrap());
+        tags.extend(ancestry);
+        let signed = EventBuilder::new(task.event.kind, &task.event.content)
+            .tags(tags)
+            .sign_with_keys(&relay)
+            .unwrap();
+        assert!(Task::parse(signed, &relay.public_key(), &agent.public_key(), community).is_err());
+    }
+    let mut tags = task.event.tags.clone().to_vec();
+    tags.retain(|tag| tag.as_slice()[0] != "workflow-origin");
+    tags.push(Tag::parse(["workflow-origin", "event"]).unwrap());
+    tags.push(Tag::parse(["e", &parent, "", "reply"]).unwrap());
+    let forged = EventBuilder::new(task.event.kind, &task.event.content)
+        .tags(tags)
+        .sign_with_keys(&agent)
+        .unwrap();
+    assert!(Task::parse(forged, &relay.public_key(), &agent.public_key(), community).is_err());
 }
 
 async fn receipt_peer(

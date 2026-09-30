@@ -146,6 +146,77 @@ pub(crate) async fn authorized(
         .bind(community.as_uuid()).bind(run).fetch_one(&mut **tx).await.map_err(Into::into)
 }
 
+/// Validate signed task ancestry against the destination's current parent/root.
+/// The ordinary ingest path validates the same links again when storing a result.
+async fn checked_workflow_reply_tags(
+    tx: &mut Transaction<'_, Postgres>,
+    community: CommunityId,
+    channel: Uuid,
+    event: &Event,
+) -> Result<Vec<Tag>> {
+    let tags = buzz_core::workflow_execution::workflow_reply_tags(&event.tags)
+        .map_err(|reason| DbError::AccessDenied(reason.into()))?;
+    let Some((root, parent)) = buzz_core::nip10::parse_thread_markers(&event.tags).resolve() else {
+        return Ok(tags);
+    };
+    let parent = hex::decode(parent).map_err(invalid)?;
+    let root = hex::decode(root).map_err(invalid)?;
+    let row = sqlx::query(
+        "SELECT e.channel_id,e.tags,m.channel_id AS metadata_channel,m.root_event_id,m.depth
+         FROM events e LEFT JOIN thread_metadata m
+           ON m.community_id=e.community_id AND m.event_id=e.id AND m.event_created_at=e.created_at
+         WHERE e.community_id=$1 AND e.id=$2 AND e.deleted_at IS NULL FOR SHARE OF e",
+    )
+    .bind(community.as_uuid())
+    .bind(&parent)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or_else(|| DbError::AccessDenied("workflow reply parent not found".into()))?;
+    if row.try_get::<Option<Uuid>, _>("channel_id")? != Some(channel) {
+        return Err(DbError::AccessDenied(
+            "workflow reply parent is outside the destination".into(),
+        ));
+    }
+    let (expected_root, depth) = if let Some(depth) = row.try_get::<Option<i32>, _>("depth")? {
+        if row.try_get::<Option<Uuid>, _>("metadata_channel")? != Some(channel) {
+            return Err(DbError::AccessDenied(
+                "workflow reply metadata is outside the destination".into(),
+            ));
+        }
+        (
+            row.try_get::<Option<Vec<u8>>, _>("root_event_id")?
+                .unwrap_or_else(|| parent.clone()),
+            depth + 1,
+        )
+    } else {
+        // Legacy parents without an index row use the shared NIP-10 semantics.
+        let parent_tags: Vec<Vec<String>> = serde_json::from_value(row.try_get("tags")?)?;
+        let expected = buzz_core::nip10::parse_thread_markers_from_parts(
+            parent_tags.iter().map(Vec::as_slice),
+        )
+        .resolve()
+        .map(|(root, _)| hex::decode(root).map_err(invalid))
+        .transpose()?
+        .unwrap_or_else(|| parent.clone());
+        let depth = if expected == parent { 1 } else { 2 };
+        (expected, depth)
+    };
+    if root != expected_root || depth > 100 {
+        return Err(DbError::AccessDenied(
+            "workflow reply root or depth does not match ancestry".into(),
+        ));
+    }
+    let root_channel: Option<Option<Uuid>> = sqlx::query_scalar(
+        "SELECT channel_id FROM events WHERE community_id=$1 AND id=$2 AND deleted_at IS NULL FOR SHARE",
+    ).bind(community.as_uuid()).bind(&root).fetch_optional(&mut **tx).await?;
+    if root_channel != Some(Some(channel)) {
+        return Err(DbError::AccessDenied(
+            "workflow reply root is outside the destination".into(),
+        ));
+    }
+    Ok(tags)
+}
+
 impl Db {
     /// Recognize even revoked/expired credentials globally, so they cannot fall
     /// through to ordinary member, public-relay, or another-tenant authorization.
@@ -164,7 +235,7 @@ impl Db {
         community: CommunityId,
         key: &[u8],
     ) -> Result<Option<WorkflowReadScope>> {
-        let mut tx = self.begin_transaction().await?;
+        let mut tx = self.begin_event_write_transaction().await?;
         self.deletion_store()
             .guard_transaction(&mut tx, community)
             .await?;
@@ -199,7 +270,7 @@ impl Db {
         {
             return Ok(ControlReceipt::denied("invalid_recovery_claim"));
         }
-        let mut tx = self.begin_transaction().await?;
+        let mut tx = self.begin_event_write_transaction().await?;
         self.deletion_store()
             .guard_transaction(&mut tx, community)
             .await?;
@@ -835,7 +906,7 @@ impl Db {
             .bind(community.as_uuid()).bind(grant).bind(event.pubkey.as_bytes().as_slice()).fetch_optional(&self.pool).await?;
         let Some(row) = row else { return Ok(false) };
         let run: Uuid = row.try_get("run_id")?;
-        let mut tx = self.begin_transaction().await?;
+        let mut tx = self.begin_event_write_transaction().await?;
         if !authorized(&mut tx, community, run).await? {
             return Ok(false);
         }
@@ -854,6 +925,32 @@ impl Db {
                 .as_deref()
                 != Some("running")
         {
+            return Ok(false);
+        }
+        let task_event_id = row.try_get::<Option<Vec<u8>>, _>("task_event_id")?;
+        let Some(task_event_id) = task_event_id else {
+            return Ok(false);
+        };
+        let task: Option<serde_json::Value> = sqlx::query_scalar(
+            "SELECT signed_event FROM workflow_run_outbox WHERE community_id=$1 AND run_id=$2 AND event_id=$3",
+        ).bind(community.as_uuid()).bind(run).bind(&task_event_id).fetch_optional(&mut *tx).await?;
+        let Some(task) = task else { return Ok(false) };
+        let task: Event = serde_json::from_value(task)?;
+        let expected_reply =
+            buzz_core::workflow_execution::workflow_reply_tags(&task.tags).map_err(invalid)?;
+        let result_reply = match checked_workflow_reply_tags(
+            &mut tx,
+            community,
+            row.try_get("channel_id")?,
+            event,
+        )
+        .await
+        {
+            Ok(tags) => tags,
+            Err(DbError::AccessDenied(_)) => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        if result_reply != expected_reply {
             return Ok(false);
         }
         Ok(event.kind == Kind::Custom(9)
@@ -902,7 +999,7 @@ impl Db {
         legacy: &Event,
         keys: &Keys,
     ) -> Result<Option<String>> {
-        let mut tx = self.begin_transaction().await?;
+        let mut tx = self.begin_event_write_transaction().await?;
         self.deletion_store()
             .guard_transaction(&mut tx, community)
             .await?;
@@ -918,6 +1015,20 @@ impl Db {
             != Some(&row.try_get::<Vec<u8>, _>("current_hash")?)
         {
             return Err(DbError::AccessDenied("workflow definition changed".into()));
+        }
+        if legacy.kind.as_u16() as u32 != buzz_core::kind::KIND_WORKFLOW_AGENT_TASK
+            || legacy.pubkey != keys.public_key()
+            || legacy.verify().is_err()
+        {
+            return Err(DbError::AccessDenied(
+                "untrusted workflow task signer".into(),
+            ));
+        }
+        let reply_tags = checked_workflow_reply_tags(&mut tx, community, channel, legacy).await?;
+        if origin != "event" && !reply_tags.is_empty() {
+            return Err(DbError::AccessDenied(
+                "non-event workflow task cannot reply in a thread".into(),
+            ));
         }
         let mut supervised = 0;
         let mut ready_targets = std::collections::HashSet::new();
@@ -973,10 +1084,11 @@ impl Db {
             if ready {
                 values.push(("workflow-protocol", "1".into()));
             }
-            let tags = values
+            let mut tags = values
                 .into_iter()
                 .map(|(k, v)| Tag::parse([k, &v]).map_err(invalid))
                 .collect::<Result<Vec<_>>>()?;
+            tags.extend(reply_tags.iter().cloned());
             let event = EventBuilder::new(
                 Kind::Custom(buzz_core::kind::KIND_WORKFLOW_AGENT_TASK as u16),
                 &legacy.content,
@@ -1007,7 +1119,7 @@ impl Db {
         let runs:Vec<(Uuid,Uuid)>=sqlx::query_as("SELECT community_id,id FROM workflow_runs WHERE execution_state IN ('queued','running','stalled') ORDER BY community_id,id").fetch_all(&self.pool).await?;
         for (community, run) in runs {
             let community = CommunityId::from_uuid(community);
-            let mut tx = self.begin_transaction().await?;
+            let mut tx = self.begin_event_write_transaction().await?;
             if self
                 .deletion_store()
                 .guard_transaction(&mut tx, community)

@@ -62,7 +62,73 @@ async function dropChannelOutsideSidebar(
   await page.mouse.move(viewport.width - 24, nearBox.y + nearBox.height / 2, {
     steps: 20,
   });
-  await page.mouse.up();
+}
+
+async function dragOver(page: Page, source: Locator, target: Locator) {
+  const from = await source.boundingBox();
+  if (!from) throw new Error("drag source not laid out");
+  const pointer = {
+    x: from.x + from.width / 2,
+    y: from.y + from.height / 2,
+  };
+  await source.dispatchEvent("pointerdown", {
+    button: 0,
+    buttons: 1,
+    clientX: pointer.x,
+    clientY: pointer.y,
+    isPrimary: true,
+    pointerId: 1,
+    pointerType: "mouse",
+  });
+  await page.evaluate(({ x, y }) => {
+    document.dispatchEvent(
+      new PointerEvent("pointermove", {
+        bubbles: true,
+        buttons: 1,
+        clientX: x,
+        clientY: y + 8,
+        isPrimary: true,
+        pointerId: 1,
+        pointerType: "mouse",
+      }),
+    );
+  }, pointer);
+  await expect(page.getByTestId("sidebar-section-drag-overlay")).toBeVisible();
+
+  const to = await target.boundingBox();
+  if (!to) throw new Error("drag target not laid out");
+  const destination = {
+    x: to.x + to.width / 2,
+    y: to.y + to.height - 2,
+  };
+  await page.evaluate(async ({ x, y }) => {
+    document.dispatchEvent(
+      new PointerEvent("pointermove", {
+        bubbles: true,
+        buttons: 1,
+        clientX: x,
+        clientY: y,
+        isPrimary: true,
+        pointerId: 1,
+        pointerType: "mouse",
+      }),
+    );
+    await new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    });
+    document.dispatchEvent(
+      new PointerEvent("pointerup", {
+        bubbles: true,
+        button: 0,
+        buttons: 0,
+        clientX: x,
+        clientY: y,
+        isPrimary: true,
+        pointerId: 1,
+        pointerType: "mouse",
+      }),
+    );
+  }, destination);
 }
 
 test.describe("list virtualization", () => {
@@ -182,6 +248,10 @@ test.describe("list virtualization", () => {
     const headers = page.locator('[aria-roledescription="sortable"]');
     const topHeader = headers.filter({ hasText: "Priority" });
     const bottomHeader = headers.filter({ hasText: "Archive" });
+    const topHeaderButton = topHeader.getByRole("button", {
+      name: "Priority",
+      exact: true,
+    });
     await expect(topHeader).toBeVisible();
     await expect(bottomHeader).toBeVisible();
     await expect(headers).toHaveCount(2);
@@ -196,15 +266,41 @@ test.describe("list virtualization", () => {
       );
     expect(await sectionOrder()).toEqual(["Priority", "Archive"]);
 
-    // Keyboard sorting drives the same DnD context as pointer dragging, while
-    // also proving custom sections are operable without a mouse.
-    await moveSectionDown(page, topHeader);
+    // Drag "Priority" past "Archive" — onDragEnd commits arrayMove and persists
+    // the new order. The drop must land for the order to flip.
+    await dragOver(page, topHeaderButton, bottomHeader);
 
     // The drop landed: order flipped. A no-op drag would leave it unchanged.
     await expect.poll(sectionOrder).toEqual(["Archive", "Priority"]);
     // Both section rows stayed committed in the DOM across the reorder — the
     // content-visibility invariant the divergence rests on (no unmount).
     await expect(headers).toHaveCount(2);
+  });
+
+  test("06b — custom-section keyboard sorting remains operable", async ({
+    page,
+  }) => {
+    await seedChannelSections(page);
+    await installMockBridge(page);
+    await page.goto("/");
+    await page.getByTestId("channel-general").click();
+    await expect(page.getByTestId("chat-title")).toHaveText("general");
+
+    const headers = page.locator('[aria-roledescription="sortable"]');
+    const topHeader = headers.filter({ hasText: "Priority" });
+    await expect(headers).toHaveCount(2);
+    await moveSectionDown(page, topHeader);
+    await expect
+      .poll(() =>
+        headers.evaluateAll((rows) =>
+          rows.map((row) =>
+            row.textContent?.trim().startsWith("Priority")
+              ? "Priority"
+              : "Archive",
+          ),
+        ),
+      )
+      .toEqual(["Archive", "Priority"]);
   });
 
   test("07 — pointer channel drag outside droppables preserves assignments", async ({

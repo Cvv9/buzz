@@ -232,7 +232,7 @@ test("failed initial relay dial retries automatically", async ({ page }) => {
           // The app installs the bridge during its async bootstrap. Returning
           // undefined lets expect.poll wait for that setup instead of turning
           // a healthy automatic reconnect into a first-attempt race.
-          return getState?.();
+          return getState?.() ?? null;
         }),
       { timeout: 10_000 },
     )
@@ -371,9 +371,16 @@ test("service restart close resets accumulated backoff", async ({ page }) => {
     websocketConnectErrors: ["down 1", "down 2", "down 3"],
   });
   await page.goto("/");
-  await expect(page.getByTestId("channel-general")).toBeVisible({
-    timeout: 15_000,
-  });
+  // Three rejected dials put the session deep in its backoff loop before it
+  // connects; wait for that connect rather than for the Tauri-backed channel
+  // list, which paints long before the websocket is up.
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() => window.__BUZZ_E2E_GET_RELAY_CONNECTION_STATE__?.()),
+      { timeout: 15_000 },
+    )
+    .toBe("connected");
 
   const startedAt = Date.now();
   await restartMockWebsockets(page);

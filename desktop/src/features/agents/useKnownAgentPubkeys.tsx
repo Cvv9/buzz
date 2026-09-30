@@ -6,10 +6,25 @@ import {
 } from "@/features/agents/hooks";
 import { mergeKnownAgentPubkeys } from "@/features/agents/knownAgentPubkeys";
 import type { RelayAgent } from "@/shared/api/types";
-import { useStableSet } from "@/shared/hooks/useStableReference";
+import { useStableMap, useStableSet } from "@/shared/hooks/useStableReference";
+import { useIdentityQuery } from "@/shared/api/hooks";
+import { normalizePubkey } from "@/shared/lib/pubkey";
+import { isAgentDirectoryReady } from "./lib/agentAutocompleteEligibility";
+import { isOwnedAgentNotManagedOnDevice } from "./lib/otherSetupAgent";
 
 const EMPTY_KNOWN_AGENT_PUBKEYS: ReadonlySet<string> = new Set();
 const EMPTY_RELAY_AGENTS: readonly RelayAgent[] = [];
+
+const AgentManagementContext = React.createContext<{
+  currentPubkey?: string;
+  localInventoryReady: boolean;
+  localPubkeys: ReadonlySet<string>;
+  relayOwners: ReadonlyMap<string, string | null>;
+}>({
+  localInventoryReady: false,
+  localPubkeys: new Set(),
+  relayOwners: new Map(),
+});
 
 const KnownAgentPubkeysContext = React.createContext<ReadonlySet<string>>(
   EMPTY_KNOWN_AGENT_PUBKEYS,
@@ -43,8 +58,36 @@ export function KnownAgentPubkeysProvider({
 }: {
   children: React.ReactNode;
 }) {
-  const managedAgents = useManagedAgentsQuery().data;
-  const relayAgents = useRelayAgentsQuery().data ?? EMPTY_RELAY_AGENTS;
+  const managedQuery = useManagedAgentsQuery();
+  const relayQuery = useRelayAgentsQuery();
+  const currentPubkey = useIdentityQuery().data?.pubkey;
+  const managedAgents = managedQuery.data;
+  const relayAgents = relayQuery.data ?? EMPTY_RELAY_AGENTS;
+  const localPubkeys = useStableSet(
+    new Set(
+      (managedAgents ?? []).map((agent) => normalizePubkey(agent.pubkey)),
+    ),
+  );
+  const relayOwners = useStableMap(
+    new Map(
+      isAgentDirectoryReady(relayQuery)
+        ? (relayAgents ?? []).map((agent) => [
+            normalizePubkey(agent.pubkey),
+            agent.ownerPubkey ?? null,
+          ])
+        : [],
+    ),
+  );
+  const localInventoryReady = isAgentDirectoryReady(managedQuery);
+  const management = React.useMemo(
+    () => ({
+      currentPubkey,
+      localInventoryReady,
+      localPubkeys,
+      relayOwners,
+    }),
+    [currentPubkey, localInventoryReady, localPubkeys, relayOwners],
+  );
 
   const merged = React.useMemo(
     () => mergeKnownAgentPubkeys(managedAgents, relayAgents),
@@ -54,9 +97,11 @@ export function KnownAgentPubkeysProvider({
 
   return (
     <KnownAgentPubkeysContext.Provider value={stable}>
-      <RelayAgentDirectoryContext.Provider value={relayAgents}>
-        {children}
-      </RelayAgentDirectoryContext.Provider>
+      <AgentManagementContext.Provider value={management}>
+        <RelayAgentDirectoryContext.Provider value={relayAgents}>
+          {children}
+        </RelayAgentDirectoryContext.Provider>
+      </AgentManagementContext.Provider>
     </KnownAgentPubkeysContext.Provider>
   );
 }
@@ -92,4 +137,22 @@ export function useKnownAgentPubkeys(): ReadonlySet<string> {
 /** Current hosted-agent directory records from the provider's shared query. */
 export function useRelayAgentDirectory(): readonly RelayAgent[] {
   return React.useContext(RelayAgentDirectoryContext);
+}
+
+/** Shared provenance without per-row query observers; exact keys, never personas. */
+export function useIsOtherSetupAgent(
+  pubkey?: string | null,
+  profileOwnerPubkey?: string | null,
+): boolean {
+  const state = React.useContext(AgentManagementContext);
+  const key = normalizePubkey(pubkey ?? "");
+  return (
+    Boolean(key) &&
+    isOwnedAgentNotManagedOnDevice({
+      currentPubkey: state.currentPubkey,
+      ownerPubkey: profileOwnerPubkey ?? state.relayOwners.get(key),
+      localInventoryReady: state.localInventoryReady,
+      isLocallyManaged: state.localPubkeys.has(key),
+    })
+  );
 }

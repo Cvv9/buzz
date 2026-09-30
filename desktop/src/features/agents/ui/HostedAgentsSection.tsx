@@ -182,7 +182,9 @@ function HostedAgentGroup({
                           : "Available to everyone"}
                     </span>
                   </span>
-                  <PresenceBadge status={agent.status} />
+                  {agent.status === "unknown" ? null : (
+                    <PresenceBadge status={agent.status} />
+                  )}
                 </button>
               );
             })}

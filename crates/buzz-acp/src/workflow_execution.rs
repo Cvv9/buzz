@@ -82,6 +82,11 @@ impl Task {
         if !matches!(origin.as_str(), "manual" | "scheduled" | "event") {
             bail!("invalid workflow origin");
         }
+        let reply_tags = buzz_core::workflow_execution::workflow_reply_tags(&event.tags)
+            .map_err(anyhow::Error::msg)?;
+        if origin != "event" && !reply_tags.is_empty() {
+            bail!("non-event workflow task cannot reply in a thread");
+        }
         let deadline = optional_tag(&event, "workflow-deadline")?
             .map(|value| value.parse())
             .transpose()?;
@@ -1422,8 +1427,13 @@ fn result_event(
         .into_iter()
         .map(|(key, value)| Tag::parse([key, &value]))
         .collect();
+    let mut tags = tags?;
+    tags.extend(
+        buzz_core::workflow_execution::workflow_reply_tags(&task.event.tags)
+            .map_err(anyhow::Error::msg)?,
+    );
     Ok(EventBuilder::new(Kind::from(9), output)
-        .tags(tags?)
+        .tags(tags)
         .sign_with_keys(keys)?)
 }
 
