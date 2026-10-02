@@ -10,7 +10,7 @@ export function useAppShellAgentLifecycle(
 ) {
   usePersonaSync(currentPubkey, relayUrl);
   useAgentsDataRefresh();
-  useAutoRestartPolicy();
+  useAutoRestartPolicy(relayUrl);
 
   // Observer ingestion is intentionally not identity-gated: managed agents
   // are covered during startup, then relay agents join once identity resolves.

@@ -316,17 +316,30 @@ pub async fn resolve_admin_principal(
     state: &AppState,
     pubkey: [u8; 32],
 ) -> Result<AdminPrincipal, ApiError> {
+    lookup_admin_principal(state, pubkey)
+        .await?
+        .ok_or_else(ApiError::forbidden)
+}
+
+/// Effective staff grant for `pubkey`, same precedence as
+/// [`resolve_admin_principal`]. `Ok(None)` means "not staff"; a roster lookup
+/// failure is an `Err`, so callers fail closed instead of treating it as
+/// "not staff".
+pub async fn lookup_admin_principal(
+    state: &AppState,
+    pubkey: [u8; 32],
+) -> Result<Option<AdminPrincipal>, ApiError> {
     let pubkey_hex = hex::encode(pubkey);
     let cfg = &state.config;
 
     // Both operator rosters grant immutable Operator access; owner fallback
     // applies only when their union is empty. Config always outranks DB.
     if let Some(source) = configured_admin_source(cfg, &pubkey_hex) {
-        return Ok(AdminPrincipal {
+        return Ok(Some(AdminPrincipal {
             pubkey,
             role: AdminRole::Operator,
             source,
-        });
+        }));
     }
 
     // 3. DB lookup — config-backed Operators are already returned above, so
@@ -349,15 +362,15 @@ pub async fn resolve_admin_principal(
                 return Err(ApiError::forbidden());
             }
         };
-        return Ok(AdminPrincipal {
+        return Ok(Some(AdminPrincipal {
             pubkey,
             role,
             source: AdminSource::Db,
-        });
+        }));
     }
 
     // 4. No grant found.
-    Err(ApiError::forbidden())
+    Ok(None)
 }
 
 /// Require that this request resolved a principal (nip98 mode) and return it.

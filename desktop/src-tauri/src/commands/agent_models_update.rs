@@ -145,6 +145,9 @@ pub async fn update_managed_agent(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<UpdateManagedAgentResponse, String> {
+    // Captured before Phase 1 stops the runtime for an access-policy change: a
+    // community removed while this update runs refuses the restart.
+    let admission = crate::managed_agents::AdmissionSnapshot::capture(&state);
     // Phase 1: local save (synchronous, under lock)
     let (mut summary, sync_params, rollback, access_policy_changed, access_restart_relays) = {
         let _store_guard = state
@@ -441,6 +444,7 @@ pub async fn update_managed_agent(
                     &state,
                     &summary.pubkey,
                     &access_restart_relays,
+                    &admission,
                 )
                 .await
                 {
@@ -467,6 +471,7 @@ pub async fn update_managed_agent(
             &state,
             &summary.pubkey,
             &access_restart_relays,
+            &admission,
         )
         .await
         .map_err(|error| {

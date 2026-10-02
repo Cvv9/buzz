@@ -720,7 +720,7 @@ mod postgres_tests {
         let mut migrations: Vec<_> = MIGRATOR.iter().collect();
         migrations.sort_by_key(|migration| migration.version);
 
-        assert_eq!(migrations.len(), 61);
+        assert_eq!(migrations.len(), 63);
         assert_eq!(migrations[38].version, 39);
         assert_eq!(&*migrations[35].description, "workflow manual runs");
         assert_eq!(migrations[56].version, 57);
@@ -728,6 +728,8 @@ mod postgres_tests {
         assert_eq!(migrations[58].version, 59);
         assert_eq!(migrations[59].version, 60);
         assert_eq!(migrations[60].version, 61);
+        assert_eq!(migrations[61].version, 62);
+        assert_eq!(migrations[62].version, 63);
         assert!(migrations[56]
             .sql
             .as_str()
@@ -741,6 +743,14 @@ mod postgres_tests {
             .sql
             .as_str()
             .contains("community_deletion_requests_owner_preparable"));
+        assert!(migrations[61]
+            .sql
+            .as_str()
+            .contains("community_deletion_requests_owner_quota_reservations"));
+        assert!(migrations[62]
+            .sql
+            .as_str()
+            .contains("idx_relay_admin_actions_direct_request"));
         assert_eq!(migrations[0].version, 1);
         assert_eq!(&*migrations[0].description, "initial schema");
         assert!(migrations[0]
@@ -1838,6 +1848,32 @@ mod postgres_tests {
             assert!(sql.contains("community_deletion_requests_owner_preparable"));
             assert!(sql.contains("request_origin = 'owner'"));
             assert!(sql.contains("stage = 'submitted'"));
+        }
+        assert!(migration.contains("set local lock_timeout = '5s'"));
+    }
+
+    #[test]
+    fn owner_deletion_quota_reservation_index_matches_desired_schema() {
+        let migration = MIGRATOR
+            .iter()
+            .find(|migration| migration.version == 62)
+            .expect("embedded migration 0062")
+            .sql
+            .as_ref()
+            .to_ascii_lowercase();
+        let workspace_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("workspace root");
+        let schema = std::fs::read_to_string(workspace_root.join("schema/schema.sql"))
+            .expect("read schema/schema.sql")
+            .to_ascii_lowercase();
+
+        for sql in [&migration, &schema] {
+            assert!(sql.contains("community_deletion_requests_owner_quota_reservations"));
+            assert!(sql.contains("request_origin = 'owner'"));
+            assert!(sql.contains("stage <> 'aborted'"));
+            assert!(sql.contains("include (community_id, completed_at)"));
         }
         assert!(migration.contains("set local lock_timeout = '5s'"));
     }
@@ -3058,5 +3094,37 @@ mod postgres_tests {
             .validate_catalog()
             .await
             .expect("deletion catalog validates after migration 0044");
+    }
+
+    /// Migration 0063's `relay_admin_actions_direct_shape` rejects a direct
+    /// timeout carrying only one of duration and expiry on the migrated
+    /// schema. The desired-state (pgschema + reconcile) path is covered by
+    /// `direct_timeout_shape_check_holds_on_desired_state_schema` in buzz-relay.
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn migration_0063_rejects_half_filled_direct_timeout() {
+        let pool = connect_test_pool().await;
+        reset_public_schema(&pool).await;
+        MIGRATOR
+            .run_to(63, &pool)
+            .await
+            .expect("apply migrations 1-63");
+        for (secs, until) in [(Some(60i64), None), (None, Some(chrono::Utc::now()))] {
+            let err = sqlx::query(
+                "INSERT INTO relay_admin_actions (report_community_id, request_id, actor_pubkey, \
+                 actor_role, action, timeout_secs, timeout_until, enforcement_target_pubkey) \
+                 VALUES (gen_random_uuid(), gen_random_uuid(), $1, 'operator', 'timeout', $2, $3, $1)",
+            )
+            .bind([9u8; 32].as_slice())
+            .bind(secs)
+            .bind(until)
+            .execute(&pool)
+            .await
+            .expect_err("half-filled timeout must violate the CHECK");
+            assert!(
+                err.to_string().contains("relay_admin_actions_direct_shape"),
+                "{err}"
+            );
+        }
     }
 }

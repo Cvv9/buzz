@@ -160,7 +160,8 @@ export function AppShell() {
     [location.pathname],
   );
   const {
-    removeCommunity: handleRemoveCommunity,
+    leaveAndRemoveCommunity: handleLeaveCommunity,
+    removeCommunityFromDevice: removeFromDevice,
     switchCommunity: handleSwitchCommunity,
   } = useCommunityNavigationTransitions({
     communities: communitiesHook,
@@ -378,7 +379,6 @@ export function AppShell() {
     setContextParentResolver,
     participatedRootIds,
     authoredRootIds,
-    mentionedRootIds,
     recordThreadInteraction,
     threadActivityItems,
     mutedRootIds,
@@ -467,15 +467,8 @@ export function AppShell() {
       !mutedRootIds.has(rootId) &&
       (followedRootIds.has(rootId) ||
         participatedRootIds.has(rootId) ||
-        authoredRootIds.has(rootId) ||
-        mentionedRootIds.has(rootId)),
-    [
-      followedRootIds,
-      mutedRootIds,
-      participatedRootIds,
-      authoredRootIds,
-      mentionedRootIds,
-    ],
+        authoredRootIds.has(rootId)),
+    [followedRootIds, mutedRootIds, participatedRootIds, authoredRootIds],
   );
 
   const handleFollowThread = React.useCallback(
@@ -850,7 +843,8 @@ export function AppShell() {
                           onOpenAddCommunity={addCommunityDialog.openDialog}
                           onSendFeedback={() => setIsSendFeedbackOpen(true)}
                           onUpdateCommunity={communitiesHook.updateCommunity}
-                          onRemoveCommunity={handleRemoveCommunity}
+                          onLeaveCommunity={handleLeaveCommunity}
+                          onRemoveCommunityFromDevice={removeFromDevice}
                           onSwitchCommunity={handleSwitchCommunity}
                           onCreateAgent={() => requestOpenCreateAgent()}
                           selfPresenceStatus={presenceSession.currentStatus}

@@ -1,4 +1,5 @@
 import * as React from "react";
+import { isRelayRemovedError } from "@/features/agents/managedAgentRelayCleanup";
 import { toast } from "sonner";
 
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
@@ -481,7 +482,9 @@ export function UserProfilePanel({
 
     try {
       const created = await createManagedAgentForPersona(resolvedPersona);
-      if (created.spawnError) {
+      if (isRelayRemovedError(created.spawnError)) {
+        // Its community was removed meanwhile: created, not started, no error.
+      } else if (created.spawnError) {
         toast.error(created.spawnError);
       } else {
         toast.success(`Started ${created.agent.name}.`);

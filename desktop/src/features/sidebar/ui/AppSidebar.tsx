@@ -153,7 +153,8 @@ export function AppSidebar({
   onBrowseChannels,
   onOpenDm,
   onUpdateCommunity,
-  onRemoveCommunity,
+  onLeaveCommunity,
+  onRemoveCommunityFromDevice,
   onCreateAgent,
   onSelectAgents,
   onSelectAlerts,
@@ -1032,7 +1033,8 @@ export function AppSidebar({
                   onOpenAddCommunity={onOpenAddCommunity}
                   onOpenSettings={onSelectSettings}
                   onSendFeedback={onSendFeedback}
-                  onRemoveCommunity={onRemoveCommunity}
+                  onLeaveCommunity={onLeaveCommunity}
+                  onRemoveCommunityFromDevice={onRemoveCommunityFromDevice}
                   onSetPresenceStatus={onSetPresenceStatus}
                   onSetUserStatus={onSetUserStatus}
                   onClearUserStatus={onClearUserStatus}
