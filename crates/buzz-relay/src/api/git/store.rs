@@ -189,6 +189,57 @@ enum ConditionalPutResult {
     PreconditionFailed,
 }
 
+/// Transport telemetry contains only fixed labels and boolean predicates.
+/// Never retain or format an error: it may contain URLs, bodies, or credentials.
+struct TransportErrorDiagnostics {
+    kind: &'static str,
+    timeout: bool,
+    connect: bool,
+    body: bool,
+    request: bool,
+    decode: bool,
+    io_kind: &'static str,
+}
+
+fn transport_error_diagnostics(error: &S3Error) -> TransportErrorDiagnostics {
+    let mut diagnostics = TransportErrorDiagnostics {
+        kind: "non_transport",
+        timeout: false,
+        connect: false,
+        body: false,
+        request: false,
+        decode: false,
+        io_kind: "none",
+    };
+    match error {
+        S3Error::Reqwest(error) => {
+            diagnostics.kind = "reqwest";
+            diagnostics.timeout = error.is_timeout();
+            diagnostics.connect = error.is_connect();
+            diagnostics.body = error.is_body();
+            diagnostics.request = error.is_request();
+            diagnostics.decode = error.is_decode();
+        }
+        S3Error::Http(_) => diagnostics.kind = "http",
+        S3Error::Io(error) => {
+            diagnostics.kind = "io";
+            diagnostics.io_kind = match error.kind() {
+                std::io::ErrorKind::ConnectionReset => "connection_reset",
+                std::io::ErrorKind::ConnectionAborted => "connection_aborted",
+                std::io::ErrorKind::BrokenPipe => "broken_pipe",
+                std::io::ErrorKind::TimedOut => "timed_out",
+                std::io::ErrorKind::UnexpectedEof => "unexpected_eof",
+                std::io::ErrorKind::NotConnected => "not_connected",
+                std::io::ErrorKind::WouldBlock => "would_block",
+                std::io::ErrorKind::Interrupted => "interrupted",
+                _ => "other",
+            };
+        }
+        _ => {}
+    }
+    diagnostics
+}
+
 impl GitStore {
     /// Build a client against an S3-compatible endpoint (e.g. MinIO).
     ///
@@ -733,13 +784,21 @@ impl GitStore {
                         classified += 1;
                     }
                     Err(StoreError::Backend(
-                        S3Error::Reqwest(_) | S3Error::Http(_) | S3Error::Io(_),
+                        error @ (S3Error::Reqwest(_) | S3Error::Http(_) | S3Error::Io(_)),
                     )) => {
                         transport_drops += 1;
+                        let diagnostics = transport_error_diagnostics(&error);
                         tracing::warn!(
                             phase = "if_match_race",
                             round,
                             racer = i,
+                            transport_kind = diagnostics.kind,
+                            transport_timeout = diagnostics.timeout,
+                            transport_connect = diagnostics.connect,
+                            transport_body = diagnostics.body,
+                            transport_request = diagnostics.request,
+                            transport_decode = diagnostics.decode,
+                            transport_io_kind = diagnostics.io_kind,
                             "transport drop (pre-classification: socket/send failure)"
                         );
                     }
@@ -828,13 +887,21 @@ impl GitStore {
                         .into())
                     }
                     Err(StoreError::Backend(
-                        S3Error::Reqwest(_) | S3Error::Http(_) | S3Error::Io(_),
+                        error @ (S3Error::Reqwest(_) | S3Error::Http(_) | S3Error::Io(_)),
                     )) => {
                         transport_drops += 1;
+                        let diagnostics = transport_error_diagnostics(&error);
                         tracing::warn!(
                             phase = "if_none_match_race",
                             round,
                             racer = i,
+                            transport_kind = diagnostics.kind,
+                            transport_timeout = diagnostics.timeout,
+                            transport_connect = diagnostics.connect,
+                            transport_body = diagnostics.body,
+                            transport_request = diagnostics.request,
+                            transport_decode = diagnostics.decode,
+                            transport_io_kind = diagnostics.io_kind,
                             "transport drop (pre-classification: socket/send failure)"
                         );
                     }
@@ -969,6 +1036,74 @@ impl GitStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transport_diagnostics_exclude_secret_bearing_error_details() {
+        let secret = "sentinel-password-private-token";
+        let io = S3Error::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            secret,
+        ));
+        let http = S3Error::Http(
+            axum::http::Request::builder()
+                .header("X-Test", format!("{secret}\r\n"))
+                .body(())
+                .unwrap_err(),
+        );
+        let reqwest = S3Error::Reqwest(
+            GitStore::new(
+                "http://localhost:9000",
+                "test",
+                "test",
+                "buzz-git",
+                "us-east-1",
+                buzz_media::config::S3AddressingStyle::Path,
+            )
+            .unwrap()
+            .bucket
+            .http_client()
+            .get(format!(
+                "http://user:{secret}@example.invalid:invalid-port/private"
+            ))
+            .build()
+            .unwrap_err(),
+        );
+        let body = S3Error::HttpFailWithBody(412, secret.into());
+        for (error, expected) in [
+            (io, "io"),
+            (http, "http"),
+            (reqwest, "reqwest"),
+            (body, "non_transport"),
+        ] {
+            let diagnostics = transport_error_diagnostics(&error);
+            assert_eq!(diagnostics.kind, expected);
+            assert!(!diagnostics.kind.contains(secret));
+            assert!(!diagnostics.io_kind.contains(secret));
+            assert!(!diagnostics.kind.contains("http://"));
+            assert!(!diagnostics.io_kind.contains("http://"));
+        }
+    }
+
+    #[test]
+    fn transport_diagnostics_use_fixed_io_kind_labels() {
+        for (kind, label) in [
+            (std::io::ErrorKind::ConnectionReset, "connection_reset"),
+            (std::io::ErrorKind::TimedOut, "timed_out"),
+            (std::io::ErrorKind::UnexpectedEof, "unexpected_eof"),
+            (std::io::ErrorKind::Other, "other"),
+        ] {
+            let diagnostics = transport_error_diagnostics(&S3Error::Io(std::io::Error::new(
+                kind,
+                "sentinel-password-private-token",
+            )));
+            assert_eq!(diagnostics.io_kind, label);
+            assert!(!diagnostics.timeout);
+            assert!(!diagnostics.connect);
+            assert!(!diagnostics.body);
+            assert!(!diagnostics.request);
+            assert!(!diagnostics.decode);
+        }
+    }
 
     #[test]
     fn idx_key_uses_pack_digest_namespace() {
