@@ -263,7 +263,7 @@ class _CreateChannelFieldShell extends StatelessWidget {
       decoration: BoxDecoration(
         color: context.colors.primaryContainer.withValues(alpha: 0.55),
         border: Border.all(color: context.colors.outlineVariant),
-        borderRadius: BorderRadius.circular(Radii.lg),
+        borderRadius: BorderRadius.circular(Radii.container),
       ),
       child: child,
     );
@@ -292,12 +292,13 @@ class _CreateChannelRadioGroup<T> extends StatelessWidget {
       children: [
         _CreateChannelFieldLabel(label: label),
         const SizedBox(height: Grid.xxs),
-        DecoratedBox(
-          decoration: BoxDecoration(
-            color: context.colors.surface,
-            border: Border.all(color: context.colors.outlineVariant),
-            borderRadius: BorderRadius.circular(Radii.lg),
+        Material(
+          color: context.colors.surface,
+          shape: RoundedRectangleBorder(
+            side: BorderSide(color: context.colors.outlineVariant),
+            borderRadius: BorderRadius.circular(Radii.container),
           ),
+          clipBehavior: Clip.antiAlias,
           child: RadioGroup<T>(
             groupValue: value,
             onChanged: (nextValue) {
@@ -376,7 +377,7 @@ class _CreateChannelSettingMenu<T> extends StatelessWidget {
       decoration: BoxDecoration(
         color: context.colors.surface,
         border: Border.all(color: context.colors.outlineVariant),
-        borderRadius: BorderRadius.circular(Radii.lg),
+        borderRadius: BorderRadius.circular(Radii.container),
       ),
       child: PopupMenuButton<T>(
         enabled: enabled,
@@ -554,7 +555,7 @@ class _NewDirectMessageSheet extends HookConsumerWidget {
                         border: Border.all(
                           color: context.colors.outlineVariant,
                         ),
-                        borderRadius: BorderRadius.circular(Radii.lg),
+                        borderRadius: BorderRadius.circular(Radii.container),
                       ),
                       child: Padding(
                         padding: const EdgeInsets.symmetric(
@@ -733,60 +734,60 @@ class _NewDirectMessageSheet extends HookConsumerWidget {
                       ),
                     );
                   }
-                  return ListView.separated(
+                  return ListView.builder(
                     physics: const NeverScrollableScrollPhysics(),
                     shrinkWrap: true,
                     itemCount: availableResults.length,
-                    separatorBuilder: (_, _) =>
-                        const Divider(height: 1, indent: 56),
                     itemBuilder: (context, index) {
                       final user = availableResults[index];
-                      return ListTile(
-                        key: Key('new-dm-person-${user.pubkey}'),
-                        contentPadding: const EdgeInsets.symmetric(
-                          horizontal: Grid.half,
-                        ),
-                        leading: AvatarImage(
-                          imageUrl: user.avatarUrl,
-                          radius: 20,
-                          backgroundColor: context.colors.primaryContainer,
-                          fallback: Text(
-                            user.initial,
-                            style: context.textTheme.labelLarge?.copyWith(
-                              color: context.colors.onPrimaryContainer,
-                              fontWeight: FontWeight.w600,
+                      return AppListCardItem(
+                        index: index,
+                        itemCount: availableResults.length,
+                        dividerIndent: Grid.xs + 40 + Grid.xs,
+                        child: ListTile(
+                          key: Key('new-dm-person-${user.pubkey}'),
+                          leading: AvatarImage(
+                            imageUrl: user.avatarUrl,
+                            radius: 20,
+                            backgroundColor: context.colors.primaryContainer,
+                            fallback: Text(
+                              user.initial,
+                              style: context.textTheme.labelLarge?.copyWith(
+                                color: context.colors.onPrimaryContainer,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
+                            isAgent: user.isAgent,
                           ),
-                          isAgent: user.isAgent,
+                          title: Text(
+                            names.labelFor(user.pubkey),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: Text(
+                            user.secondaryLabel,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          trailing: Icon(
+                            LucideIcons.plus,
+                            size: 18,
+                            color: context.colors.onSurfaceVariant,
+                          ),
+                          onTap: isSubmitting.value
+                              ? null
+                              : () {
+                                  selectedUsers.value = [
+                                    ...selectedUsers.value,
+                                    user,
+                                  ];
+                                  queryController.clear();
+                                  query.value = '';
+                                  debouncedQuery.value = '';
+                                  submitError.value = null;
+                                  queryFocusNode.requestFocus();
+                                },
                         ),
-                        title: Text(
-                          names.labelFor(user.pubkey),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        subtitle: Text(
-                          user.secondaryLabel,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        trailing: Icon(
-                          LucideIcons.plus,
-                          size: 18,
-                          color: context.colors.onSurfaceVariant,
-                        ),
-                        onTap: isSubmitting.value
-                            ? null
-                            : () {
-                                selectedUsers.value = [
-                                  ...selectedUsers.value,
-                                  user,
-                                ];
-                                queryController.clear();
-                                query.value = '';
-                                debouncedQuery.value = '';
-                                submitError.value = null;
-                                queryFocusNode.requestFocus();
-                              },
                       );
                     },
                   );

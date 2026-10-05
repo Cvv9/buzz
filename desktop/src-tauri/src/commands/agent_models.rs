@@ -721,6 +721,7 @@ pub(super) fn normalize_agent_models(
         .to_string();
 
     let mut models: Vec<AgentModelInfo> = Vec::new();
+    let mut agent_default_model: Option<String> = None;
     let mut seen_ids: HashSet<String> = HashSet::new();
 
     // 1. Stable configOptions (preferred). Only entries with category "model"
@@ -729,6 +730,12 @@ pub(super) fn normalize_agent_models(
         for opt in config_options {
             if opt.get("category").and_then(|c| c.as_str()) != Some("model") {
                 continue;
+            }
+            if agent_default_model.is_none() {
+                agent_default_model = opt
+                    .get("currentValue")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
             }
             if let Some(options) = opt.get("options").and_then(|v| v.as_array()) {
                 for o in options {
@@ -754,9 +761,10 @@ pub(super) fn normalize_agent_models(
     }
 
     // 2. Unstable availableModels (fallback — skip duplicates from stable).
-    let mut agent_default_model: Option<String> = None;
     if let Some(unstable) = raw.get("unstable") {
-        agent_default_model = unstable["currentModelId"].as_str().map(str::to_string);
+        if agent_default_model.is_none() {
+            agent_default_model = unstable["currentModelId"].as_str().map(str::to_string);
+        }
         if let Some(available) = unstable["availableModels"].as_array() {
             for m in available {
                 if let Some(id) = m.get("modelId").and_then(|v| v.as_str()) {
