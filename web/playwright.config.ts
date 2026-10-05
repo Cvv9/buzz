@@ -24,6 +24,7 @@ export default defineConfig({
         "**/workspace-quality-matrix.spec.ts",
         "**/browser-local-devices.smoke.spec.ts",
         "**/workspace-identity-and-agents.spec.ts",
+        "**/workspace-sidebar-resize.spec.ts",
         "**/workspace-hosted-agent-runtime.spec.ts",
         "**/workspace-appearance.spec.ts",
         "**/workspace-reminders.spec.ts",

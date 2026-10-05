@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import varvikMark from "@/assets/varvik-mark.svg";
+import varvikLogo from "@/assets/varvik-logo.png";
 import { useAuthenticatedPicture } from "@/shared/lib/authenticated-media";
 import { cn } from "@/shared/lib/cn";
 import { truncatePubkey } from "@/shared/lib/pubkey";
@@ -30,6 +30,8 @@ import { agentRoleLabel } from "../agent-presentation";
 import type { BrowserIdentity } from "@/shared/lib/browser-identity";
 
 import { compareWorkspaceChannels } from "../channel-order";
+
+import { useWorkspaceSidebarResize } from "../useWorkspaceSidebarResize";
 
 const SECTION_STORAGE_PREFIX = "buzz-web:channel-sections:v1";
 
@@ -231,6 +233,7 @@ export function WorkspaceSidebar({
   };
 
   const navigation = useMobileNavigation(open, onClose);
+  const resize = useWorkspaceSidebarResize(identity.pubkey);
 
   const selectChannel = (channelId: string) => {
     onSelectChannel(channelId);
@@ -248,31 +251,27 @@ export function WorkspaceSidebar({
         />
       ) : null}
       <aside
+        style={resize.style}
         ref={navigation.ref}
         inert={navigation.inert}
         aria-label="Workspace navigation"
         data-testid="workspace-sidebar"
         className={cn(
-          "fixed inset-y-0 left-0 z-40 flex h-dvh min-h-0 w-[17rem] flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-transform md:static md:h-full md:translate-x-0",
+          "fixed inset-y-0 left-0 z-40 flex h-dvh min-h-0 w-[17rem] flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground transition-transform shrink-0 md:relative md:h-full md:w-[var(--workspace-sidebar-width)] md:translate-x-0",
           open ? "translate-x-0" : "-translate-x-full",
         )}
       >
+        <div
+          {...resize.separator}
+          className="absolute inset-y-0 -right-1 z-50 hidden w-2 cursor-col-resize touch-none select-none hover:bg-primary/20 focus-visible:bg-primary/20 focus-visible:outline-none md:block"
+          title="Drag to resize; double-click to reset"
+        />
         <header className="flex h-16 items-center justify-between border-b border-sidebar-border px-4">
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="flex size-9 shrink-0 items-center justify-center rounded-xl border border-sidebar-border bg-background p-1.5">
-              <img
-                alt=""
-                className="size-full object-contain"
-                src={varvikMark}
-              />
-            </div>
-            <div className="min-w-0">
-              <p className="truncate text-sm font-semibold">VarVik Studios</p>
-              <p className="truncate text-xs text-muted-foreground">
-                {identity.displayName}
-              </p>
-            </div>
-          </div>
+          <img
+            alt="VarVik"
+            className="h-12 w-auto max-w-full object-contain mix-blend-multiply dark:invert dark:hue-rotate-180 dark:mix-blend-screen"
+            src={varvikLogo}
+          />
           <button
             aria-label="Close navigation"
             className="rounded-lg p-2 hover:bg-sidebar-accent md:hidden"
