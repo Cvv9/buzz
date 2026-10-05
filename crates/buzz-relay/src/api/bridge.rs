@@ -6348,20 +6348,12 @@ mod postgres_tests {
         rt.block_on(state.db.ensure_configured_community(&host))
             .expect("ensure community");
 
-        // X-Pubkey dev-mode auth: passes verify_bridge_auth (require_auth_token=false
-        // in Off state) and reaches admit_nip_fi_http_on_state, which MUST admit
-        // unconditionally in Off mode.
-        //
-        // We cannot use no-auth-at-all because verify_bridge_auth returns 401
-        // ("missing Nostr auth") before the NIP-FI gate is reached, making the
-        // assert_ne!(_, UNAUTHORIZED) trivially falsifiable for the wrong reason.
-        // X-Pubkey is the correct dev-mode bypass when require_auth_token=false.
+        // Use a real signed request so strict application auth succeeds before
+        // testing that Off mode admits requests without a NIP-FI assertion.
+        // X-Pubkey requires a separate explicit insecure-dev opt-in and cannot
+        // establish this control merely through require_auth_token=false.
         let keys = nostr::Keys::generate();
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert(
-            "x-pubkey",
-            keys.public_key().to_hex().parse().expect("valid header"),
-        );
+        let headers = make_nip98_headers(&keys, &format!("https://{host}/query"), "POST", b"[]");
 
         let status = rt.block_on(oneshot_request(
             state, "POST", "/query", &host, headers, b"[]",
