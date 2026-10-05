@@ -508,7 +508,7 @@ async fn workflow_manual_exact_rolling_boundary_and_cooldown_projection() {
     assert!(accepted.accepted);
     let now = Utc::now();
     sqlx::query("UPDATE workflow_runs SET accepted_at=$1,execution_state='failed',status='failed' WHERE community_id=$2").bind(now-Duration::hours(24)).bind(f.community.as_uuid()).execute(&f.db.pool).await.unwrap();
-    let mut tx = f.db.begin_transaction().await.unwrap();
+    let mut tx = f.db.begin_event_write_transaction().await.unwrap();
     let boundary = limits(&mut tx, f.community, f.workflow, now).await.unwrap();
     assert_eq!(boundary.remaining_workflow, 3);
     assert_eq!(boundary.remaining_community, 10);

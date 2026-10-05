@@ -82,6 +82,15 @@ COPY . .
 # SQLx hashes the embedded bytes, so normalize them before compilation to keep
 # checksums identical to release images built from Linux checkouts.
 RUN find migrations -type f -name '*.sql' -exec sed -i 's/\r$//' {} +
+
+# Compile immutable artifact identity into the relay. Defaults preserve local
+# and third-party builds that do not run in provenance-aware CI.
+ARG BUZZ_SOURCE_SHA=unknown
+ARG BUZZ_BUILD_ID=local
+ARG BUZZ_BUILD_URL=unknown
+ENV BUZZ_SOURCE_SHA=${BUZZ_SOURCE_SHA} \
+    BUZZ_BUILD_ID=${BUZZ_BUILD_ID} \
+    BUZZ_BUILD_URL=${BUZZ_BUILD_URL}
 RUN cargo build --release --locked -p buzz-relay --bin buzz-relay \
                                    -p buzz-admin --bin buzz-admin \
                                    -p buzz-pair-relay --bin buzz-pair-relay \

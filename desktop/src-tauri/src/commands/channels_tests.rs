@@ -2,6 +2,9 @@
 // channels.rs under the per-file line cap.
 
 use super::*;
+// The relay-backed fetch helpers moved to the `fetch` submodule; its
+// `pub(super)` items are visible here as a descendant of the channels module.
+use super::fetch::*;
 use crate::models::ChannelInfo;
 use nostr::{EventBuilder, Keys, Kind, Tag, Timestamp};
 
@@ -193,6 +196,37 @@ fn pending_overlay_does_not_leak_across_identity_swap() {
 
     assert!(state.is_pending_owned_channel(PK_A, "chan-1"));
     assert!(!state.is_pending_owned_channel(PK_B, "chan-1"));
+}
+
+#[test]
+fn pending_owned_channel_ids_scopes_to_the_asking_identity() {
+    // The member-only poll resolves non-member metadata solely from this
+    // helper (no all-open scan), so it must return exactly the caller's own
+    // not-yet-propagated channels — never another identity's — and nothing
+    // once membership is observed.
+    let state = crate::app_state::build_app_state();
+    state.mark_pending_owned_channel(PK_A, "chan-1");
+    state.mark_pending_owned_channel(PK_A, "chan-2");
+    state.mark_pending_owned_channel(PK_B, "chan-3");
+
+    let mut a_ids = state.pending_owned_channel_ids(PK_A);
+    a_ids.sort();
+    assert_eq!(a_ids, vec!["chan-1".to_string(), "chan-2".to_string()]);
+    assert_eq!(
+        state.pending_owned_channel_ids(PK_B),
+        vec!["chan-3".to_string()]
+    );
+
+    // Once chan-1's real membership lands, it drops out of the overlay set.
+    state.clear_pending_owned_channel(PK_A, "chan-1");
+    assert_eq!(
+        state.pending_owned_channel_ids(PK_A),
+        vec!["chan-2".to_string()]
+    );
+
+    // An identity with no pending creations resolves no non-member metadata,
+    // so the member-only fetch issues no `#d` directory query at all.
+    assert!(state.pending_owned_channel_ids(PK_C).is_empty());
 }
 
 #[test]
@@ -430,7 +464,7 @@ fn starter_match_requires_open_unarchived_stream_by_normalized_name() {
     assert!(!is_matching_starter_channel(&channel, spec));
 }
 
-/// A visible, joinable starter channel as `get_channels` would report it.
+/// A visible, joinable starter channel as get_channels would report it.
 fn starter_channel_fixture(id: &str, name: &str) -> ChannelInfo {
     ChannelInfo {
         catalog_section: None,
@@ -493,6 +527,20 @@ fn starter_channel_uuid_advances_past_a_blocked_id() {
 }
 
 #[test]
+fn last_message_filter_covers_all_human_visible_activity_kinds() {
+    let filter = last_message_filter("forum-1");
+
+    assert_eq!(
+        filter,
+        serde_json::json!({
+            "kinds": [9, 40002, 45001, 45003],
+            "#h": ["forum-1"],
+            "limit": 1
+        })
+    );
+}
+
+#[test]
 fn starter_work_list_is_empty_once_every_spec_is_visible() {
     let existing: Vec<ChannelInfo> = STARTER_CHANNELS
         .iter()
@@ -537,6 +585,31 @@ fn starter_work_list_retargets_a_missing_spec_on_the_next_attempt() {
 }
 
 #[test]
+fn last_message_filters_stay_within_relay_channel_cap() {
+    let filters: Vec<serde_json::Value> = (0..257)
+        .map(|index| serde_json::json!({"#h": [format!("channel-{index}")]}))
+        .collect();
+
+    let batches = last_message_filter_batches(&filters);
+
+    assert_eq!(
+        batches.iter().map(|batch| batch.len()).collect::<Vec<_>>(),
+        [128, 128, 1]
+    );
+    assert_eq!(batches.concat(), filters);
+}
+
+fn member(pubkey: &str) -> crate::models::ChannelMemberInfo {
+    crate::models::ChannelMemberInfo {
+        pubkey: pubkey.to_string(),
+        role: "member".to_string(),
+        is_agent: false,
+        joined_at: None,
+        display_name: None,
+    }
+}
+
+#[test]
 fn accepted_starter_create_waits_for_metadata_instead_of_retargeting() {
     let created = std::collections::HashSet::from(["accepted".to_string()]);
     assert!(starter_channel_creation_pending(&[], &created));
@@ -552,4 +625,53 @@ fn duplicate_rejected_starter_id_can_advance_without_claiming_ownership() {
         &[],
         &std::collections::HashSet::new(),
     ));
+}
+
+#[test]
+fn profile_join_pubkeys_caps_in_roster_order() {
+    let members = vec![member(PK_A), member(PK_B), member(PK_C)];
+
+    assert_eq!(
+        profile_join_pubkeys(&members, 2),
+        vec![PK_A.to_string(), PK_B.to_string()]
+    );
+    assert_eq!(profile_join_pubkeys(&members, 3).len(), 3);
+    assert_eq!(profile_join_pubkeys(&members, 10).len(), 3);
+    assert!(profile_join_pubkeys(&[], 10).is_empty());
+}
+
+// Mutation oracle: removing `"consistency"` from `channel_metadata_filter`
+// fails this test, and create/update/starter/open-DM all read back through it.
+#[test]
+fn channel_metadata_filter_carries_strong_consistency() {
+    let ids = ["a", "b"];
+    let f = channel_metadata_filter(&ids);
+    assert_eq!(
+        f.get("consistency").and_then(|v| v.as_str()),
+        Some("strong"),
+        "channel metadata read-back must carry consistency=strong: {f}"
+    );
+    assert_eq!(f["kinds"], serde_json::json!([39000]));
+    assert_eq!(f["#d"], serde_json::json!(["a", "b"]));
+    assert_eq!(f.get("limit").and_then(|v| v.as_u64()), Some(2));
+}
+
+// Mutation oracle: dropping `"consistency"` from the read-your-writes arm of
+// `channel_members_filter`, or adding it to the default arm, fails this test.
+#[test]
+fn channel_members_filter_pins_writer_only_for_read_your_writes() {
+    let pinned = channel_members_filter("a", true);
+    assert_eq!(
+        pinned.get("consistency").and_then(|v| v.as_str()),
+        Some("strong"),
+        "read-your-writes member read must carry consistency=strong: {pinned}"
+    );
+    assert_eq!(pinned["kinds"], serde_json::json!([39002]));
+    assert_eq!(pinned["#d"], serde_json::json!(["a"]));
+
+    let display = channel_members_filter("a", false);
+    assert!(
+        display.get("consistency").is_none(),
+        "display member read must stay replica-eligible: {display}"
+    );
 }

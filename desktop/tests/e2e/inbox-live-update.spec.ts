@@ -32,6 +32,7 @@ type MockWindow = Window & {
     mentionPubkeys?: string[];
     id?: string;
     kind?: number;
+    createdAt?: number;
     extraTags?: string[][];
   }) => RelayEvent;
   __BUZZ_E2E_PUSH_MOCK_FEED_ITEM__?: (item: {
@@ -296,6 +297,14 @@ test.describe("inbox stable-conversation regressions", () => {
     const detail = getDetailPane(page);
     await expect(detail).toContainText("Nested anchor");
     expect(await getItemParam(page)).toBe(anchor.id);
+
+    // This tests steady-state delivery, not paced startup admission.
+    await page.waitForFunction(() =>
+      window.__BUZZ_E2E_HAS_MOCK_LIVE_SUBSCRIPTION__?.({
+        channelName: "general",
+        kind: 9,
+      }),
+    );
 
     // Add filler replies to make the detail pane scrollable.
     await page.evaluate(
@@ -1152,11 +1161,13 @@ test.describe("inbox stable-conversation regressions", () => {
         const push = win.__BUZZ_E2E_PUSH_MOCK_FEED_ITEM__;
         if (!emit || !push) throw new Error("Bridge helpers not ready");
 
+        const start = Math.floor(Date.now() / 1000) - 20;
         const fetchRoot = emit({
           channelName: "general",
           content: "Reaction-drift test root.",
           pubkey: senderPubkey,
           id: "e0".repeat(32),
+          createdAt: start,
         });
 
         // 10 older replies — in mockMessages, prepended above fetchNewest
@@ -1169,6 +1180,7 @@ test.describe("inbox stable-conversation regressions", () => {
             parentEventId: fetchRoot.id,
             pubkey: senderPubkey,
             id: `e${i.toString(16).padStart(1, "0")}`.repeat(32),
+            createdAt: start + i,
           });
           olderReplyIds.push(reply.id);
         }
@@ -1181,6 +1193,7 @@ test.describe("inbox stable-conversation regressions", () => {
           pubkey: senderPubkey,
           mentionPubkeys: [currentPubkey],
           id: "ef".repeat(32),
+          createdAt: start + 11,
         });
 
         // Later replies ensure the selected row has enough content below it to
@@ -1192,6 +1205,7 @@ test.describe("inbox stable-conversation regressions", () => {
             parentEventId: fetchRoot.id,
             pubkey: senderPubkey,
             id: `f${i.toString(16).padStart(1, "0")}`.repeat(32),
+            createdAt: start + 11 + i,
           });
         }
 
@@ -1200,7 +1214,7 @@ test.describe("inbox stable-conversation regressions", () => {
           kind: 46010,
           pubkey: fetchNewest.pubkey,
           content: fetchNewest.content,
-          created_at: fetchNewest.created_at + 11,
+          created_at: fetchNewest.created_at,
           channel_id: channelId,
           channel_name: "general",
           tags: fetchNewest.tags,
@@ -1256,6 +1270,9 @@ test.describe("inbox stable-conversation regressions", () => {
       );
     });
     expect(msgCenterOffsetBeforeReactions).not.toBeNull();
+    expect(Math.abs(msgCenterOffsetBeforeReactions ?? Infinity)).toBeLessThan(
+      30,
+    );
     expect(await getScrollIntoViewCount(page)).toBe(1);
 
     // ── Emit late reactions targeting messages ABOVE fetchNewest ──────
@@ -1363,11 +1380,13 @@ test.describe("inbox stable-conversation regressions", () => {
         const push = win.__BUZZ_E2E_PUSH_MOCK_FEED_ITEM__;
         if (!emit || !push) throw new Error("Bridge helpers not ready");
 
+        const start = Math.floor(Date.now() / 1000) - 20;
         const fetchRoot = emit({
           channelName: "general",
           content: "Reaction-drift test root.",
           pubkey: senderPubkey,
           id: "e0".repeat(32),
+          createdAt: start,
         });
 
         // 10 older replies — in mockMessages, prepended above fetchNewest
@@ -1380,6 +1399,7 @@ test.describe("inbox stable-conversation regressions", () => {
             parentEventId: fetchRoot.id,
             pubkey: senderPubkey,
             id: `e${i.toString(16).padStart(1, "0")}`.repeat(32),
+            createdAt: start + i,
           });
           olderReplyIds.push(reply.id);
         }
@@ -1392,6 +1412,7 @@ test.describe("inbox stable-conversation regressions", () => {
           pubkey: senderPubkey,
           mentionPubkeys: [currentPubkey],
           id: "ef".repeat(32),
+          createdAt: start + 11,
         });
 
         // Later replies ensure the selected row has enough content below it to
@@ -1404,6 +1425,7 @@ test.describe("inbox stable-conversation regressions", () => {
             parentEventId: fetchRoot.id,
             pubkey: senderPubkey,
             id: `f${i.toString(16).padStart(1, "0")}`.repeat(32),
+            createdAt: start + 11 + i,
           });
         }
 
@@ -1412,7 +1434,7 @@ test.describe("inbox stable-conversation regressions", () => {
           kind: 46010,
           pubkey: fetchNewest.pubkey,
           content: fetchNewest.content,
-          created_at: fetchNewest.created_at + 11,
+          created_at: fetchNewest.created_at,
           channel_id: channelId,
           channel_name: "general",
           tags: fetchNewest.tags,
@@ -1450,6 +1472,26 @@ test.describe("inbox stable-conversation regressions", () => {
     // Older replies are now rendered (fetch landed).
     await expect(detail).toContainText("Reaction-drift older reply 1");
     expect(await getScrollIntoViewCount(page)).toBe(1);
+    // Prove the intended centered state and real downward scroll room before
+    // testing hold release; do not manufacture either with a setup scroll.
+    const geometry = await page.evaluate(() => {
+      const selected = document.querySelector<HTMLElement>(
+        '[data-testid="home-inbox-selected-message"]',
+      );
+      const pane = document.querySelector<HTMLElement>(
+        '[data-testid="home-inbox-detail"] [aria-busy]',
+      );
+      if (!selected || !pane) return null;
+      const row = selected.getBoundingClientRect();
+      const bounds = pane.getBoundingClientRect();
+      return {
+        offset: row.top + row.height / 2 - (bounds.top + bounds.height / 2),
+        room: pane.scrollHeight - pane.clientHeight - pane.scrollTop,
+      };
+    });
+    expect(geometry).not.toBeNull();
+    expect(Math.abs(geometry?.offset ?? Infinity)).toBeLessThan(30);
+    expect(geometry?.room ?? 0).toBeGreaterThan(0);
 
     // Simulate a scrollbar drag: change the actual scroll container directly
     // and dispatch only `scroll`, without wheel/touch/key input. This must

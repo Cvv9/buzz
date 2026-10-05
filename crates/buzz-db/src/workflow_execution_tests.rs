@@ -240,6 +240,259 @@ async fn result_event(f: &Fixture, d: &ExecutionDecision) -> Event {
         .sign_with_keys(&f.agent)
         .unwrap()
 }
+
+async fn event_workflow_run(f: &Fixture) -> Uuid {
+    let definition = serde_json::json!({"name":"Thread brief","trigger":{"on":"message_posted"},"steps":[{"id":f.task.step_id,"action":"send_message","text":f.task.text,"agent_targets":[f.task.agent_pubkey],"reply_in_thread":true}]}).to_string();
+    f.db.upsert_workflow(
+        f.community,
+        f.workflow,
+        Some(f.task.channel_id),
+        f.owner.public_key().as_bytes(),
+        "Thread brief",
+        &definition,
+        &Sha256::digest(definition.as_bytes()),
+    )
+    .await
+    .unwrap();
+    f.db.create_workflow_run(f.community, f.workflow, None, None)
+        .await
+        .unwrap()
+}
+
+async fn workflow_parent_message(f: &Fixture, channel: Uuid, text: &str) -> Event {
+    let event = EventBuilder::new(Kind::Custom(9), text)
+        .tags([Tag::parse(["h", &channel.to_string()]).unwrap()])
+        .sign_with_keys(&f.owner)
+        .unwrap();
+    f.db.insert_event_with_thread_metadata(f.community, &event, Some(channel), None)
+        .await
+        .unwrap();
+    event
+}
+
+#[tokio::test]
+#[ignore = "requires isolated Postgres"]
+async fn workflow_execution_results_match_durable_top_level_direct_and_nested_ancestry() {
+    for nested in [None, Some(false), Some(true)] {
+        let f = fixture().await;
+        let run = event_workflow_run(&f).await;
+        let root = workflow_parent_message(&f, f.task.channel_id, "root").await;
+        let mut ancestry = vec![];
+        if let Some(nested) = nested {
+            let parent = if nested {
+                let parent = EventBuilder::new(Kind::Custom(9), "nested parent")
+                    .tags([
+                        Tag::parse(["h", &f.task.channel_id.to_string()]).unwrap(),
+                        Tag::parse(["e", &root.id.to_hex(), "", "reply"]).unwrap(),
+                    ])
+                    .sign_with_keys(&f.owner)
+                    .unwrap();
+                let root_created =
+                    DateTime::from_timestamp(root.created_at.as_secs() as i64, 0).unwrap();
+                f.db.insert_event_with_thread_metadata(
+                    f.community,
+                    &parent,
+                    Some(f.task.channel_id),
+                    Some(crate::event::ThreadMetadataParams {
+                        event_id: parent.id.as_bytes(),
+                        event_created_at: DateTime::from_timestamp(
+                            parent.created_at.as_secs() as i64,
+                            0,
+                        )
+                        .unwrap(),
+                        channel_id: f.task.channel_id,
+                        parent_event_id: Some(root.id.as_bytes()),
+                        parent_event_created_at: Some(root_created),
+                        root_event_id: Some(root.id.as_bytes()),
+                        root_event_created_at: Some(root_created),
+                        depth: 1,
+                        broadcast: false,
+                    }),
+                )
+                .await
+                .unwrap();
+                ancestry.push(Tag::parse(["e", &root.id.to_hex(), "", "root"]).unwrap());
+                parent
+            } else {
+                root.clone()
+            };
+            ancestry.push(Tag::parse(["e", &parent.id.to_hex(), "", "reply"]).unwrap());
+        }
+        let legacy = EventBuilder::new(Kind::Custom(46008), &f.task.text)
+            .tags(ancestry.clone())
+            .sign_with_keys(&f.relay)
+            .unwrap();
+        let event_id =
+            f.db.queue_supervised_workflow_tasks(
+                f.community,
+                run,
+                &f.task.step_id,
+                f.task.channel_id,
+                std::slice::from_ref(&f.task.agent_pubkey),
+                &legacy,
+                &f.relay,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let replay =
+            f.db.queue_supervised_workflow_tasks(
+                f.community,
+                run,
+                &f.task.step_id,
+                f.task.channel_id,
+                std::slice::from_ref(&f.task.agent_pubkey),
+                &legacy,
+                &f.relay,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            event_id, replay,
+            "retry must preserve the signed task and ancestry"
+        );
+        let task: Uuid = sqlx::query_scalar(
+            "SELECT task_id FROM workflow_run_tasks WHERE community_id=$1 AND run_id=$2",
+        )
+        .bind(f.community.as_uuid())
+        .bind(run)
+        .fetch_one(&f.db.pool)
+        .await
+        .unwrap();
+        let queued: serde_json::Value = sqlx::query_scalar("SELECT signed_event FROM workflow_run_outbox WHERE community_id=$1 AND run_id=$2 AND event_id=$3").bind(f.community.as_uuid()).bind(run).bind(hex::decode(&event_id).unwrap()).fetch_one(&f.db.pool).await.unwrap();
+        let queued: Event = serde_json::from_value(queued).unwrap();
+        queued.verify().unwrap();
+        assert_eq!(workflow_reply_tags(&queued.tags).unwrap(), ancestry);
+        let (_, receipt, _) = claim_attempt(&f, run, task).await;
+        assert!(receipt.accepted, "{receipt:?}");
+        let grant = receipt.decision.unwrap();
+        assert!(control(&f, started(&grant)).await.1.accepted);
+        let base = result_event(&f, &grant).await;
+        let result = EventBuilder::new(base.kind, &base.content)
+            .tags(base.tags.iter().cloned().chain(ancestry.clone()))
+            .sign_with_keys(&f.agent)
+            .unwrap();
+        assert!(f
+            .db
+            .validate_workflow_result(f.community, &result)
+            .await
+            .unwrap());
+        assert!(!f
+            .db
+            .validate_workflow_result(CommunityId::from_uuid(Uuid::new_v4()), &result)
+            .await
+            .unwrap());
+        let unrelated = workflow_parent_message(&f, f.task.channel_id, "unrelated root").await;
+        for forged_ancestry in [
+            vec![Tag::parse(["e", &unrelated.id.to_hex(), "", "reply"]).unwrap()],
+            vec![Tag::parse(["e", &root.id.to_hex(), "", "reply"]).unwrap(); 2],
+            vec![Tag::parse(["e", "bad", "", "reply"]).unwrap()],
+        ] {
+            let forged = EventBuilder::new(base.kind, &base.content)
+                .tags(base.tags.iter().cloned().chain(forged_ancestry))
+                .sign_with_keys(&f.agent)
+                .unwrap();
+            assert!(
+                !f.db
+                    .validate_workflow_result(f.community, &forged)
+                    .await
+                    .unwrap(),
+                "result cannot change or inject thread ancestry"
+            );
+        }
+        if !ancestry.is_empty() {
+            assert!(
+                !f.db
+                    .validate_workflow_result(f.community, &base)
+                    .await
+                    .unwrap(),
+                "threaded result cannot discard its bound ancestry"
+            );
+        }
+        f.db.insert_event_with_thread_metadata(f.community, &result, Some(grant.channel_id), None)
+            .await
+            .unwrap();
+        assert!(control(&f, finished(&grant, &result)).await.1.accepted);
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires isolated Postgres"]
+async fn workflow_execution_queue_rejects_forged_cross_channel_and_cross_tenant_ancestry() {
+    let f = fixture().await;
+    let run = event_workflow_run(&f).await;
+    let root = workflow_parent_message(&f, f.task.channel_id, "root").await;
+    let unrelated = workflow_parent_message(&f, f.task.channel_id, "unrelated root").await;
+    let other_channel =
+        f.db.create_channel(
+            f.community,
+            "other",
+            ChannelType::Stream,
+            ChannelVisibility::Private,
+            None,
+            f.owner.public_key().as_bytes(),
+            None,
+        )
+        .await
+        .unwrap();
+    let cross_channel = workflow_parent_message(&f, other_channel.id, "other channel").await;
+    let foreign = fixture().await;
+    let cross_tenant =
+        workflow_parent_message(&foreign, foreign.task.channel_id, "foreign parent").await;
+    for (signer, ancestry) in [
+        (
+            &f.agent,
+            vec![Tag::parse(["e", &root.id.to_hex(), "", "reply"]).unwrap()],
+        ),
+        (
+            &f.relay,
+            vec![
+                Tag::parse(["e", &unrelated.id.to_hex(), "", "root"]).unwrap(),
+                Tag::parse(["e", &root.id.to_hex(), "", "reply"]).unwrap(),
+            ],
+        ),
+        (
+            &f.relay,
+            vec![Tag::parse(["e", &cross_channel.id.to_hex(), "", "reply"]).unwrap()],
+        ),
+        (
+            &f.relay,
+            vec![Tag::parse(["e", &cross_tenant.id.to_hex(), "", "reply"]).unwrap()],
+        ),
+        (
+            &f.relay,
+            vec![Tag::parse(["e", &"ff".repeat(32), "", "reply"]).unwrap()],
+        ),
+    ] {
+        let forged = EventBuilder::new(Kind::Custom(46008), &f.task.text)
+            .tags(ancestry)
+            .sign_with_keys(signer)
+            .unwrap();
+        assert!(matches!(
+            f.db.queue_supervised_workflow_tasks(
+                f.community,
+                run,
+                &f.task.step_id,
+                f.task.channel_id,
+                std::slice::from_ref(&f.task.agent_pubkey),
+                &forged,
+                &f.relay
+            )
+            .await,
+            Err(DbError::AccessDenied(_))
+        ));
+    }
+    let count: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM workflow_run_tasks WHERE community_id=$1 AND run_id=$2",
+    )
+    .bind(f.community.as_uuid())
+    .bind(run)
+    .fetch_one(&f.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(count, 0, "failed ancestry validation must not queue tasks");
+}
 #[tokio::test]
 #[ignore = "requires isolated Postgres"]
 async fn workflow_execution_claim_replay_stop_fence_and_two_attempt_ceiling() {

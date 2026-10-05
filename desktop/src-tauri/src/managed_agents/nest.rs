@@ -11,12 +11,15 @@ use super::{load_managed_agents, load_personas, AgentDefinition, ManagedAgentRec
 #[cfg(test)]
 use super::{BackendKind, RespondTo};
 use crate::app_state::AppState;
-use crate::relay::relay_ws_url_with_override;
+use crate::commands::{capture_relay_target, fetch_archived_pubkeys_at};
+use std::collections::HashSet;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 
+#[cfg(unix)]
 use crate::managed_agents::discovery::known_skill_dirs;
 #[cfg(unix)]
 use crate::util::create_symlink;
@@ -46,26 +49,25 @@ const BUZZ_CLI_SKILL_MD: &str = include_str!("nest_skill.md");
 /// Template content version for AGENTS.md static content (above managed markers).
 /// Bump this when changing `nest_agents.md` to trigger refresh on existing installs.
 /// Version 1 is implicitly "before this mechanism existed" (no version file).
-const NEST_AGENTS_VERSION: u32 = 4;
+const NEST_AGENTS_VERSION: u32 = 6;
 
 /// Template content version for SKILL.md.
 /// Bump this when changing `nest_skill.md` to trigger refresh on existing installs.
-const NEST_SKILL_VERSION: u32 = 5;
+const NEST_SKILL_VERSION: u32 = 6;
 
 const BEGIN_MARKER: &str = "<!-- BEGIN BUZZ MANAGED";
 const END_MARKER: &str = "<!-- END BUZZ MANAGED -->";
+
+mod render;
+pub use render::{render_dynamic_section, upsert_managed_section};
+mod templates;
+use templates::{refresh_agents_md_if_stale, refresh_skill_md_if_stale};
 
 /// Canonical skill directory path relative to the nest root.
 const CANONICAL_SKILL_DIR: &str = ".agents/skills/buzz-cli";
 
 /// Nest directory name for production builds.
 const NEST_DIR_PROD: &str = ".buzz";
-
-/// Nest directory name for dev builds. Dev builds (those whose Tauri app-data
-/// directory name starts with `"xyz.block.buzz.app.dev"`) use a separate nest
-/// so that the DMG and dev-build instances don't clobber each other's
-/// `.repos-dir` dotfile and `REPOS` symlink.
-const NEST_DIR_DEV: &str = ".buzz-dev";
 
 /// Process-lifetime nest directory. Initialized once at startup via
 /// [`init_nest_dir`] before any call to [`nest_dir`].
@@ -86,8 +88,8 @@ static NEST_DIR: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new
 /// when the Tauri app-data directory name starts with `"xyz.block.buzz.app.dev"`.
 /// Pass `false` for production (signed DMG) builds.
 pub fn init_nest_dir(is_dev: bool) {
-    let suffix = if is_dev { NEST_DIR_DEV } else { NEST_DIR_PROD };
-    let path = dirs::home_dir().map(|h| h.join(suffix));
+    let suffix = crate::build_identity::nest_name(is_dev);
+    let path = dirs::home_dir().map(|h| h.join(suffix.as_ref()));
     // set() is a no-op when already initialized, which is correct: only the
     // first call (at boot, before any filesystem work) should win.
     let _ = NEST_DIR.set(path);
@@ -313,12 +315,8 @@ fn ensure_skill_symlinks(_root: &Path) -> Result<(), String> {
 /// Dev builds (`is_dev = true`) use `"buzz-dev"` so that a running DMG and a
 /// concurrent dev build each own a separate link and never clobber each other —
 /// the same isolation that separates `~/.buzz` (prod) from `~/.buzz-dev` (dev).
-pub fn cli_link_name(is_dev: bool) -> &'static str {
-    if is_dev {
-        "buzz-dev"
-    } else {
-        "buzz"
-    }
+pub fn cli_link_name(is_dev: bool) -> String {
+    crate::build_identity::cli_name(is_dev)
 }
 
 /// Ensures `~/.local/bin/buzz` (prod) or `~/.local/bin/buzz-dev` (dev) is a
@@ -376,276 +374,134 @@ pub fn ensure_cli_symlink(_exe_parent: &Path, _is_dev: bool) -> Result<(), Strin
     Ok(())
 }
 
-/// Read a version number from a file. Returns 0 if the file doesn't exist or can't be parsed.
-fn read_version_file(path: &Path) -> u32 {
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|s| s.trim().parse().ok())
-        .unwrap_or(0)
+/// One regeneration worker with a latest-request-wins write fence. Startup
+/// persona backfill can request hundreds of renders: intermediate requests must
+/// supersede stale writes without each doing their own archive snapshot read.
+///
+/// Claiming, finishing and committing share one lock. A trigger during a read
+/// leaves one latest-generation follow-up; a trigger at worker shutdown either
+/// becomes that follow-up or starts a new worker. No debounce or cached archive
+/// state is needed. Once a newer generation is requested, an older one cannot
+/// publish, even if the newer render fails (the next trigger can try again).
+struct NestRegenGate {
+    state: Mutex<NestRegenState>,
 }
 
-/// Refresh AGENTS.md static content if the template version has changed.
-///
-/// Preserves everything from the `<!-- BEGIN BUZZ MANAGED` marker onward
-/// (the dynamic section managed by `upsert_managed_section`). Replaces
-/// only the static template content above the marker.
-fn refresh_agents_md_if_stale(root: &Path) -> Result<(), String> {
-    let version_path = root.join(".nest-agents-version");
-    if read_version_file(&version_path) >= NEST_AGENTS_VERSION {
-        return Ok(());
+struct NestRegenState {
+    highest_requested: u64,
+    running: bool,
+}
+
+impl NestRegenGate {
+    const fn new() -> Self {
+        Self {
+            state: Mutex::new(NestRegenState {
+                highest_requested: 0,
+                running: false,
+            }),
+        }
     }
 
-    let agents_md = root.join("AGENTS.md");
-    let current =
-        fs::read_to_string(&agents_md).map_err(|e| format!("read {}: {e}", agents_md.display()))?;
+    /// Claim synchronously, before spawning. Only the idle-to-running caller
+    /// owns a worker; all other callers just advance the pending generation.
+    fn claim(&self) -> (u64, bool) {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        state.highest_requested += 1;
+        let start_worker = !state.running;
+        state.running = true;
+        (state.highest_requested, start_worker)
+    }
 
-    let new_content = match find_marker_at_line_start(&current, BEGIN_MARKER) {
-        Some(pos) => {
-            // Find the start of the marker line (could be preceded by blank lines).
-            let marker_line_start = current[..pos].rfind('\n').map(|p| p + 1).unwrap_or(0);
-            // Template content up to (but not including) the managed section,
-            // then the existing managed section from the marker onward.
-            let template_static = match AGENTS_MD.find(BEGIN_MARKER) {
-                Some(tmpl_marker_pos) => {
-                    let tmpl_line_start = AGENTS_MD[..tmpl_marker_pos]
-                        .rfind('\n')
-                        .map(|p| p + 1)
-                        .unwrap_or(0);
-                    &AGENTS_MD[..tmpl_line_start]
+    /// Return work only to the caller that starts the worker. The callback is
+    /// the real regeneration path, supplied here so tests can hold its I/O.
+    fn request<'a, F, Fut>(
+        &'a self,
+        mut regenerate: F,
+    ) -> Option<impl std::future::Future<Output = ()> + 'a>
+    where
+        F: FnMut(u64) -> Fut + 'a,
+        Fut: std::future::Future<Output = Result<(), String>> + 'a,
+    {
+        let (mut generation, start_worker) = self.claim();
+        if !start_worker {
+            return None;
+        }
+        Some(async move {
+            loop {
+                if let Err(error) = regenerate(generation).await {
+                    eprintln!("buzz-desktop: nest context regeneration failed: {error}");
                 }
-                None => AGENTS_MD,
-            };
-            format!("{}{}", template_static, &current[marker_line_start..])
+                let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+                if state.highest_requested == generation {
+                    state.running = false;
+                    return;
+                }
+                generation = state.highest_requested;
+            }
+        })
+    }
+
+    /// Probe the exact claim/commit lock, including inside the commit hook.
+    #[cfg(test)]
+    fn try_claim(&self) -> Option<u64> {
+        let mut state = match self.state.try_lock() {
+            Ok(state) => state,
+            Err(std::sync::TryLockError::WouldBlock) => return None,
+            Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        };
+        state.highest_requested += 1;
+        state.running = true;
+        Some(state.highest_requested)
+    }
+
+    /// Commit `content` for `generation`, dropping the write once a newer
+    /// generation has been *requested* (regardless of whether that newer
+    /// generation has written or ever will). Returns whether the file was
+    /// written. The lock spans the compare and the write so the check-and-write
+    /// is atomic and no await occurs while it is held.
+    fn commit(&self, agents_md: &Path, content: &str, generation: u64) -> io::Result<bool> {
+        self.commit_hooked(agents_md, content, generation, || {})
+    }
+
+    /// [`commit`] with a hook invoked while the lock is held, after the
+    /// eligibility compare and before the write. Production passes a no-op, so
+    /// this is exactly [`commit`]; tests pass a hook that calls [`try_claim`]
+    /// to prove no claim can land inside the compare-then-write window — the
+    /// probe reports the lock held here, whereas the flawed
+    /// separate-watermark/separate-write-lock design would report it free. The
+    /// `impl FnOnce` monomorphizes the no-op away.
+    fn commit_hooked(
+        &self,
+        agents_md: &Path,
+        content: &str,
+        generation: u64,
+        under_lock: impl FnOnce(),
+    ) -> io::Result<bool> {
+        let requested = self
+            .state
+            .lock()
+            .map_err(|_| io::Error::other("nest regen gate lock poisoned"))?;
+        if generation < requested.highest_requested {
+            return Ok(false);
         }
-        None => {
-            // No managed section found — write full template.
-            AGENTS_MD.to_string()
-        }
-    };
-
-    // Atomic write via temp file.
-    let parent = agents_md.parent().ok_or("AGENTS.md has no parent dir")?;
-    let mut tmp = tempfile::NamedTempFile::new_in(parent)
-        .map_err(|e| format!("tempfile in {}: {e}", parent.display()))?;
-    {
-        use std::io::Write;
-        tmp.write_all(new_content.as_bytes())
-            .map_err(|e| format!("write tempfile: {e}"))?;
-    }
-    tmp.persist(&agents_md)
-        .map_err(|e| format!("persist {}: {e}", agents_md.display()))?;
-
-    fs::write(&version_path, format!("{NEST_AGENTS_VERSION}\n"))
-        .map_err(|e| format!("write {}: {e}", version_path.display()))?;
-
-    Ok(())
-}
-
-/// Refresh SKILL.md if the template version has changed.
-///
-/// SKILL.md has no user-editable sections — it is fully overwritten on version bump.
-fn refresh_skill_md_if_stale(root: &Path) -> Result<(), String> {
-    let agents_skill_dir = root.join(".agents/skills/buzz-cli");
-    let version_path = agents_skill_dir.join(".skill-version");
-    if read_version_file(&version_path) >= NEST_SKILL_VERSION {
-        return Ok(());
-    }
-
-    // Migration: if .claude/skills/buzz-cli exists as a real directory
-    // (pre-migration install), copy user's SKILL.md to the new location
-    // then remove the old directory so we can replace it with a symlink.
-    let old_skill_dir = root.join(".claude/skills/buzz-cli");
-    let old_is_real_dir = old_skill_dir
-        .symlink_metadata()
-        .map(|m| m.file_type().is_dir())
-        .unwrap_or(false);
-
-    let skill_content = if old_is_real_dir {
-        // Preserve user-edited content during migration.
-        fs::read_to_string(old_skill_dir.join("SKILL.md"))
-            .unwrap_or_else(|_| BUZZ_CLI_SKILL_MD.to_string())
-    } else {
-        BUZZ_CLI_SKILL_MD.to_string()
-    };
-
-    // Ensure the canonical .agents skill directory exists.
-    fs::create_dir_all(&agents_skill_dir)
-        .map_err(|e| format!("create {}: {e}", agents_skill_dir.display()))?;
-
-    // Atomic write via temp file.
-    let skill_md = agents_skill_dir.join("SKILL.md");
-    let mut tmp = tempfile::NamedTempFile::new_in(&agents_skill_dir)
-        .map_err(|e| format!("tempfile in {}: {e}", agents_skill_dir.display()))?;
-    {
-        use std::io::Write;
-        tmp.write_all(skill_content.as_bytes())
-            .map_err(|e| format!("write tempfile: {e}"))?;
-    }
-    tmp.persist(&skill_md)
-        .map_err(|e| format!("persist {}: {e}", skill_md.display()))?;
-
-    // Replace old real directory with a symlink.
-    if old_is_real_dir {
-        fs::remove_dir_all(&old_skill_dir)
-            .map_err(|e| format!("remove {}: {e}", old_skill_dir.display()))?;
-    }
-
-    // Create/replace the .claude/skills/buzz-cli symlink.
-    #[cfg(unix)]
-    {
-        let claude_skills_dir = root.join(".claude/skills");
-        fs::create_dir_all(&claude_skills_dir)
-            .map_err(|e| format!("create {}: {e}", claude_skills_dir.display()))?;
-        let symlink_path = root.join(".claude/skills/buzz-cli");
-        // Remove any stale symlink before (re)creating.
-        let symlink_exists = symlink_path
-            .symlink_metadata()
-            .map(|m| m.file_type().is_symlink())
-            .unwrap_or(false);
-        if symlink_exists {
-            fs::remove_file(&symlink_path)
-                .map_err(|e| format!("remove symlink {}: {e}", symlink_path.display()))?;
-        }
-        create_symlink(
-            std::path::Path::new("../../.agents/skills/buzz-cli"),
-            &symlink_path,
-        )
-        .map_err(|e| format!("symlink {}: {e}", symlink_path.display()))?;
-    }
-
-    fs::write(&version_path, format!("{NEST_SKILL_VERSION}\n"))
-        .map_err(|e| format!("write {}: {e}", version_path.display()))?;
-
-    Ok(())
-}
-
-fn escape_md_cell(s: &str) -> String {
-    s.replace('|', "\\|").replace('\n', " ")
-}
-
-pub fn render_dynamic_section(
-    personas: &[AgentDefinition],
-    agents: &[ManagedAgentRecord],
-    relay_url: &str,
-) -> String {
-    let active_agents = if agents.is_empty() {
-        "## Active Agents\n\n*(No agents deployed yet. Add agents in the Buzz desktop app.)*"
-            .to_string()
-    } else {
-        let mut table =
-            "## Active Agents\n\n| Name | Persona | How to address |\n|------|---------|----------------|"
-                .to_string();
-        for agent in agents {
-            let role = agent
-                .persona_id
-                .as_deref()
-                .and_then(|pid| personas.iter().find(|p| p.id == pid))
-                .map(|p| p.display_name.as_str())
-                .unwrap_or("—");
-            let name = escape_md_cell(&agent.name);
-            let role_escaped = escape_md_cell(role);
-            table.push_str(&format!("\n| {name} | {role_escaped} | @{name} |"));
-        }
-        table
-    };
-
-    let relay_url = relay_url.replace(['\n', '\r'], "");
-    format!("{active_agents}\n\n## Workspace\n- Relay: {relay_url}")
-}
-
-/// Find a marker that appears at the start of a line (position 0 or preceded by `\n`).
-fn find_marker_at_line_start(content: &str, marker: &str) -> Option<usize> {
-    let mut search_from = 0;
-    while let Some(pos) = content[search_from..].find(marker) {
-        let abs_pos = search_from + pos;
-        if abs_pos == 0 || content.as_bytes()[abs_pos - 1] == b'\n' {
-            return Some(abs_pos);
-        }
-        search_from = abs_pos + 1;
-    }
-    None
-}
-
-/// Find the first valid ordered BEGIN/END marker pair, both at line starts.
-/// Returns `(begin_line_start, after_end)` byte offsets for slicing.
-fn find_managed_markers(content: &str) -> Option<(usize, usize)> {
-    let begin_pos = find_marker_at_line_start(content, BEGIN_MARKER)?;
-    let begin_line_start = content[..begin_pos].rfind('\n').map(|p| p + 1).unwrap_or(0);
-    let end_pos =
-        find_marker_at_line_start(&content[begin_pos..], END_MARKER).map(|p| p + begin_pos)?;
-    let end_of_end = end_pos + END_MARKER.len();
-    let after_end = if content[end_of_end..].starts_with('\n') {
-        end_of_end + 1
-    } else {
-        end_of_end
-    };
-    Some((begin_line_start, after_end))
-}
-
-/// Remove an orphan BEGIN marker line (one with no matching END after it).
-fn strip_orphan_begin_marker(content: &str) -> String {
-    if let Some(pos) = find_marker_at_line_start(content, BEGIN_MARKER) {
-        let line_start = content[..pos].rfind('\n').map(|p| p + 1).unwrap_or(0);
-        let line_end = content[pos..]
-            .find('\n')
-            .map(|p| pos + p + 1)
-            .unwrap_or(content.len());
-        format!(
-            "{}{}",
-            &content[..line_start],
-            content[line_end..]
-                .strip_prefix('\n')
-                .unwrap_or(&content[line_end..])
-        )
-    } else {
-        content.to_string()
+        under_lock();
+        upsert_managed_section(agents_md, content)?;
+        Ok(true)
     }
 }
 
-pub fn upsert_managed_section(file_path: &Path, new_section_content: &str) -> io::Result<()> {
-    let current = fs::read_to_string(file_path)?;
+// A best-effort roster refresh must not strand every newer edit behind an old
+// relay's unbounded NIP-11 body or admission wait. Bound the complete archive
+// operation, not just request headers; timeout preserves the existing fail-open.
+const NEST_ARCHIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
-    let replacement = format!(
-        "{BEGIN_MARKER} — regenerated automatically, do not edit below -->\n{new_section_content}\n{END_MARKER}\n"
-    );
+/// Process-wide regeneration owner and ordered write gate.
+static NEST_REGEN: NestRegenGate = NestRegenGate::new();
 
-    let new_content = match find_managed_markers(&current) {
-        Some((begin_line_start, after_end)) => {
-            format!(
-                "{}{}{}",
-                &current[..begin_line_start],
-                replacement,
-                &current[after_end..]
-            )
-        }
-        None => {
-            let cleaned = strip_orphan_begin_marker(&current);
-            format!("{}\n\n{}", cleaned.trim_end_matches('\n'), replacement)
-        }
-    };
-
-    // Skip write when content is unchanged — avoids bumping mtime on every launch.
-    if new_content == current {
-        return Ok(());
-    }
-
-    let parent = file_path.parent().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "file path has no parent directory",
-        )
-    })?;
-    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
-    {
-        use std::io::Write;
-        tmp.write_all(new_content.as_bytes())?;
-    }
-    tmp.persist(file_path).map_err(|e| e.error)?;
-
-    Ok(())
-}
-
-pub fn regenerate_nest_context(app: &AppHandle) -> Result<(), String> {
+pub async fn regenerate_nest_context<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    generation: u64,
+) -> Result<(), String> {
     let nest = nest_dir().ok_or("cannot resolve home directory for nest")?;
     let agents_md = nest.join("AGENTS.md");
 
@@ -656,23 +512,59 @@ pub fn regenerate_nest_context(app: &AppHandle) -> Result<(), String> {
     let personas = load_personas(app)?;
     let agents = load_managed_agents(app)?;
     let state = app.state::<AppState>();
-    let relay_url = relay_ws_url_with_override(&state);
-    let content = render_dynamic_section(&personas, &agents, &relay_url);
-    upsert_managed_section(&agents_md, &content)
+    // Capture the relay target once, before any network work, so this
+    // generation's rendered footer, NIP-11 signer, and snapshot query all
+    // belong to one relay even if a workspace switch changes the override
+    // between the two archive awaits below.
+    let target = capture_relay_target(&state);
+    // Identity-archived agents live only in the relay's `kind:13535` snapshot;
+    // local records all read `is_active: true`. Fails open (empty set → render
+    // everyone) so an unreachable relay can't blank the roster. The archive read
+    // uses the same captured target as the rendered relay; a later generation's
+    // task always wins the commit, so a fallback-relay boot render cannot bury a
+    // later apply_workspace render.
+    let archived: HashSet<String> = match tokio::time::timeout(
+        NEST_ARCHIVE_TIMEOUT,
+        fetch_archived_pubkeys_at(&state, &target),
+    )
+    .await
+    {
+        Ok(pubkeys) => pubkeys.into_iter().collect(),
+        Err(_) => {
+            eprintln!(
+                "buzz-desktop: nest archive read timed out; rendering without archive filter"
+            );
+            HashSet::new()
+        }
+    };
+    let content = render_dynamic_section(&personas, &agents, &archived, &target.ws_url);
+    NEST_REGEN
+        .commit(&agents_md, &content, generation)
         .map_err(|e| format!("regenerate nest context: {e}"))?;
 
     Ok(())
 }
 
-/// Convenience wrapper: regenerates nest context, logging a warning on failure.
-///
-/// All call sites treat regeneration as fire-and-forget — agents run fine with
-/// a stale AGENTS.md, so we warn and continue rather than propagating the error.
-pub fn try_regenerate_nest(app: &AppHandle) {
-    if let Err(error) = regenerate_nest_context(app) {
-        eprintln!("buzz-desktop: nest context regeneration failed: {error}");
+/// Fire-and-forget regeneration: one worker reads the latest state, with one
+/// pending follow-up if another trigger arrives. Failures still warn and leave
+/// the file for the next trigger; they never strand the worker as running.
+/// Archive/unarchive can race the relay's snapshot update, so an archived agent
+/// may still linger until the next trigger, as before.
+pub fn try_regenerate_nest<R: tauri::Runtime>(app: &AppHandle<R>) {
+    let app = app.clone();
+    if let Some(work) = NEST_REGEN.request(move |generation| {
+        let app = app.clone();
+        async move { regenerate_nest_context(&app, generation).await }
+    }) {
+        tauri::async_runtime::spawn(work);
     }
 }
 
+#[cfg(test)]
+mod regen_tests;
+#[cfg(test)]
+mod regen_trigger_tests;
+#[cfg(test)]
+mod render_tests;
 #[cfg(test)]
 mod tests;

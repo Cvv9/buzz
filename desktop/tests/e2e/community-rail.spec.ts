@@ -4,12 +4,14 @@ import { installMockBridge } from "../helpers/bridge";
 import { FEATURE_OVERRIDES_STORAGE_KEY } from "../helpers/features";
 
 const RELAY_URL = "ws://localhost:3000";
+const THEME_STORAGE_KEY = "buzz-theme";
 const OWNER_PUBKEY = "deadbeef".repeat(8);
 
 function snapshotKey(relayUrl: string) {
   return `buzz-channels.v1:${relayUrl}:${OWNER_PUBKEY.toLowerCase()}`;
 }
 
+const AGENT_PUBKEY = "c".repeat(64);
 const COMMUNITY_A = {
   id: "ws-a",
   name: "Alpha",
@@ -22,6 +24,25 @@ const COMMUNITY_B = {
   relayUrl: "ws://localhost:3001",
   addedAt: "2026-01-02T00:00:00.000Z",
 };
+
+async function expectContentSurfaceHorizontalGutters(
+  page: import("@playwright/test").Page,
+  expectedLeftGutter = 1,
+) {
+  const [mainInsetBox, contentBox] = await Promise.all([
+    page.locator("[data-buzz-glass-inset]").boundingBox(),
+    page.locator("[data-buzz-content-surface]").first().boundingBox(),
+  ]);
+  expect(mainInsetBox).not.toBeNull();
+  expect(contentBox).not.toBeNull();
+  const leftGutter = (contentBox?.x ?? 0) - (mainInsetBox?.x ?? 0);
+  const rightGutter =
+    (mainInsetBox?.x ?? 0) +
+    (mainInsetBox?.width ?? 0) -
+    ((contentBox?.x ?? 0) + (contentBox?.width ?? 0));
+  expect(Math.abs(leftGutter - expectedLeftGutter)).toBeLessThan(0.5);
+  expect(Math.abs(rightGutter - 8)).toBeLessThan(0.5);
+}
 
 async function seedCommunities(
   page: import("@playwright/test").Page,
@@ -64,7 +85,7 @@ test.describe("community rail", () => {
       "overflow",
       "visible",
     );
-    await expect(rail).toHaveCSS("z-index", "0");
+    await expect(rail).toHaveCSS("z-index", "20");
 
     const buttonA = page.getByTestId(`community-rail-button-${COMMUNITY_A.id}`);
     const buttonB = page.getByTestId(`community-rail-button-${COMMUNITY_B.id}`);
@@ -137,6 +158,7 @@ test.describe("community rail", () => {
 
     // The add-community affordance lives at the bottom of the rail.
     await expect(page.getByTestId("community-rail-add")).toBeVisible();
+    await expectContentSurfaceHorizontalGutters(page);
   });
 
   test("restores pointer events after dismissing community settings", async ({
@@ -275,10 +297,87 @@ test.describe("community rail", () => {
     expect(communityBox?.y).toBeLessThan(feedbackBox?.y ?? 0);
     expect(feedbackBox?.y).toBeLessThan(settingsBox?.y ?? 0);
 
-    await page.getByTestId("community-switcher").click();
-
     const menu = page.getByRole("menu", { name: "Community actions" });
+    await communityTrigger.evaluate((trigger) => {
+      trigger.addEventListener(
+        "mouseenter",
+        () => {
+          trigger.dataset.hoverStartedAt = String(performance.now());
+        },
+        { once: true },
+      );
+      trigger.addEventListener("mouseleave", () => {
+        trigger.dataset.leftAt = String(performance.now());
+      });
+      const observer = new MutationObserver((records) => {
+        if (
+          trigger.getAttribute("aria-expanded") === "true" &&
+          !trigger.dataset.expandedAt
+        ) {
+          trigger.dataset.expandedAt = String(performance.now());
+        }
+        if (
+          records.some(
+            (record) =>
+              record.attributeName === "aria-expanded" &&
+              record.oldValue === "true",
+          )
+        ) {
+          trigger.dataset.closedAfterOpening = "true";
+        }
+      });
+      observer.observe(trigger, {
+        attributeFilter: ["aria-expanded"],
+        attributeOldValue: true,
+        attributes: true,
+      });
+    });
+    await communityTrigger.hover();
+    await expect(menu).toBeVisible({ timeout: 700 });
+    const openDelayMs = await communityTrigger.evaluate((trigger) => {
+      const hoverStartedAt = Number(trigger.dataset.hoverStartedAt);
+      const expandedAt = Number(trigger.dataset.expandedAt);
+      if (!Number.isFinite(hoverStartedAt) || !Number.isFinite(expandedAt)) {
+        throw new Error("Community actions open timing was not recorded");
+      }
+      return expandedAt - hoverStartedAt;
+    });
+    expect(openDelayMs).toBeGreaterThanOrEqual(40);
+    expect(openDelayMs).toBeLessThan(300);
+
+    const openTriggerBox = await communityTrigger.boundingBox();
+    const menuBox = await menu.boundingBox();
+    expect(openTriggerBox).not.toBeNull();
+    expect(menuBox).not.toBeNull();
+    if (!openTriggerBox || !menuBox) {
+      throw new Error("Community actions geometry unavailable");
+    }
+    const triggerExitX = openTriggerBox.x + openTriggerBox.width - 1;
+    const triggerExitY = Math.min(
+      openTriggerBox.y + openTriggerBox.height - 4,
+      menuBox.y + menuBox.height - 4,
+    );
+    await page.mouse.move(triggerExitX, triggerExitY);
+    await page.mouse.move(menuBox.x + 8, menuBox.y - 8);
+    await page.waitForTimeout(80);
+    await page.mouse.move(menuBox.x + 8, menuBox.y + 8);
+    const bridgeDurationMs = await communityTrigger.evaluate((trigger) => {
+      const leftAt = Number(trigger.dataset.leftAt);
+      if (!Number.isFinite(leftAt)) {
+        throw new Error(
+          "Community actions trigger exit timing was not recorded",
+        );
+      }
+      return performance.now() - leftAt;
+    });
+    expect(bridgeDurationMs).toBeGreaterThanOrEqual(60);
+    expect(bridgeDurationMs).toBeLessThan(140);
+    await page.waitForTimeout(180);
     await expect(menu).toBeVisible();
+    await expect(communityTrigger).not.toHaveAttribute(
+      "data-closed-after-opening",
+      "true",
+    );
     await expect(
       menu.getByRole("menuitem", { name: "Copy community URL" }),
     ).toBeVisible();
@@ -998,6 +1097,147 @@ test.describe("community rail", () => {
       .toBe(COMMUNITY_B.id);
   });
 
+  test("removes an unreachable community from this device when Leave cannot", async ({
+    page,
+  }) => {
+    await installMockBridge(
+      page,
+      {
+        relayRequiresMembershipError: "relay info returned 404",
+        managedAgents: [{ pubkey: AGENT_PUBKEY, name: "Scout" }],
+        managedAgentRuntimes: [
+          { pubkey: AGENT_PUBKEY, relayUrl: COMMUNITY_A.relayUrl },
+          { pubkey: AGENT_PUBKEY, relayUrl: COMMUNITY_B.relayUrl },
+        ],
+      },
+      { skipCommunitySeed: true },
+    );
+    await seedCommunities(page, [COMMUNITY_A, COMMUNITY_B], COMMUNITY_A.id);
+    await page.goto("/");
+
+    const menu = page.getByRole("menu", { name: "Community actions" });
+    await page.getByTestId("sidebar-profile-avatar-button").click();
+    await page.getByTestId("community-switcher").click();
+    await menu.getByRole("menuitem", { name: "Leave community" }).click();
+    await expect(menu.getByRole("alert")).toContainText(
+      "relay info returned 404 If the community no longer exists, use Remove from this device.",
+    );
+    await expect(
+      page.getByTestId(`community-rail-button-${COMMUNITY_A.id}`),
+    ).toBeVisible();
+
+    await menu
+      .getByRole("menuitem", { name: "Remove from this device" })
+      .click();
+    const dialog = page.getByRole("alertdialog", {
+      name: "Remove from this device",
+    });
+    await expect(dialog).toContainText("your membership isn't revoked");
+    await dialog.getByRole("button", { name: "Remove" }).click();
+
+    await expect(
+      page.getByTestId(`community-rail-button-${COMMUNITY_A.id}`),
+    ).toHaveCount(0);
+    await expect
+      .poll(() =>
+        page.evaluate(() => ({
+          active: window.localStorage.getItem("buzz-active-community-id"),
+          ids: JSON.parse(
+            window.localStorage.getItem("buzz-communities") ?? "[]",
+          ).map((community) => community.id),
+        })),
+      )
+      .toEqual({ active: COMMUNITY_B.id, ids: [COMMUNITY_B.id] });
+    // Removal stops the agent pair on the removed relay, and only that one.
+    await expect
+      .poll(() =>
+        page.evaluate(async () =>
+          (
+            await window.__BUZZ_E2E_INVOKE_MOCK_COMMAND__(
+              "list_managed_agent_runtimes",
+            )
+          ).map(({ relayUrl, lifecycle }) => [relayUrl, lifecycle]),
+        ),
+      )
+      .toEqual([
+        [COMMUNITY_A.relayUrl, "stopped"],
+        [COMMUNITY_B.relayUrl, "ready"],
+      ]);
+
+    // The relay is refused while the community is still saved, and before
+    // the stop sweep runs.
+    const order = await page.evaluate(() => ({
+      savedAtRelayRemoval:
+        window.__BUZZ_E2E_SAVED_COMMUNITIES_AT_RELAY_REMOVAL__,
+      commands: (window.__BUZZ_E2E_COMMANDS__ ?? []).filter((command) =>
+        ["remove_community_relay", "stop_managed_agent_runtime"].includes(
+          command,
+        ),
+      ),
+    }));
+    expect(order).toEqual({
+      savedAtRelayRemoval: [COMMUNITY_A.id, COMMUNITY_B.id],
+      commands: ["remove_community_relay", "stop_managed_agent_runtime"],
+    });
+  });
+
+  test("removing one of two communities on a relay leaves that relay's agents admitted", async ({
+    page,
+  }) => {
+    // Same relay as COMMUNITY_A, spelled differently so both stay saved.
+    const alias = {
+      ...COMMUNITY_B,
+      id: "ws-a-alias",
+      relayUrl: `${COMMUNITY_A.relayUrl}/`,
+    };
+    await installMockBridge(
+      page,
+      {
+        relayRequiresMembershipError: "relay info returned 404",
+        managedAgents: [{ pubkey: AGENT_PUBKEY, name: "Scout" }],
+        managedAgentRuntimes: [
+          { pubkey: AGENT_PUBKEY, relayUrl: COMMUNITY_A.relayUrl },
+        ],
+      },
+      { skipCommunitySeed: true },
+    );
+    await seedCommunities(page, [COMMUNITY_A, alias], COMMUNITY_A.id);
+    await page.goto("/");
+
+    const menu = page.getByRole("menu", { name: "Community actions" });
+    await page.getByTestId("sidebar-profile-avatar-button").click();
+    await page.getByTestId("community-switcher").click();
+    await menu.getByRole("menuitem", { name: "Leave community" }).click();
+    await menu
+      .getByRole("menuitem", { name: "Remove from this device" })
+      .click();
+    await page
+      .getByRole("alertdialog", { name: "Remove from this device" })
+      .getByRole("button", { name: "Remove" })
+      .click();
+
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          window.localStorage.getItem("buzz-active-community-id"),
+        ),
+      )
+      .toBe(alias.id);
+    const after = await page.evaluate(async () => ({
+      commands: (window.__BUZZ_E2E_COMMANDS__ ?? []).filter((command) =>
+        ["remove_community_relay", "stop_managed_agent_runtime"].includes(
+          command,
+        ),
+      ),
+      runtimes: (
+        await window.__BUZZ_E2E_INVOKE_MOCK_COMMAND__(
+          "list_managed_agent_runtimes",
+        )
+      ).map(({ lifecycle }) => lifecycle),
+    }));
+    expect(after).toEqual({ commands: [], runtimes: ["ready"] });
+  });
+
   test("shows the quiet switch gate, not the boot splash, while switching", async ({
     page,
   }) => {
@@ -1040,10 +1280,16 @@ test.describe("community rail", () => {
     context,
     page,
   }) => {
-    await installMockBridge(page, undefined, {
-      autoConnectDefaultRelay: true,
-      skipCommunitySeed: true,
-    });
+    await installMockBridge(
+      page,
+      {
+        managedAgents: [{ pubkey: AGENT_PUBKEY, name: "Scout" }],
+        managedAgentRuntimes: [
+          { pubkey: AGENT_PUBKEY, relayUrl: COMMUNITY_A.relayUrl },
+        ],
+      },
+      { autoConnectDefaultRelay: true, skipCommunitySeed: true },
+    );
     await seedCommunities(page, [COMMUNITY_A], COMMUNITY_A.id);
     await page.goto("/");
 
@@ -1077,6 +1323,32 @@ test.describe("community rail", () => {
         ),
       )
       .toBe("1");
+    // The relay is refused while the last community is still saved, and
+    // before its relay's agent pair is stopped.
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (window.__BUZZ_E2E_COMMANDS__ ?? []).includes(
+            "stop_managed_agent_runtime",
+          ),
+        ),
+      )
+      .toBe(true);
+    const order = await page.evaluate(() => {
+      const commands = window.__BUZZ_E2E_COMMANDS__ ?? [];
+      return {
+        savedAtRelayRemoval:
+          window.__BUZZ_E2E_SAVED_COMMUNITIES_AT_RELAY_REMOVAL__,
+        refusedBeforeStop:
+          commands.includes("remove_community_relay") &&
+          commands.indexOf("remove_community_relay") <
+            commands.indexOf("stop_managed_agent_runtime"),
+      };
+    });
+    expect(order).toEqual({
+      savedAtRelayRemoval: [COMMUNITY_A.id],
+      refusedBeforeStop: true,
+    });
 
     const relaunchPage = await context.newPage();
     await installMockBridge(relaunchPage, undefined, {
@@ -1135,7 +1407,36 @@ test.describe("community rail", () => {
     ).toBeVisible();
   });
 
+  test("keeps the gutter when the mobile sidebar closes without a rail", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 740, height: 516 });
+    await installMockBridge(page, undefined, { skipCommunitySeed: true });
+    await seedCommunities(page, [COMMUNITY_A], COMMUNITY_A.id);
+    await page.goto("/");
+
+    await page
+      .getByRole("button", { name: "Toggle Sidebar", exact: true })
+      .click();
+    await expect(
+      page.locator('[data-sidebar="sidebar"][data-mobile="true"]'),
+    ).toBeVisible();
+    await page.keyboard.press("Escape");
+
+    await expect(
+      page.locator('[data-sidebar="sidebar"][data-mobile="true"]'),
+    ).toBeHidden();
+    await expect(page.locator("[data-collapsed-content-gutter]")).toHaveCSS(
+      "width",
+      "8px",
+    );
+    await expectContentSurfaceHorizontalGutters(page, 9);
+  });
+
   test("hides the rail with a single community", async ({ page }) => {
+    await page.addInitScript((themeStorageKey) => {
+      window.localStorage.setItem(themeStorageKey, "buzz-dark");
+    }, THEME_STORAGE_KEY);
     await installMockBridge(page, undefined, { skipCommunitySeed: true });
     await seedCommunities(page, [COMMUNITY_A], COMMUNITY_A.id);
     await page.goto("/");
@@ -1144,6 +1445,25 @@ test.describe("community rail", () => {
     // adds nothing).
     await expect(page.getByTestId("app-sidebar")).toBeVisible();
     await expect(page.getByTestId("community-rail")).toHaveCount(0);
+
+    await page
+      .getByRole("button", { name: "Toggle Sidebar", exact: true })
+      .click();
+    await expect(
+      page.locator('[data-side="left"][data-state="collapsed"]'),
+    ).toBeVisible();
+    await expect(page.locator("[data-collapsed-content-gutter]")).toHaveCSS(
+      "width",
+      "8px",
+    );
+    const sidebarBackground = await page
+      .locator("[data-buzz-glass-inset]")
+      .evaluate((element) => getComputedStyle(element).backgroundColor);
+    await expect(page.locator("[data-collapsed-content-gutter]")).toHaveCSS(
+      "background-color",
+      sidebarBackground,
+    );
+    await expectContentSurfaceHorizontalGutters(page, 9);
   });
 
   test("keeps the rail visible when the sidebar is collapsed", async ({
@@ -1176,6 +1496,10 @@ test.describe("community rail", () => {
       page.getByTestId(`community-rail-button-${COMMUNITY_B.id}`),
     ).toBeVisible();
     await expect(page.getByTestId("community-rail-add")).toBeVisible();
+    await expect(page.locator("[data-collapsed-content-gutter]")).toHaveCount(
+      0,
+    );
+    await expectContentSurfaceHorizontalGutters(page);
   });
 
   test("clears the macOS traffic lights", async ({ page }) => {

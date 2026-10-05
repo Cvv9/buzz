@@ -31,6 +31,11 @@ pub struct RelayInfo {
     /// admins/owners via the kind:9033 command. Omitted when no icon is set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    /// Host-bound atomic read-state snapshot capability; absent on unresolved hosts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_state_snapshot: Option<serde_json::Value>,
+    /// NIP-AR artifact query transport and enforced resource limits.
+    pub artifacts: serde_json::Value,
     /// Relay operator's public key (hex), if published.
     pub pubkey: Option<String>,
     /// Contact address for the relay operator.
@@ -52,12 +57,28 @@ pub struct RelayInfo {
     /// Public WebSocket URL of the dedicated NIP-AB device-pairing relay.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pairing_relay_url: Option<String>,
+    /// Canonical origin (`scheme://host[:port]`, no path) of the deployment
+    /// admin API, advertised only when the admin surface is configured
+    /// (`config.admin.is_some()`). Lets desktop auto-discover the admin
+    /// console instead of requiring manual URL entry. Scheme follows the same
+    /// loopback rule as NIP-98 `u`-tag verification (see
+    /// [`crate::api::admin::admin_api_origin`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub admin_api: Option<String>,
+    /// Relay-owned GIF search integration. The descriptor is public and
+    /// provider-agnostic; provider credentials remain server-side.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gif: Option<GifDescriptor>,
     /// Relay's own signing pubkey (NIP-11 `self` field, NIP-43).
     #[serde(rename = "self", skip_serializing_if = "Option::is_none")]
     pub relay_self: Option<String>,
     /// Pinned hosted-agent runtime controller protocol descriptor.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub buzz_hosted_agent_runtime: Option<HostedAgentRuntimeDescriptor>,
+    /// NIP-FI federated identity capability descriptor.
+    /// Absent when the relay is in `Off` mode. [FI-TRACE-DISCOVERY-PRIVATE]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub federated_identity: Option<serde_json::Value>,
 }
 
 /// Public discovery descriptor for hosted-agent runtime reconciliation.
@@ -71,6 +92,17 @@ pub struct HostedAgentRuntimeDescriptor {
     pub request_kind: u32,
     /// Public controller status event kind.
     pub status_kind: u32,
+}
+
+/// Public capability descriptor for relay-proxied GIF search.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GifDescriptor {
+    /// Provider identifier understood by Buzz clients.
+    pub provider: String,
+    /// Relay-relative authenticated metadata search endpoint.
+    pub search: String,
+    /// Relay-relative authenticated share-reporting endpoint.
+    pub share: String,
 }
 
 /// Protocol and resource limits advertised in the NIP-11 document.
@@ -95,6 +127,11 @@ pub struct RelayLimitation {
     pub payment_required: bool,
     /// Whether writes are restricted to authorized pubkeys.
     pub restricted_writes: bool,
+    /// Whether the relay supports NIP-FI federated identity assertions.
+    /// Advertised `true` in `Enforce` and `Shadow` mode, so clients attach
+    /// evidence; in `Shadow` the relay evaluates it without requiring it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub federated_identity: bool,
     /// NIP-ER: how the relay delivers due reminders ("push" or "lazy").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub due_delivery_mode: Option<String>,
@@ -114,7 +151,7 @@ pub struct RelayLimitation {
 /// unconditionally reject connections that are not in
 /// `AuthState::Authenticated`. This is independent of the REST API token
 /// toggle (`config.require_auth_token`).
-fn relay_limitation(max_message_length: usize) -> RelayLimitation {
+fn relay_limitation(max_message_length: usize, advertise_fi: bool) -> RelayLimitation {
     let max_not_before_delta: u64 = std::env::var("SPROUT_MAX_NOT_BEFORE_DELTA")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -130,9 +167,38 @@ fn relay_limitation(max_message_length: usize) -> RelayLimitation {
         auth_required: true,
         payment_required: false,
         restricted_writes: true,
+        federated_identity: advertise_fi,
         due_delivery_mode: Some("push".to_string()),
         max_not_before_delta: Some(max_not_before_delta),
     }
+}
+
+/// Build-time capability flags for [`RelayInfo::build`].
+///
+/// These protocol advertisement decisions are separate from optional service
+/// discovery and the relay's stable signing identity.
+#[derive(Default, Clone, Copy)]
+pub(crate) struct RelayCapabilityFlags {
+    /// Whether NIP-43 (relay membership) is advertised in `supported_nips`.
+    pub advertise_nip43: bool,
+    /// Whether NIP-FI (federated identity) is advertised.
+    pub advertise_fi: bool,
+}
+
+/// Optional deployment service discovery for [`RelayInfo::build`].
+///
+/// Every field is a pre-derived public scalar. Provider credentials and
+/// unscoped tenant, database, search, or audit inputs must never enter discovery.
+#[derive(Default, Clone, Copy)]
+pub(crate) struct RelayServiceDiscovery<'a> {
+    /// Public WebSocket URL of the dedicated device-pairing relay.
+    pub pairing_relay_url: Option<&'a str>,
+    /// Canonical admin API origin, only when its surface is configured.
+    pub admin_api: Option<&'a str>,
+    /// Public GIF provider identifier, never a provider credential.
+    pub gif_provider: Option<&'a str>,
+    /// Exact controller trust anchor for hosted-agent runtime reconciliation.
+    pub hosted_agent_runtime_controller_pubkey: Option<&'a str>,
 }
 
 impl RelayInfo {
@@ -149,19 +215,38 @@ impl RelayInfo {
     /// [`workspace_icon_for_host`]) — a host-scoped scalar, pre-fetched by
     /// the caller so `build` itself stays static-input.
     ///
-    /// `advertise_nip43` controls whether NIP-43 (relay membership) is added
+    /// `flags.advertise_nip43` controls whether NIP-43 (relay membership) is added
     /// to `supported_nips`. Set `true` only when the relay actually emits and
     /// gates on NIP-43 events — i.e. has a stable key AND enforces
     /// membership. NIP-43 events are verified against `self`, so it is a
     /// programmer error to advertise NIP-43 without a `relay_self`.
-    pub fn build(
+    ///
+    /// `discovery` groups optional, pre-derived deployment service descriptors.
+    /// Its `admin_api` is the canonical admin API origin, advertised only when the
+    /// admin surface is configured; a per-deployment scalar derived from
+    /// config by the caller (see [`nip11_document`]).
+    ///
+    /// Its `gif_provider` is a config-derived provider identifier. When present,
+    /// `build` advertises the provider-agnostic `buzz-gif` extension and the
+    /// relay-relative metadata search endpoint. It must never contain a
+    /// provider credential.
+    pub(crate) fn build(
         relay_self: Option<&str>,
         icon: Option<&str>,
-        advertise_nip43: bool,
+        flags: RelayCapabilityFlags,
         max_message_length: usize,
-        pairing_relay_url: Option<&str>,
-        hosted_agent_runtime_controller_pubkey: Option<&str>,
+        discovery: RelayServiceDiscovery<'_>,
     ) -> Self {
+        let RelayCapabilityFlags {
+            advertise_nip43,
+            advertise_fi,
+        } = flags;
+        let RelayServiceDiscovery {
+            pairing_relay_url,
+            admin_api,
+            gif_provider,
+            hosted_agent_runtime_controller_pubkey,
+        } = discovery;
         debug_assert!(
             !advertise_nip43 || relay_self.is_some(),
             "advertise_nip43=true requires relay_self=Some — NIP-43 events are verified against `self`"
@@ -172,19 +257,60 @@ impl RelayInfo {
             supported_nips.push(NIP_RELAY_MEMBERSHIP);
         }
 
+        let mut supported_extensions = vec!["nip-er".to_string(), "nip-ar".to_string()];
+        let gif = gif_provider.map(|provider| {
+            supported_extensions.push("buzz-gif".to_string());
+            GifDescriptor {
+                provider: provider.to_string(),
+                search: crate::api::gifs::SEARCH_PATH.to_string(),
+                share: crate::api::gifs::SHARE_PATH.to_string(),
+            }
+        });
+
+        // NIP-FI discovery descriptor. Per [FI-TRACE-DISCOVERY-PRIVATE], the
+        // document is byte-identical across all enrollment modes — no issuer
+        // URLs, audiences, claim names, or per-tenant details. Only the
+        // capability fact (core transport profile + freshness class) is public.
+        let federated_identity = advertise_fi.then(|| {
+            serde_json::json!({
+                "core": "client-attached",
+                "assertion_freshness": {
+                    "class": "offline-jwt",
+                    "maximum_residual_upstream_revocation_seconds": null
+                }
+            })
+        });
+
         Self {
             name: "Buzz Relay".to_string(),
             description: "Buzz — private team communication relay".to_string(),
             icon: icon.filter(|s| !s.is_empty()).map(|s| s.to_string()),
+            read_state_snapshot: None,
+            artifacts: serde_json::json!({
+                "version": 1, "revision_kind": 45010, "removal_kind": 45011,
+                "query": "/query", "count": "/count",
+                "modes": ["current", "history"],
+                "websocket_query_extensions": false,
+                "max_tags": buzz_core::artifact::MAX_TAGS,
+                "max_tag_name_bytes": buzz_core::artifact::MAX_TAG_NAME_BYTES,
+                "max_tag_value_bytes": buzz_core::artifact::MAX_TAG_VALUE_BYTES,
+                "max_tag_bytes": buzz_core::artifact::MAX_TAG_BYTES,
+                "max_predicates": buzz_core::artifact::MAX_PREDICATES,
+                "max_values": buzz_core::artifact::MAX_QUERY_VALUES,
+                "max_page_size": buzz_core::artifact::MAX_PAGE_SIZE,
+                "max_offset": buzz_core::artifact::MAX_OFFSET, "max_filters": 1, "query_timeout_ms": 2000
+            }),
             pubkey: None,
             contact: None,
             supported_nips,
-            supported_extensions: Some(vec!["nip-er".to_string()]),
+            supported_extensions: Some(supported_extensions),
             push: None,
             software: "https://github.com/block/buzz".to_string(),
             version: env!("CARGO_PKG_VERSION").to_string(),
-            limitation: Some(relay_limitation(max_message_length)),
+            limitation: Some(relay_limitation(max_message_length, advertise_fi)),
             pairing_relay_url: pairing_relay_url.map(str::to_string),
+            admin_api: admin_api.map(str::to_string),
+            gif,
             relay_self: relay_self.map(|s| s.to_string()),
             buzz_hosted_agent_runtime: hosted_agent_runtime_controller_pubkey.map(|pubkey| {
                 HostedAgentRuntimeDescriptor {
@@ -194,6 +320,7 @@ impl RelayInfo {
                     status_kind: buzz_core::kind::KIND_HOSTED_AGENT_RUNTIME_STATUS,
                 }
             }),
+            federated_identity,
         }
     }
 }
@@ -231,14 +358,10 @@ fn push_descriptor(
             "pubkey": relay_keypair.public_key().to_hex(),
             "current": true
         }],
-        "app_profiles": [
-            {"id": "buzz-ios-production", "transport": "apns"},
-            {"id": "buzz-ios-sandbox", "transport": "apns"}
-        ],
+        "app_profiles": [{"id": "buzz-ios-dogfood", "transport": "apns"}],
         "push_kinds": crate::handlers::push_lease::PUSH_KINDS,
-        "urgent_kinds": crate::handlers::push_lease::URGENT_KINDS,
         "h_grammar": "uuid-v4-lowercase",
-        "class_support": {"apns": ["silent", "default", "time_sensitive"]},
+        "class_support": {"apns": ["default"]},
         "limitation": {
             "max_lease_ttl": 2592000,
             "max_leases_per_pubkey": 16,
@@ -260,23 +383,41 @@ fn push_descriptor(
 ///
 /// Centralised so the content-negotiated root handler and the dedicated
 /// `/info` endpoint can't drift apart. Every input to `RelayInfo::build`
-/// stays a pre-derived scalar: [`nip11_facts`] (config + keypair), the pinned
-/// controller pubkey from config, plus the host-scoped workspace icon.
+/// stays a pre-derived scalar: [`nip11_facts`] (config + keypair) plus the
+/// host-scoped workspace icon. Optional provider capabilities are passed as
+/// config-derived scalar identifiers; no provider credential enters NIP-11.
 pub(crate) async fn nip11_document(state: &crate::state::AppState, raw_host: &str) -> RelayInfo {
     let (relay_self, advertise_nip43) = nip11_facts(state);
     let icon = workspace_icon_for_host(state, raw_host).await;
+    let admin_api = admin_api_advertisement(state.config.admin.as_ref());
+    let advertise_fi = state.config.nip_fi.mode.evaluates();
     let mut info = RelayInfo::build(
         relay_self.as_deref(),
         icon.as_deref(),
-        advertise_nip43,
+        RelayCapabilityFlags {
+            advertise_nip43,
+            advertise_fi,
+        },
         state.config.max_frame_bytes,
-        state.config.pairing_relay_url.as_deref(),
-        state
-            .config
-            .hosted_agent_runtime_controller_pubkey
-            .as_deref(),
+        RelayServiceDiscovery {
+            pairing_relay_url: state.config.pairing_relay_url.as_deref(),
+            admin_api: admin_api.as_deref(),
+            gif_provider: state.config.klipy.as_ref().map(|_| "klipy"),
+            hosted_agent_runtime_controller_pubkey: state
+                .config
+                .hosted_agent_runtime_controller_pubkey
+                .as_deref(),
+        },
     );
-    let tenant_host = if state.config.push_gateway_delivery_url.is_some() {
+    if let Ok(tenant) = crate::tenant::bind_community(&state.db, raw_host).await {
+        info.read_state_snapshot = Some(serde_json::json!({
+            "version": 1,
+            "community_id": tenant.community().as_uuid(),
+            "max_events": buzz_db::read_state::MAX_SNAPSHOT_EVENTS,
+            "max_event_array_bytes": buzz_db::read_state::MAX_SNAPSHOT_BYTES,
+        }));
+    }
+    let tenant_host = if state.config.push_enabled {
         crate::tenant::bind_community(&state.db, raw_host)
             .await
             .ok()
@@ -285,7 +426,7 @@ pub(crate) async fn nip11_document(state: &crate::state::AppState, raw_host: &st
         None
     };
     if let Some(push) = push_descriptor(
-        state.config.push_gateway_delivery_url.is_some(),
+        state.config.push_enabled,
         &state.config.relay_url,
         &state.config.push_executor_key_id,
         &state.relay_keypair,
@@ -339,6 +480,18 @@ pub(crate) fn nip11_facts(state: &crate::state::AppState) -> (Option<String>, bo
     (relay_self, advertise_nip43)
 }
 
+/// Derives the NIP-11 `admin_api` advertisement: the canonical admin API
+/// origin, present iff the admin surface is configured
+/// (`config.admin.is_some()`), absent otherwise — never an empty string.
+///
+/// The origin is derived purely from the configured admin host by
+/// [`crate::api::admin::admin_api_origin`] (loopback → `http`, else `https`),
+/// so it is a per-deployment scalar with no unscoped DB/tenant input, keeping
+/// [`RelayInfo::build`] within its static-input contract.
+fn admin_api_advertisement(admin: Option<&crate::config::AdminConfig>) -> Option<String> {
+    admin.map(|admin| admin.api_origin.clone())
+}
+
 /// Multi-tenant conformance static-input fence (surface row "NIP-11 relay info
 /// and relay `self`").
 ///
@@ -359,19 +512,61 @@ pub(crate) fn nip11_facts(state: &crate::state::AppState) -> (Option<String>, bo
 /// **this file fails to compile** — turning a silent cross-tenant leak into a
 /// hard build break, the same way a deny-lint would. If you must change this
 /// signature, you are changing the conformance contract: update the conformance
-/// doc and prove the new input is host-scoped, not unscoped, first.
-#[allow(clippy::type_complexity)]
+/// doc and prove the new input is host-scoped, not unscoped, first. The discovery
+/// fields have their own exhaustive scalar fence below so grouping them cannot
+/// hide an additional unscoped input.
 const _RELAY_INFO_BUILD_STATIC_INPUT_FENCE: fn(
     Option<&str>,
     Option<&str>,
-    bool,
+    RelayCapabilityFlags,
     usize,
-    Option<&str>,
-    Option<&str>,
+    RelayServiceDiscovery<'_>,
 ) -> RelayInfo = RelayInfo::build;
+
+/// Preserve the static-input contract inside the grouped discovery settings:
+/// adding a field or changing any field away from `Option<&str>` fails here.
+const _RELAY_SERVICE_DISCOVERY_STATIC_INPUT_FENCE: for<'a> fn(
+    RelayServiceDiscovery<'a>,
+) -> [Option<&'a str>; 4] = |discovery| {
+    let RelayServiceDiscovery {
+        pairing_relay_url,
+        admin_api,
+        gif_provider,
+        hosted_agent_runtime_controller_pubkey,
+    } = discovery;
+    [
+        pairing_relay_url,
+        admin_api,
+        gif_provider,
+        hosted_agent_runtime_controller_pubkey,
+    ]
+};
 
 #[cfg(test)]
 mod tests {
+    // Clients attach evidence only when the relay advertises NIP-FI, so a
+    // shadow relay must serve enforce's exact document. Mutation: gating on
+    // `enforces()` makes shadow serve Off's document → RED.
+    #[tokio::test]
+    async fn shadow_serves_the_same_nip11_document_as_enforce() {
+        use buzz_auth::NipFiMode;
+        let base =
+            crate::state::tests::test_state_with_database_url("postgres://127.0.0.1:1/none").await;
+        let mut docs = Vec::new();
+        for mode in [NipFiMode::Off, NipFiMode::Enforce, NipFiMode::Shadow] {
+            let mut state = (*base).clone();
+            let mut config = (*state.config).clone();
+            config.nip_fi.mode = mode;
+            state.config = std::sync::Arc::new(config);
+            docs.push(
+                serde_json::to_string(&super::nip11_document(&state, "relay.example").await)
+                    .unwrap(),
+            );
+        }
+        assert_ne!(docs[0], docs[1], "enforce advertises NIP-FI");
+        assert_eq!(docs[2], docs[1]);
+    }
+
     use super::*;
 
     #[test]
@@ -422,7 +617,13 @@ mod tests {
 
     #[test]
     fn build_advertises_buzz_repository_url() {
-        let info = RelayInfo::build(None, None, false, DEFAULT_MAX_FRAME_BYTES, None, None);
+        let info = RelayInfo::build(
+            None,
+            None,
+            RelayCapabilityFlags::default(),
+            DEFAULT_MAX_FRAME_BYTES,
+            RelayServiceDiscovery::default(),
+        );
         assert_eq!(info.software, "https://github.com/block/buzz");
     }
 
@@ -431,10 +632,12 @@ mod tests {
         let info = RelayInfo::build(
             None,
             None,
-            false,
+            RelayCapabilityFlags::default(),
             DEFAULT_MAX_FRAME_BYTES,
-            Some("wss://pairing.buzz.xyz"),
-            None,
+            RelayServiceDiscovery {
+                pairing_relay_url: Some("wss://pairing.buzz.xyz"),
+                ..Default::default()
+            },
         );
         let json = serde_json::to_value(&info).expect("serialize");
         assert_eq!(
@@ -443,7 +646,13 @@ mod tests {
             Some("wss://pairing.buzz.xyz")
         );
 
-        let info = RelayInfo::build(None, None, false, DEFAULT_MAX_FRAME_BYTES, None, None);
+        let info = RelayInfo::build(
+            None,
+            None,
+            RelayCapabilityFlags::default(),
+            DEFAULT_MAX_FRAME_BYTES,
+            RelayServiceDiscovery::default(),
+        );
         let json = serde_json::to_value(&info).expect("serialize");
         assert!(json.get("pairing_relay_url").is_none());
     }
@@ -454,10 +663,12 @@ mod tests {
         let configured = RelayInfo::build(
             None,
             None,
-            false,
+            RelayCapabilityFlags::default(),
             DEFAULT_MAX_FRAME_BYTES,
-            None,
-            Some(&controller),
+            RelayServiceDiscovery {
+                hosted_agent_runtime_controller_pubkey: Some(&controller),
+                ..Default::default()
+            },
         );
         let json = serde_json::to_value(configured).expect("serialize configured NIP-11");
         assert_eq!(
@@ -470,9 +681,52 @@ mod tests {
             }))
         );
 
-        let disabled = RelayInfo::build(None, None, false, DEFAULT_MAX_FRAME_BYTES, None, None);
+        let disabled = RelayInfo::build(
+            None,
+            None,
+            RelayCapabilityFlags::default(),
+            DEFAULT_MAX_FRAME_BYTES,
+            RelayServiceDiscovery::default(),
+        );
         let json = serde_json::to_value(disabled).expect("serialize disabled NIP-11");
         assert!(json.get("buzz_hosted_agent_runtime").is_none());
+    }
+
+    #[test]
+    fn gif_descriptor_and_extension_are_config_gated_and_credential_free() {
+        let info = RelayInfo::build(
+            None,
+            None,
+            RelayCapabilityFlags::default(),
+            DEFAULT_MAX_FRAME_BYTES,
+            RelayServiceDiscovery {
+                gif_provider: Some("klipy"),
+                ..Default::default()
+            },
+        );
+
+        let json = serde_json::to_value(&info).expect("serialize");
+        assert_eq!(json["gif"]["provider"], "klipy");
+        assert_eq!(json["gif"]["search"], "/gifs/search");
+        assert_eq!(json["gif"]["share"], "/gifs/share");
+        assert!(json["supported_extensions"]
+            .as_array()
+            .expect("extensions")
+            .contains(&serde_json::json!("buzz-gif")));
+        assert!(!json.to_string().contains("api_key"));
+
+        let unconfigured = RelayInfo::build(
+            None,
+            None,
+            RelayCapabilityFlags::default(),
+            DEFAULT_MAX_FRAME_BYTES,
+            RelayServiceDiscovery::default(),
+        );
+        assert!(unconfigured.gif.is_none());
+        assert!(!unconfigured
+            .supported_extensions
+            .expect("extensions")
+            .contains(&"buzz-gif".to_string()));
     }
 
     /// NIP-WP → NIP-11 mirror: a set workspace icon is served in the standard
@@ -483,10 +737,9 @@ mod tests {
         let info = RelayInfo::build(
             None,
             Some("data:image/webp;base64,UklGRg=="),
-            false,
+            RelayCapabilityFlags::default(),
             DEFAULT_MAX_FRAME_BYTES,
-            None,
-            None,
+            RelayServiceDiscovery::default(),
         );
         assert_eq!(
             info.icon.as_deref(),
@@ -499,7 +752,13 @@ mod tests {
         );
 
         for icon in [None, Some("")] {
-            let info = RelayInfo::build(None, icon, false, DEFAULT_MAX_FRAME_BYTES, None, None);
+            let info = RelayInfo::build(
+                None,
+                icon,
+                RelayCapabilityFlags::default(),
+                DEFAULT_MAX_FRAME_BYTES,
+                RelayServiceDiscovery::default(),
+            );
             assert!(info.icon.is_none());
             let json = serde_json::to_value(&info).expect("serialize");
             assert!(
@@ -514,12 +773,18 @@ mod tests {
         // REQ, EVENT, and COUNT all unconditionally require
         // `AuthState::Authenticated` (see `crates/buzz-relay/src/handlers/`),
         // so the NIP-11 doc must advertise it.
-        assert!(relay_limitation(DEFAULT_MAX_FRAME_BYTES).auth_required);
+        assert!(relay_limitation(DEFAULT_MAX_FRAME_BYTES, false).auth_required);
     }
 
     #[test]
     fn max_message_length_uses_configured_frame_limit() {
-        let info = RelayInfo::build(None, None, false, 262_144, None, None);
+        let info = RelayInfo::build(
+            None,
+            None,
+            RelayCapabilityFlags::default(),
+            262_144,
+            RelayServiceDiscovery::default(),
+        );
         let limitation = info.limitation.expect("limitation");
         assert_eq!(limitation.max_message_length, Some(262_144));
     }
@@ -550,7 +815,13 @@ mod tests {
     /// Open relay, ephemeral key — both `self` and NIP-43 are absent.
     #[test]
     fn build_open_relay_ephemeral_key_omits_self_and_nip43() {
-        let info = RelayInfo::build(None, None, false, DEFAULT_MAX_FRAME_BYTES, None, None);
+        let info = RelayInfo::build(
+            None,
+            None,
+            RelayCapabilityFlags::default(),
+            DEFAULT_MAX_FRAME_BYTES,
+            RelayServiceDiscovery::default(),
+        );
         assert!(info.relay_self.is_none());
         assert!(!info.supported_nips.contains(&NIP_RELAY_MEMBERSHIP));
     }
@@ -563,7 +834,13 @@ mod tests {
     #[test]
     fn build_open_relay_stable_key_advertises_self_but_not_nip43() {
         let pk = "0000000000000000000000000000000000000000000000000000000000000001";
-        let info = RelayInfo::build(Some(pk), None, false, DEFAULT_MAX_FRAME_BYTES, None, None);
+        let info = RelayInfo::build(
+            Some(pk),
+            None,
+            RelayCapabilityFlags::default(),
+            DEFAULT_MAX_FRAME_BYTES,
+            RelayServiceDiscovery::default(),
+        );
         assert_eq!(info.relay_self.as_deref(), Some(pk));
         assert!(!info.supported_nips.contains(&NIP_RELAY_MEMBERSHIP));
     }
@@ -572,7 +849,16 @@ mod tests {
     #[test]
     fn build_membership_relay_advertises_self_and_nip43() {
         let pk = "0000000000000000000000000000000000000000000000000000000000000001";
-        let info = RelayInfo::build(Some(pk), None, true, DEFAULT_MAX_FRAME_BYTES, None, None);
+        let info = RelayInfo::build(
+            Some(pk),
+            None,
+            RelayCapabilityFlags {
+                advertise_nip43: true,
+                advertise_fi: false,
+            },
+            DEFAULT_MAX_FRAME_BYTES,
+            RelayServiceDiscovery::default(),
+        );
         assert_eq!(info.relay_self.as_deref(), Some(pk));
         assert!(info.supported_nips.contains(&NIP_RELAY_MEMBERSHIP));
     }
@@ -583,6 +869,80 @@ mod tests {
     #[test]
     #[should_panic(expected = "advertise_nip43=true requires relay_self=Some")]
     fn build_nip43_without_self_panics_in_debug() {
-        let _ = RelayInfo::build(None, None, true, DEFAULT_MAX_FRAME_BYTES, None, None);
+        let _ = RelayInfo::build(
+            None,
+            None,
+            RelayCapabilityFlags {
+                advertise_nip43: true,
+                advertise_fi: false,
+            },
+            DEFAULT_MAX_FRAME_BYTES,
+            RelayServiceDiscovery::default(),
+        );
+    }
+
+    fn admin_config(host: &str) -> crate::config::AdminConfig {
+        crate::config::AdminConfig {
+            bind_addr: "127.0.0.1:3001".parse().unwrap(),
+            api_origin: crate::api::admin::admin_api_origin(host),
+            operator_pubkeys: Vec::new(),
+            host: host.to_string(),
+            auth: crate::config::AdminAuth::Nip98,
+            web_dir: None,
+        }
+    }
+
+    /// The admin surface is unconfigured: `admin_api` must be absent, and the
+    /// serialized document must omit the field entirely (not `null`).
+    #[test]
+    fn admin_api_absent_when_admin_surface_not_configured() {
+        assert_eq!(admin_api_advertisement(None), None);
+
+        let info = RelayInfo::build(
+            None,
+            None,
+            RelayCapabilityFlags::default(),
+            DEFAULT_MAX_FRAME_BYTES,
+            RelayServiceDiscovery::default(),
+        );
+        assert!(info.admin_api.is_none());
+        let json = serde_json::to_value(&info).expect("serialize");
+        assert!(
+            json.get("admin_api").is_none(),
+            "unconfigured admin surface must omit the `admin_api` field"
+        );
+    }
+
+    /// Loopback admin host → advertised as an `http://` origin (matches the
+    /// NIP-98 canonicalizer's loopback rule so a discovered origin signs
+    /// against the scheme the relay verifies).
+    #[test]
+    fn admin_api_advertised_as_http_for_loopback_host() {
+        let advertised = admin_api_advertisement(Some(&admin_config("127.0.0.1:3000")));
+        assert_eq!(advertised.as_deref(), Some("http://127.0.0.1:3000"));
+
+        let info = RelayInfo::build(
+            None,
+            None,
+            RelayCapabilityFlags::default(),
+            DEFAULT_MAX_FRAME_BYTES,
+            RelayServiceDiscovery {
+                admin_api: advertised.as_deref(),
+                ..Default::default()
+            },
+        );
+        let json = serde_json::to_value(&info).expect("serialize");
+        assert_eq!(
+            json.get("admin_api").and_then(|v| v.as_str()),
+            Some("http://127.0.0.1:3000")
+        );
+    }
+
+    /// Non-loopback admin host → advertised as an `https://` origin, with no
+    /// path/query/fragment (a bare origin).
+    #[test]
+    fn admin_api_advertised_as_https_for_non_loopback_host() {
+        let advertised = admin_api_advertisement(Some(&admin_config("admin.example.com")));
+        assert_eq!(advertised.as_deref(), Some("https://admin.example.com"));
     }
 }

@@ -9,9 +9,10 @@
 //! `rust-s3 = "0.37"` is shared across the workspace with `buzz-media`. The
 //! `fail-on-err` Cargo feature is unified ON across the build graph, which
 //! means non-2xx responses arrive here as `S3Error::HttpFailWithBody(code,
-//! body)` *before* the caller sees `ResponseData`. The pointer-CAS path treats
-//! the precondition-failure status (412) as a *semantic* result (`LostRace`),
-//! not an error — see `classify_cas`. Empirically verified against MinIO in
+//! body)` *before* the caller sees `ResponseData`. The conditional-write path
+//! treats the precondition-failure status (412) as a *semantic* result
+//! (`LostRace`), not a retryable error — see `classify_cas`. Empirically
+//! verified against MinIO in
 //! `probe::probe_412_surfacing`.
 //!
 //! ## Content addressing (A1)
@@ -27,8 +28,11 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
+use s3::command::Command;
 use s3::creds::Credentials;
 use s3::error::S3Error;
+use s3::request::tokio_backend::ReqwestRequest;
+use s3::request::Request as _;
 use s3::{Bucket, Region};
 use sha2::{Digest, Sha256};
 
@@ -171,6 +175,71 @@ pub struct GitStore {
     bucket: Arc<Bucket>,
 }
 
+/// Result of one conditional object PUT.
+///
+/// A precondition failure is an expected outcome for content-addressed writes
+/// and pointer CAS races. It stays distinct from transport errors so callers
+/// cannot accidentally retry a classified losing race.
+#[derive(Debug)]
+enum ConditionalPutResult {
+    Written {
+        status_code: u16,
+        etag: Option<String>,
+    },
+    PreconditionFailed,
+}
+
+/// Transport telemetry contains only fixed labels and boolean predicates.
+/// Never retain or format an error: it may contain URLs, bodies, or credentials.
+struct TransportErrorDiagnostics {
+    kind: &'static str,
+    timeout: bool,
+    connect: bool,
+    body: bool,
+    request: bool,
+    decode: bool,
+    io_kind: &'static str,
+}
+
+fn transport_error_diagnostics(error: &S3Error) -> TransportErrorDiagnostics {
+    let mut diagnostics = TransportErrorDiagnostics {
+        kind: "non_transport",
+        timeout: false,
+        connect: false,
+        body: false,
+        request: false,
+        decode: false,
+        io_kind: "none",
+    };
+    match error {
+        S3Error::Reqwest(error) => {
+            diagnostics.kind = "reqwest";
+            diagnostics.timeout = error.is_timeout();
+            diagnostics.connect = error.is_connect();
+            diagnostics.body = error.is_body();
+            diagnostics.request = error.is_request();
+            diagnostics.decode = error.is_decode();
+        }
+        S3Error::Http(_) => diagnostics.kind = "http",
+        S3Error::Io(error) => {
+            diagnostics.kind = "io";
+            diagnostics.io_kind = match error.kind() {
+                std::io::ErrorKind::ConnectionReset => "connection_reset",
+                std::io::ErrorKind::ConnectionAborted => "connection_aborted",
+                std::io::ErrorKind::BrokenPipe => "broken_pipe",
+                std::io::ErrorKind::TimedOut => "timed_out",
+                std::io::ErrorKind::UnexpectedEof => "unexpected_eof",
+                std::io::ErrorKind::NotConnected => "not_connected",
+                std::io::ErrorKind::WouldBlock => "would_block",
+                std::io::ErrorKind::Interrupted => "interrupted",
+                _ => "other",
+            };
+        }
+        _ => {}
+    }
+    diagnostics
+}
+
 impl GitStore {
     /// Build a client against an S3-compatible endpoint (e.g. MinIO).
     ///
@@ -229,6 +298,54 @@ impl GitStore {
         format!("{prefix}/{}", hex::encode(h.finalize()))
     }
 
+    /// Send one conditional PUT without rust-s3's generic retry wrapper.
+    ///
+    /// With rust-s3's `fail-on-err` feature, a 412 is returned as
+    /// `S3Error::HttpFailWithBody`. Its high-level PUT helper retries every
+    /// error, including that already-classified losing outcome. Conditional
+    /// writes instead need one observed attempt: a 412 means the precondition
+    /// lost, while a transport failure remains an error for the caller to
+    /// surface. This direct request uses the same bucket-owned pooled reqwest
+    /// client, signer, and credentials as rust-s3's high-level helper.
+    ///
+    /// `ReqwestRequest::response` consumes non-2xx bodies before returning a
+    /// `HttpFailWithBody`; this method consumes successful bodies too, so both
+    /// outcomes release the connection for reuse.
+    async fn put_object_conditionally_once(
+        &self,
+        key: &str,
+        bytes: &[u8],
+        content_type: &str,
+        headers: axum::http::HeaderMap,
+    ) -> Result<ConditionalPutResult, S3Error> {
+        let request = ReqwestRequest::new(
+            self.bucket.as_ref(),
+            key,
+            Command::PutObject {
+                content: bytes,
+                content_type,
+                custom_headers: Some(headers),
+                multipart: None,
+            },
+        )
+        .await?;
+
+        match request.response().await {
+            Ok(response) => {
+                let status_code = response.status().as_u16();
+                let etag = response
+                    .headers()
+                    .get(axum::http::header::ETAG)
+                    .and_then(|value| value.to_str().ok())
+                    .map(ToOwned::to_owned);
+                let _drained_body = response.bytes().await?;
+                Ok(ConditionalPutResult::Written { status_code, etag })
+            }
+            Err(S3Error::HttpFailWithBody(412, _)) => Ok(ConditionalPutResult::PreconditionFailed),
+            Err(error) => Err(error),
+        }
+    }
+
     /// Derive the idx sidecar key for a content-addressed pack digest.
     ///
     /// The idx is a pure cache derived from `packs/<pack_digest>`, so it is
@@ -266,20 +383,22 @@ impl GitStore {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert(axum::http::header::IF_NONE_MATCH, "*".parse().unwrap());
         match self
-            .bucket
-            .put_object_with_content_type_and_headers(&key, bytes, content_type, Some(headers))
+            .put_object_conditionally_once(&key, bytes, content_type, headers)
             .await
         {
-            Ok(resp) if (200..300).contains(&resp.status_code()) => Ok(key),
+            Ok(ConditionalPutResult::Written { status_code, .. })
+                if (200..300).contains(&status_code) =>
+            {
+                Ok(key)
+            }
             // 412 on a content-addressed key means the key already holds the
             // same bytes (by construction — the key is the digest). A1 is
             // preserved without a defensive GET.
-            Err(S3Error::HttpFailWithBody(412, _)) => Ok(key),
-            Ok(resp) => Err(StoreError::Backend(S3Error::HttpFailWithBody(
-                resp.status_code(),
-                "unexpected status".into(),
-            ))),
-            Err(e) => Err(StoreError::Backend(e)),
+            Ok(ConditionalPutResult::PreconditionFailed) => Ok(key),
+            Ok(ConditionalPutResult::Written { status_code, .. }) => Err(StoreError::Backend(
+                S3Error::HttpFailWithBody(status_code, "unexpected status".into()),
+            )),
+            Err(error) => Err(StoreError::Backend(error)),
         }
     }
 
@@ -301,22 +420,19 @@ impl GitStore {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert(axum::http::header::IF_NONE_MATCH, "*".parse().unwrap());
         match self
-            .bucket
-            .put_object_with_content_type_and_headers(
-                &key,
-                idx_bytes,
-                "application/x-git-index",
-                Some(headers),
-            )
+            .put_object_conditionally_once(&key, idx_bytes, "application/x-git-index", headers)
             .await
         {
-            Ok(resp) if (200..300).contains(&resp.status_code()) => Ok(key),
-            Err(S3Error::HttpFailWithBody(412, _)) => Ok(key),
-            Ok(resp) => Err(StoreError::Backend(S3Error::HttpFailWithBody(
-                resp.status_code(),
-                "unexpected status".into(),
-            ))),
-            Err(e) => Err(StoreError::Backend(e)),
+            Ok(ConditionalPutResult::Written { status_code, .. })
+                if (200..300).contains(&status_code) =>
+            {
+                Ok(key)
+            }
+            Ok(ConditionalPutResult::PreconditionFailed) => Ok(key),
+            Ok(ConditionalPutResult::Written { status_code, .. }) => Err(StoreError::Backend(
+                S3Error::HttpFailWithBody(status_code, "unexpected status".into()),
+            )),
+            Err(error) => Err(StoreError::Backend(error)),
         }
     }
 
@@ -507,8 +623,7 @@ impl GitStore {
             }
         }
         let result = self
-            .bucket
-            .put_object_with_content_type_and_headers(key, body, "application/json", Some(headers))
+            .put_object_conditionally_once(key, body, "application/json", headers)
             .await;
         Self::classify_cas(result)
     }
@@ -519,35 +634,31 @@ impl GitStore {
     /// empty if missing — callers must tolerate empty etag and re-HEAD if they
     /// need it strictly). Everything else bubbles as `StoreError::Backend`.
     fn classify_cas(
-        result: Result<s3::request::ResponseData, S3Error>,
+        result: Result<ConditionalPutResult, S3Error>,
     ) -> Result<CasOutcome, StoreError> {
         match result {
-            Ok(resp) if (200..300).contains(&resp.status_code()) => {
-                let headers = resp.headers();
-                let etag = headers
-                    .get("etag")
-                    .or_else(|| headers.get("ETag"))
-                    .cloned()
-                    .ok_or_else(|| {
-                        // Fail closed: a CAS that we can't chain (because the
-                        // backend didn't return an ETag) is not a `Won` — it's
-                        // a non-conforming backend. The conformance probe will
-                        // catch this; in production we'd rather refuse than
-                        // hand the caller `ETag("")` and force-fail the next CAS.
-                        StoreError::Backend(S3Error::HttpFailWithBody(
-                            resp.status_code(),
-                            "CAS succeeded but response missing ETag header \
+            Ok(ConditionalPutResult::Written { status_code, etag })
+                if (200..300).contains(&status_code) =>
+            {
+                let etag = etag.ok_or_else(|| {
+                    // Fail closed: a CAS that we can't chain (because the
+                    // backend didn't return an ETag) is not a `Won` — it's
+                    // a non-conforming backend. The conformance probe will
+                    // catch this; in production we'd rather refuse than
+                    // hand the caller `ETag("")` and force-fail the next CAS.
+                    StoreError::Backend(S3Error::HttpFailWithBody(
+                        status_code,
+                        "CAS succeeded but response missing ETag header \
                              (backend does not satisfy ETag-token consistency)"
-                                .into(),
-                        ))
-                    })?;
+                            .into(),
+                    ))
+                })?;
                 Ok(CasOutcome::Won(ETag(etag)))
             }
-            Err(S3Error::HttpFailWithBody(412, _)) => Ok(CasOutcome::LostRace),
-            Ok(resp) => Err(StoreError::Backend(S3Error::HttpFailWithBody(
-                resp.status_code(),
-                "unexpected status".into(),
-            ))),
+            Ok(ConditionalPutResult::PreconditionFailed) => Ok(CasOutcome::LostRace),
+            Ok(ConditionalPutResult::Written { status_code, .. }) => Err(StoreError::Backend(
+                S3Error::HttpFailWithBody(status_code, "unexpected status".into()),
+            )),
             Err(e) => Err(StoreError::Backend(e)),
         }
     }
@@ -673,13 +784,21 @@ impl GitStore {
                         classified += 1;
                     }
                     Err(StoreError::Backend(
-                        S3Error::Reqwest(_) | S3Error::Http(_) | S3Error::Io(_),
+                        error @ (S3Error::Reqwest(_) | S3Error::Http(_) | S3Error::Io(_)),
                     )) => {
                         transport_drops += 1;
+                        let diagnostics = transport_error_diagnostics(&error);
                         tracing::warn!(
                             phase = "if_match_race",
                             round,
                             racer = i,
+                            transport_kind = diagnostics.kind,
+                            transport_timeout = diagnostics.timeout,
+                            transport_connect = diagnostics.connect,
+                            transport_body = diagnostics.body,
+                            transport_request = diagnostics.request,
+                            transport_decode = diagnostics.decode,
+                            transport_io_kind = diagnostics.io_kind,
                             "transport drop (pre-classification: socket/send failure)"
                         );
                     }
@@ -768,13 +887,21 @@ impl GitStore {
                         .into())
                     }
                     Err(StoreError::Backend(
-                        S3Error::Reqwest(_) | S3Error::Http(_) | S3Error::Io(_),
+                        error @ (S3Error::Reqwest(_) | S3Error::Http(_) | S3Error::Io(_)),
                     )) => {
                         transport_drops += 1;
+                        let diagnostics = transport_error_diagnostics(&error);
                         tracing::warn!(
                             phase = "if_none_match_race",
                             round,
                             racer = i,
+                            transport_kind = diagnostics.kind,
+                            transport_timeout = diagnostics.timeout,
+                            transport_connect = diagnostics.connect,
+                            transport_body = diagnostics.body,
+                            transport_request = diagnostics.request,
+                            transport_decode = diagnostics.decode,
+                            transport_io_kind = diagnostics.io_kind,
                             "transport drop (pre-classification: socket/send failure)"
                         );
                     }
@@ -896,18 +1023,12 @@ impl GitStore {
         let mut headers = axum::http::HeaderMap::new();
         headers.insert(axum::http::header::IF_NONE_MATCH, "*".parse().unwrap());
         match self
-            .bucket
-            .put_object_with_content_type_and_headers(
-                key,
-                bytes,
-                "application/octet-stream",
-                Some(headers),
-            )
+            .put_object_conditionally_once(key, bytes, "application/octet-stream", headers)
             .await
         {
-            Ok(resp) => Ok(resp.status_code()),
-            Err(S3Error::HttpFailWithBody(412, _)) => Ok(412),
-            Err(e) => Err(StoreError::Backend(e)),
+            Ok(ConditionalPutResult::Written { status_code, .. }) => Ok(status_code),
+            Ok(ConditionalPutResult::PreconditionFailed) => Ok(412),
+            Err(error) => Err(StoreError::Backend(error)),
         }
     }
 }
@@ -915,6 +1036,74 @@ impl GitStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transport_diagnostics_exclude_secret_bearing_error_details() {
+        let secret = "sentinel-password-private-token";
+        let io = S3Error::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            secret,
+        ));
+        let http = S3Error::Http(
+            axum::http::Request::builder()
+                .header("X-Test", format!("{secret}\r\n"))
+                .body(())
+                .unwrap_err(),
+        );
+        let reqwest = S3Error::Reqwest(
+            GitStore::new(
+                "http://localhost:9000",
+                "test",
+                "test",
+                "buzz-git",
+                "us-east-1",
+                buzz_media::config::S3AddressingStyle::Path,
+            )
+            .unwrap()
+            .bucket
+            .http_client()
+            .get(format!(
+                "http://user:{secret}@example.invalid:invalid-port/private"
+            ))
+            .build()
+            .unwrap_err(),
+        );
+        let body = S3Error::HttpFailWithBody(412, secret.into());
+        for (error, expected) in [
+            (io, "io"),
+            (http, "http"),
+            (reqwest, "reqwest"),
+            (body, "non_transport"),
+        ] {
+            let diagnostics = transport_error_diagnostics(&error);
+            assert_eq!(diagnostics.kind, expected);
+            assert!(!diagnostics.kind.contains(secret));
+            assert!(!diagnostics.io_kind.contains(secret));
+            assert!(!diagnostics.kind.contains("http://"));
+            assert!(!diagnostics.io_kind.contains("http://"));
+        }
+    }
+
+    #[test]
+    fn transport_diagnostics_use_fixed_io_kind_labels() {
+        for (kind, label) in [
+            (std::io::ErrorKind::ConnectionReset, "connection_reset"),
+            (std::io::ErrorKind::TimedOut, "timed_out"),
+            (std::io::ErrorKind::UnexpectedEof, "unexpected_eof"),
+            (std::io::ErrorKind::Other, "other"),
+        ] {
+            let diagnostics = transport_error_diagnostics(&S3Error::Io(std::io::Error::new(
+                kind,
+                "sentinel-password-private-token",
+            )));
+            assert_eq!(diagnostics.io_kind, label);
+            assert!(!diagnostics.timeout);
+            assert!(!diagnostics.connect);
+            assert!(!diagnostics.body);
+            assert!(!diagnostics.request);
+            assert!(!diagnostics.decode);
+        }
+    }
 
     #[test]
     fn idx_key_uses_pack_digest_namespace() {
@@ -934,7 +1123,7 @@ mod tests {
 
     #[test]
     fn classify_cas_412_is_lost_race() {
-        let r = Err(S3Error::HttpFailWithBody(412, "PreconditionFailed".into()));
+        let r = Ok(ConditionalPutResult::PreconditionFailed);
         assert_eq!(GitStore::classify_cas(r).unwrap(), CasOutcome::LostRace);
     }
 
@@ -1013,6 +1202,149 @@ mod tests {
                 "expected Config error, got {err:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn conditional_412_is_single_attempt_and_drained_for_pool_reuse() {
+        use std::io;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::{TcpListener, TcpStream};
+        use tokio::time::{timeout, Duration};
+
+        async fn read_request(reader: &mut BufReader<TcpStream>) -> io::Result<String> {
+            const MAX_HEADER_BYTES: usize = 16 * 1024;
+            let mut headers = Vec::new();
+            loop {
+                let mut line = Vec::new();
+                if reader.read_until(b'\n', &mut line).await? == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "request ended before headers",
+                    ));
+                }
+                headers.extend_from_slice(&line);
+                if headers.len() > MAX_HEADER_BYTES {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "request headers exceeded test bound",
+                    ));
+                }
+                if headers.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            let header_text = std::str::from_utf8(&headers).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "non-UTF8 request headers")
+            })?;
+            let content_length = header_text
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix("content-length:")
+                        .or_else(|| line.strip_prefix("Content-Length:"))
+                })
+                .map(str::trim)
+                .map(str::parse::<usize>)
+                .transpose()
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid content length"))?
+                .unwrap_or(0);
+            let mut body = vec![0; content_length];
+            reader.read_exact(&mut body).await?;
+            Ok(header_text.to_owned())
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test S3 server");
+        let address = listener.local_addr().expect("read test S3 address");
+        let put_attempts = Arc::new(AtomicUsize::new(0));
+        let server_attempts = Arc::clone(&put_attempts);
+        let server = tokio::spawn(async move {
+            let (socket, _) = timeout(Duration::from_secs(3), listener.accept())
+                .await
+                .map_err(|_| {
+                    io::Error::new(io::ErrorKind::TimedOut, "no test client connected")
+                })??;
+            let mut reader = BufReader::new(socket);
+
+            let first = timeout(Duration::from_secs(3), read_request(&mut reader))
+                .await
+                .map_err(|_| {
+                    io::Error::new(io::ErrorKind::TimedOut, "timed out reading conditional PUT")
+                })??;
+            if !first.starts_with("PUT ") || !first.contains("if-none-match: *\r\n") {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "conditional request lost its method or precondition",
+                ));
+            }
+            server_attempts.fetch_add(1, Ordering::SeqCst);
+
+            let failure_body = "x".repeat(64 * 1024);
+            let response = format!(
+                "HTTP/1.1 412 Precondition Failed\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{}",
+                failure_body.len(),
+                failure_body
+            );
+            reader.get_mut().write_all(response.as_bytes()).await?;
+            reader.get_mut().flush().await?;
+
+            // The test listener accepts only one connection. A second request
+            // can arrive only after the conditional 412 body is consumed and
+            // the bucket's shared client returns that connection to its pool.
+            let second = timeout(Duration::from_secs(3), read_request(&mut reader))
+                .await
+                .map_err(|_| {
+                    io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "412 body was not drained for connection reuse",
+                    )
+                })??;
+            if !second.starts_with("GET ") {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "expected pooled GET after conditional PUT",
+                ));
+            }
+            reader
+                .get_mut()
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .await?;
+            reader.get_mut().flush().await
+        });
+
+        let store = GitStore::new(
+            &format!("http://{address}"),
+            "test-access-key",
+            "test-secret-key",
+            "test-bucket",
+            "us-east-1",
+            buzz_media::config::S3AddressingStyle::Path,
+        )
+        .expect("construct test store");
+
+        let status = timeout(
+            Duration::from_secs(3),
+            store.put_immutable_raw("probe/conditional-412", b"payload"),
+        )
+        .await
+        .expect("conditional PUT completed")
+        .expect("conditional PUT classified");
+        assert_eq!(status, 412);
+
+        let body = timeout(Duration::from_secs(3), store.get("probe/after-412"))
+            .await
+            .expect("pooled GET completed")
+            .expect("pooled GET succeeded");
+        assert_eq!(&body[..], b"ok");
+        server
+            .await
+            .expect("test S3 server task joined")
+            .expect("test S3 server observed one pooled connection");
+        assert_eq!(put_attempts.load(Ordering::SeqCst), 1);
     }
 }
 

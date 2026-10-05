@@ -21,6 +21,19 @@ export function resolveAgentMentionDisplayName({
   );
 }
 
+export function isAgentDirectoryReady({
+  data,
+  error,
+}: {
+  data: unknown;
+  error: unknown;
+}) {
+  // A successful cached directory remains suitable for autocomplete during a
+  // refetch. Sending still re-fetches and fails closed at its authorization
+  // boundary, so suggestions are hints rather than permission to send.
+  return data !== undefined && error === null;
+}
+
 export function getSharedChannelIds(channels: readonly Channel[] | undefined) {
   return new Set(
     (channels ?? [])
@@ -42,6 +55,9 @@ export function relayAgentIsSharedWithUser(
   _sharedChannelIds: ReadonlySet<string>,
   currentPubkey?: string | null,
 ) {
+  // Newer relays may advertise a no-responses policy before generated desktop
+  // types name it; treat that forward-compatible value as a hard deny.
+  const respondTo = agent.respondTo as string | null;
   const normalizedCurrentPubkey = currentPubkey
     ? normalizePubkey(currentPubkey)
     : null;
@@ -49,16 +65,19 @@ export function relayAgentIsSharedWithUser(
   const normalizedOwnerPubkey = agent.ownerPubkey
     ? normalizePubkey(agent.ownerPubkey)
     : null;
-
+  const isOwner = Boolean(
+    normalizedCurrentPubkey &&
+      normalizedOwnerPubkey === normalizedCurrentPubkey,
+  );
+  if (respondTo === "nobody") {
+    return false;
+  }
   const isPrivateAgent =
     agent.audience === "owner" ||
     agent.accessTier === "personal" ||
     agent.accessTier === "admin";
   if (isPrivateAgent) {
-    return Boolean(
-      normalizedCurrentPubkey &&
-        normalizedOwnerPubkey === normalizedCurrentPubkey,
-    );
+    return isOwner;
   }
 
   // An explicit allowlist is authoritative and outranks the hosted-directory
@@ -69,10 +88,11 @@ export function relayAgentIsSharedWithUser(
   // closed when the viewer is unknown.
   if (agent.respondTo === "allowlist") {
     return Boolean(
-      normalizedCurrentPubkey &&
-        agent.respondToAllowlist
-          .map((pubkey) => normalizePubkey(pubkey))
-          .includes(normalizedCurrentPubkey),
+      isOwner ||
+        (normalizedCurrentPubkey &&
+          agent.respondToAllowlist
+            .map((pubkey) => normalizePubkey(pubkey))
+            .includes(normalizedCurrentPubkey)),
     );
   }
 
@@ -87,11 +107,10 @@ export function relayAgentIsSharedWithUser(
   // The relay defaults a missing respond_to value to owner-only. Hosted
   // personal/admin agents are still invocable by their owner even when they
   // are not members of the channel being composed in.
-  if (
-    normalizedCurrentPubkey &&
-    normalizedOwnerPubkey === normalizedCurrentPubkey &&
-    (agent.respondTo === null || agent.respondTo === "owner-only")
-  ) {
+  // Ownership is relay identity, not local key custody. Keep an owned hosted
+  // agent discoverable across machines unless the owner explicitly disabled
+  // every response with `nobody`.
+  if (isOwner && respondTo !== "nobody") {
     return true;
   }
 
@@ -100,7 +119,7 @@ export function relayAgentIsSharedWithUser(
   // An owner/admin mention adds the agent to that channel during the send
   // flow. Requiring an existing shared channel here made the directory entry
   // disappear precisely when that first invitation was needed.
-  return agent.respondTo === "anyone";
+  return respondTo === "anyone";
 }
 
 export function relayAgentCanRespondInChannel(
@@ -120,6 +139,7 @@ export function relayAgentCanRespondInChannel(
 export type AgentEligibilityScope =
   | { type: "community" }
   | { type: "channel"; channelId: string }
+  | { type: "owned"; channelId: string | null }
   | { type: "managed-only" };
 
 export function getMentionableAgentPubkeys({
@@ -128,9 +148,11 @@ export function getMentionableAgentPubkeys({
   managedAgentPubkeys,
   relayAgents,
   sharedChannelIds,
+  phase = "publish",
 }: {
   currentPubkey?: string | null;
   eligibilityScope: AgentEligibilityScope;
+  phase?: "prepare" | "publish";
   managedAgentPubkeys: Iterable<string>;
   relayAgents: readonly RelayAgent[] | undefined;
   sharedChannelIds: ReadonlySet<string>;
@@ -143,13 +165,38 @@ export function getMentionableAgentPubkeys({
     const isAllowed =
       eligibilityScope.type === "managed-only"
         ? false
-        : eligibilityScope.type === "community"
-          ? relayAgentIsSharedWithUser(agent, sharedChannelIds, currentPubkey)
-          : relayAgentCanRespondInChannel(
-              agent,
-              eligibilityScope.channelId,
-              currentPubkey,
-            );
+        : eligibilityScope.type === "owned"
+          ? Boolean(
+              currentPubkey &&
+                agent.ownerPubkey &&
+                normalizePubkey(agent.ownerPubkey) ===
+                  normalizePubkey(currentPubkey) &&
+                relayAgentIsSharedWithUser(
+                  agent,
+                  sharedChannelIds,
+                  currentPubkey,
+                ) &&
+                (phase === "prepare" ||
+                  (eligibilityScope.channelId !== null &&
+                    agent.channelIds.includes(eligibilityScope.channelId))),
+            )
+          : eligibilityScope.type === "community"
+            ? relayAgentIsSharedWithUser(agent, sharedChannelIds, currentPubkey)
+            : phase === "prepare" &&
+                currentPubkey &&
+                agent.ownerPubkey &&
+                normalizePubkey(agent.ownerPubkey) ===
+                  normalizePubkey(currentPubkey)
+              ? relayAgentIsSharedWithUser(
+                  agent,
+                  sharedChannelIds,
+                  currentPubkey,
+                )
+              : relayAgentCanRespondInChannel(
+                  agent,
+                  eligibilityScope.channelId,
+                  currentPubkey,
+                );
     if (isAllowed) {
       pubkeys.add(normalizePubkey(agent.pubkey));
     }
@@ -174,69 +221,54 @@ export function isAgentIdentityInKnownDirectories(
   );
 }
 
+export function isAgentIdentityInAllowedList(
+  candidate: { isAgent?: boolean; pubkey: string },
+  allowedAgentPubkeys: ReadonlySet<string>,
+) {
+  return (
+    candidate.isAgent !== true ||
+    allowedAgentPubkeys.has(normalizePubkey(candidate.pubkey))
+  );
+}
+
 export type AgentMentionAdmission = "allow" | "deny" | "unknown";
 
 export function getAgentMentionAdmission({
   isAgent,
-  isManagedAgent,
   pubkey,
-  ownerPubkey,
-  currentPubkey,
   mentionableAgentPubkeys,
   directoryReady,
-  ownerOnly,
 }: {
   isAgent: boolean;
-  isManagedAgent: boolean;
   pubkey: string;
-  ownerPubkey?: string | null;
-  currentPubkey?: string | null;
   mentionableAgentPubkeys: ReadonlySet<string>;
   directoryReady: boolean;
-  ownerOnly: boolean | undefined;
 }): AgentMentionAdmission {
   if (!isAgent) return "allow";
-  if (!directoryReady || ownerOnly === undefined) return "unknown";
+  if (!directoryReady) return "unknown";
 
-  const normalized = normalizePubkey(pubkey);
-  if (!mentionableAgentPubkeys.has(normalized)) return "deny";
-  if (!ownerOnly || isManagedAgent) return "allow";
-  if (!ownerPubkey || !currentPubkey) return "unknown";
-
-  return normalizePubkey(ownerPubkey) === normalizePubkey(currentPubkey)
+  return mentionableAgentPubkeys.has(normalizePubkey(pubkey))
     ? "allow"
     : "deny";
 }
 
 export function shouldHideAgentFromMentions({
   isAgent,
-  isManagedAgent = false,
   pubkey,
-  ownerPubkey,
-  currentPubkey,
   mentionableAgentPubkeys,
   directoryReady = true,
-  ownerOnly,
 }: {
   isAgent: boolean;
-  isManagedAgent?: boolean;
   pubkey: string;
-  ownerPubkey?: string | null;
-  currentPubkey?: string | null;
   mentionableAgentPubkeys: ReadonlySet<string>;
   directoryReady?: boolean;
-  ownerOnly: boolean | undefined;
 }) {
   return (
     getAgentMentionAdmission({
       isAgent,
-      isManagedAgent,
       pubkey,
-      ownerPubkey,
-      currentPubkey,
       mentionableAgentPubkeys,
       directoryReady,
-      ownerOnly,
     }) !== "allow"
   );
 }

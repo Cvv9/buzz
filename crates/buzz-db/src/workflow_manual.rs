@@ -220,7 +220,7 @@ impl Db {
         profile_error: Option<&str>,
         relay: &Keys,
     ) -> Result<ManualDecision> {
-        let mut tx = self.begin_transaction().await?;
+        let mut tx = self.begin_event_write_transaction().await?;
         self.deletion_store()
             .guard_transaction(&mut tx, community)
             .await?;
@@ -347,7 +347,7 @@ impl Db {
         tasks: &[ManualTaskSpec],
         profile_error: Option<&str>,
     ) -> Result<(Option<String>, ManualLimits)> {
-        let mut tx = self.begin_transaction().await?;
+        let mut tx = self.begin_event_write_transaction().await?;
         lock_admission(&mut tx, community).await?;
         let now = sqlx::query_scalar("SELECT clock_timestamp()")
             .fetch_one(&mut *tx)
@@ -361,7 +361,7 @@ impl Db {
         community: CommunityId,
         workflow: Uuid,
     ) -> Result<ManualLimits> {
-        let mut tx = self.begin_transaction().await?;
+        let mut tx = self.begin_event_write_transaction().await?;
         let now = sqlx::query_scalar("SELECT clock_timestamp()")
             .fetch_one(&mut *tx)
             .await?;
@@ -395,7 +395,7 @@ impl Db {
         step: &str,
         targets: &[String],
     ) -> Result<(buzz_core::StoredEvent, bool)> {
-        let mut tx = self.begin_transaction().await?;
+        let mut tx = self.begin_event_write_transaction().await?;
         self.deletion_store()
             .guard_transaction(&mut tx, community)
             .await?;

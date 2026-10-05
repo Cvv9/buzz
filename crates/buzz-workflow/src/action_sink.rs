@@ -78,6 +78,13 @@ pub trait ActionSink: Send + Sync {
     /// - `context`: trusted workflow metadata attached
     ///   to the relay-signed event so clients can identify the automation
     ///   without presenting the relay signing key as a person.
+    /// - `text`: rendered message body (must not be empty/whitespace-only)
+    /// - `authored_text`: the workflow owner's stored, unrendered step template;
+    ///   consumers must use this rather than trigger-controlled rendered output
+    ///   when attaching authority-bearing metadata
+    /// - `reply_to`: when `Some(event_id_hex)`, the message is posted as a
+    ///   threaded reply to that event (NIP-10 root/reply tags + real thread
+    ///   metadata); when `None`, it is a top-level channel message.
     ///
     /// Returns the event ID hex string on success.
     fn send_message(
@@ -85,6 +92,8 @@ pub trait ActionSink: Send + Sync {
         community_id: CommunityId,
         channel_id: &str,
         text: &str,
+        authored_text: &str,
         context: WorkflowMessageContext,
+        reply_to: Option<&str>,
     ) -> Pin<Box<dyn Future<Output = Result<String, ActionSinkError>> + Send + '_>>;
 }

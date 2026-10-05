@@ -136,8 +136,8 @@ function projectRootItem(item: FeedItem, groupItems: readonly FeedItem[]) {
 }
 
 function projectTypeLabel(item: FeedItem) {
-  if (item.kind === 1618) return "Pull request";
-  if (item.kind === 1621) return "Issue";
+  if (item.kind === 1618) return "Review";
+  if (item.kind === 1621) return "Task";
   return "Project update";
 }
 
@@ -600,6 +600,7 @@ export function buildInboxItems({
       const { mentionNames, mentionPubkeysByName } = resolveMentionProps(
         item.tags,
         profiles,
+        item.content,
       );
       const channelLabel = groupChannel.name;
       const displayItem: FeedItem = {

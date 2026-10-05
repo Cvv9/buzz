@@ -1,38 +1,29 @@
 use std::{
-    collections::HashMap,
     fs::{self, File, OpenOptions},
     io::{Read as _, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
 use tauri::{AppHandle, Manager};
+mod keyring;
+pub use keyring::delete_agent_key;
+#[cfg(debug_assertions)]
+pub use keyring::migrate_agent_keys_to_dev_service;
+pub(crate) use keyring::try_delete_agent_key;
+#[cfg(test)]
+use keyring::{
+    agent_keyring_name, hydrate_keys_with, migrate_inline_key, persist_agent_keys_with,
+    KeyMigration, KeyStore,
+};
+#[cfg(all(test, debug_assertions))]
+use keyring::{copy_agent_keys_between_stores, DEV_MIGRATION_MARKER};
+use keyring::{hydrate_keys, persist_agent_keys};
 
-use crate::app_state::keyring_service;
 use crate::managed_agents::{
     ManagedAgentRecord, ManagedAgentRuntimeKey, ManagedAgentRuntimeReceipt,
 };
-use crate::secret_store::{KeyringProbe, SecretStore};
 
-/// Keyring key name for an agent's nsec, namespaced from the human identity
-/// key (`"identity"`) which shares the service.
-fn agent_keyring_name(pubkey: &str) -> String {
-    format!("agent:{pubkey}")
-}
-
-/// The agent secret store. `None` when the build has no keyring backend, in
-/// which case agent keys stay inline in the `0o600` JSON file. Uses
-/// `SecretStore::shared` so identity and agent callers share one instance —
-/// and therefore one in-memory cache and one mutex — preventing last-writer-wins
-/// races on concurrent blob writes.
-fn agent_secret_store() -> Option<&'static SecretStore> {
-    if cfg!(feature = "system-keyring") {
-        Some(SecretStore::shared(keyring_service()))
-    } else {
-        None
-    }
-}
-
-pub fn managed_agents_base_dir(app: &AppHandle) -> Result<PathBuf, String> {
+pub fn managed_agents_base_dir<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_data_dir()
@@ -42,11 +33,13 @@ pub fn managed_agents_base_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-pub(crate) fn managed_agents_store_path(app: &AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn managed_agents_store_path<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> Result<PathBuf, String> {
     Ok(managed_agents_base_dir(app)?.join("managed-agents.json"))
 }
 
-fn managed_agents_logs_dir(app: &AppHandle) -> Result<PathBuf, String> {
+fn managed_agents_logs_dir<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     let dir = managed_agents_base_dir(app)?.join("logs");
     fs::create_dir_all(&dir).map_err(|error| format!("failed to create logs dir: {error}"))?;
     Ok(dir)
@@ -80,14 +73,17 @@ fn is_safe_id_char(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '-' || c == '_'
 }
 
-pub fn managed_agent_log_path(app: &AppHandle, pubkey: &str) -> Result<PathBuf, String> {
+pub fn managed_agent_log_path<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    pubkey: &str,
+) -> Result<PathBuf, String> {
     Ok(managed_agents_logs_dir(app)?.join(format!("{pubkey}.log")))
 }
 
 /// Pair-scoped log path for a managed runtime. The relay URL never appears in
 /// the filename; the suffix is a hash of the canonical URL.
-pub fn managed_agent_runtime_log_path(
-    app: &AppHandle,
+pub fn managed_agent_runtime_log_path<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     key: &ManagedAgentRuntimeKey,
 ) -> Result<PathBuf, String> {
     Ok(managed_agents_logs_dir(app)?.join(format!("{}.log", key.runtime_id())))
@@ -128,96 +124,6 @@ fn newest_agent_log_in_dir(dir: &Path, pubkey: &str) -> Option<PathBuf> {
         .map(|(_, _, path)| path)
 }
 
-/// The keyring operations the migration chokepoint needs. Abstracted so the
-/// migrate-and-strip decision logic ([`migrate_inline_key`]) can be unit-tested
-/// against a fake without touching the live OS keyring.
-trait KeyStore {
-    fn probe(&self, name: &str) -> KeyringProbe;
-    /// Read a key. `Ok(None)` is "no such entry" (absent); `Err` is a backend
-    /// failure (keyring unreachable) — the caller MUST NOT collapse the two.
-    fn load(&self, name: &str) -> Result<Option<String>, String>;
-    /// Read the entire blob as a map without any side effects.
-    /// `Ok(None)` when no blob exists yet; `Err` only on backend failure.
-    /// Callers must not call `migrate_legacy_key` — this is a read-only view.
-    fn load_all_readonly(&self) -> Result<Option<HashMap<String, String>>, String>;
-    /// Write `value` and read it back to confirm before the caller strips the
-    /// inline copy.
-    fn write_and_verify(&self, name: &str, value: &str) -> Result<(), String>;
-    /// Insert all entries from `entries` in a single blob mutation.
-    fn store_all(&self, entries: &HashMap<String, String>) -> Result<(), String>;
-}
-
-impl KeyStore for SecretStore {
-    fn probe(&self, name: &str) -> KeyringProbe {
-        SecretStore::probe(self, name)
-    }
-    fn load(&self, name: &str) -> Result<Option<String>, String> {
-        SecretStore::load(self, name)
-    }
-    fn load_all_readonly(&self) -> Result<Option<HashMap<String, String>>, String> {
-        SecretStore::load_all_readonly(self)
-    }
-    fn write_and_verify(&self, name: &str, value: &str) -> Result<(), String> {
-        self.store(name, value)?;
-        match self.load(name)? {
-            Some(stored) if stored == value => Ok(()),
-            _ => Err("keyring read-back verify failed".to_string()),
-        }
-    }
-    fn store_all(&self, entries: &HashMap<String, String>) -> Result<(), String> {
-        SecretStore::store_all(self, entries)
-    }
-}
-
-/// Outcome of attempting to lift a record's inline key into the keyring.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum KeyMigration {
-    /// Written to the keyring and read-back verified. Safe to drop the inline
-    /// copy when serializing.
-    Persisted,
-    /// Could not persist (keyring unreachable, or write/verify failed). The key
-    /// must stay inline (0o600 file fallback); do NOT drop it.
-    KeptInline,
-    /// The record carried no inline key, so there was nothing to migrate. Kept
-    /// distinct from [`KeyMigration::Persisted`] so an empty key is never
-    /// mistaken for "verified present in the keyring" — an empty key after a
-    /// keyring outage means the secret is currently unavailable, not persisted.
-    Nothing,
-}
-
-/// Attempt to lift one record's inline key into the keyring with read-back
-/// verify. Pure decision logic — does NOT mutate the record, so the caller
-/// chooses whether to strip the inline copy based on the returned outcome.
-///
-/// The single source of truth for the migrate-vs-keep decision, shared by the
-/// load-time opportunistic re-migrate ([`hydrate_keys`]) and the save-time
-/// chokepoint ([`persist_agent_keys`]). An empty key returns
-/// [`KeyMigration::Nothing`] — never [`KeyMigration::Persisted`], so a record
-/// left empty by a keyring outage is not mistaken for one verified present.
-fn migrate_inline_key(store: &impl KeyStore, record: &ManagedAgentRecord) -> KeyMigration {
-    if record.private_key_nsec.is_empty() {
-        return KeyMigration::Nothing;
-    }
-    let name = agent_keyring_name(&record.pubkey);
-    match store.probe(&name) {
-        // Keyring down this boot: keep the key inline (file fallback), do NOT
-        // migrate — re-importing later could resurrect a rotated key.
-        KeyringProbe::Unreachable => KeyMigration::KeptInline,
-        KeyringProbe::Present | KeyringProbe::ReachableButEmpty => {
-            match store.write_and_verify(&name, &record.private_key_nsec) {
-                Ok(()) => KeyMigration::Persisted,
-                Err(e) => {
-                    eprintln!(
-                        "buzz-desktop: keyring write for agent {} failed ({e}), keeping inline",
-                        record.pubkey
-                    );
-                    KeyMigration::KeptInline
-                }
-            }
-        }
-    }
-}
-
 /// Refuse to spawn an agent whose private key is unavailable. Returns
 /// `Some(error)` when `private_key_nsec` is empty — after [`hydrate_keys`] an
 /// empty key means a keyring outage or a genuinely absent secret, NOT a
@@ -236,7 +142,9 @@ pub(crate) fn spawn_key_refusal(record: &ManagedAgentRecord) -> Option<String> {
 
 /// Read the raw unified store — keyed instances AND key-less definitions —
 /// with fail-loud parse handling. Internal seam; public readers filter.
-fn load_agent_store(app: &AppHandle) -> Result<Vec<ManagedAgentRecord>, String> {
+fn load_agent_store<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> Result<Vec<ManagedAgentRecord>, String> {
     let path = managed_agents_store_path(app)?;
     if !path.exists() {
         return Ok(Vec::new());
@@ -259,7 +167,9 @@ fn load_agent_store(app: &AppHandle) -> Result<Vec<ManagedAgentRecord>, String> 
 /// Load the keyed agent *instances*. Key-less definitions (former personas,
 /// folded into the same store) are filtered out so every pre-fold call site
 /// keeps seeing exactly the records it always did.
-pub fn load_managed_agents(app: &AppHandle) -> Result<Vec<ManagedAgentRecord>, String> {
+pub fn load_managed_agents<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> Result<Vec<ManagedAgentRecord>, String> {
     let mut records = load_agent_store(app)?;
     records.retain(|record| !record.pubkey.is_empty());
     hydrate_keys(&mut records);
@@ -269,7 +179,9 @@ pub fn load_managed_agents(app: &AppHandle) -> Result<Vec<ManagedAgentRecord>, S
 /// Load the key-less agent *definitions* (former personas) from the unified
 /// store. The persona compatibility shim (`load_personas`) presents these in
 /// the legacy shape via `to_definition_view`.
-pub(crate) fn load_agent_definitions(app: &AppHandle) -> Result<Vec<ManagedAgentRecord>, String> {
+pub(crate) fn load_agent_definitions<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> Result<Vec<ManagedAgentRecord>, String> {
     let mut records = load_agent_store(app)?;
     records.retain(|record| record.pubkey.is_empty());
     Ok(records)
@@ -292,75 +204,15 @@ pub(crate) fn backup_invalid_store(path: &Path) {
     }
 }
 
-/// Fill in each record's in-memory `private_key_nsec` from the keyring, and
-/// opportunistically re-migrate any key that is still inline.
-///
-/// - Empty key → fetch it from the keyring (the normal keyring-backed case).
-/// - Non-empty key → the JSON carried it inline because the keyring was
-///   unreachable at its last save. Re-migrate it now ([`migrate_inline_key`]):
-///   if the keyring is reachable this boot, write-verify-strip so the next save
-///   writes clean JSON and plaintext stops lingering on disk; if still
-///   unreachable, leave it inline. This makes the strip deterministic on the
-///   next reachable boot rather than waiting for a non-deterministic save.
-fn hydrate_keys(records: &mut [ManagedAgentRecord]) {
-    let Some(store) = agent_secret_store() else {
-        return;
-    };
-    hydrate_keys_with(store, records);
-}
-
-/// Testable core of [`hydrate_keys`], generic over the [`KeyStore`] seam.
-///
-/// A keyring LOAD error (`Err`) is an OUTAGE — distinct from `Ok(None)`
-/// (genuinely absent). On an outage the key is left empty and the record is
-/// surfaced as unavailable rather than silently swallowed: callers must refuse
-/// to spawn an agent whose key could not be read (see the empty-key bail in
-/// `spawn_agent_child`). Empty here never means "fine" — it means "no usable
-/// key this boot."
-fn hydrate_keys_with(store: &impl KeyStore, records: &mut [ManagedAgentRecord]) {
-    for record in records.iter_mut() {
-        // A key-less definition (no pubkey yet — unified agent model) has no
-        // keyring entry by construction; keys are minted on first start.
-        if record.pubkey.is_empty() {
-            continue;
-        }
-        if record.private_key_nsec.is_empty() {
-            match store.load(&agent_keyring_name(&record.pubkey)) {
-                Ok(Some(nsec)) => record.private_key_nsec = nsec,
-                Ok(None) => {
-                    eprintln!(
-                        "buzz-desktop: agent {} has no key in JSON or keyring",
-                        record.pubkey
-                    );
-                }
-                // Outage, NOT absence: the key may exist in the keyring but is
-                // unreadable this boot. Leave it empty so the spawn path
-                // refuses rather than launching with no identity.
-                Err(e) => {
-                    eprintln!(
-                        "buzz-desktop: agent {} key unavailable — keyring read failed ({e}); \
-                         agent will be refused until the keyring is reachable",
-                        record.pubkey
-                    );
-                }
-            }
-        } else {
-            // Inline residue from a prior keyring-unreachable save. Lift it
-            // into the keyring now (side effect) but KEEP it in memory — the
-            // returned record must carry the key for readers. The next save
-            // then strips it from JSON. Outcome is intentionally ignored:
-            // on failure the key simply stays inline until a later boot.
-            let _ = migrate_inline_key(store, record);
-        }
-    }
-}
-
 /// Save the keyed agent *instances*, preserving the key-less definitions that
 /// share the unified store: callers pass exactly the records they loaded via
 /// [`load_managed_agents`], and this re-reads the definition half from disk
 /// before the wholesale rewrite so a definition is never dropped by an
 /// instance-side save (and vice versa via [`save_agent_definitions`]).
-pub fn save_managed_agents(app: &AppHandle, records: &[ManagedAgentRecord]) -> Result<(), String> {
+pub fn save_managed_agents<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    records: &[ManagedAgentRecord],
+) -> Result<(), String> {
     let definitions = load_agent_definitions(app).unwrap_or_default();
     let mut sorted = records.to_vec();
     // A caller-supplied key-less record would collide with the definition
@@ -383,8 +235,8 @@ pub fn save_managed_agents(app: &AppHandle, records: &[ManagedAgentRecord]) -> R
 
 /// Save the key-less agent *definitions*, preserving the keyed instances —
 /// the definition-side mirror of [`save_managed_agents`].
-pub(crate) fn save_agent_definitions(
-    app: &AppHandle,
+pub(crate) fn save_agent_definitions<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     definitions: &[ManagedAgentRecord],
 ) -> Result<(), String> {
     let mut instances = load_agent_store(app)?;
@@ -397,8 +249,8 @@ pub(crate) fn save_agent_definitions(
 /// Serialize definitions + instances into the single unified store file.
 /// Definitions sort first (by slug) for stable diffs; instances keep the
 /// name/pubkey order their save path established.
-fn write_agent_store(
-    app: &AppHandle,
+fn write_agent_store<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     mut definitions: Vec<ManagedAgentRecord>,
     instances: Vec<ManagedAgentRecord>,
 ) -> Result<(), String> {
@@ -415,184 +267,6 @@ fn write_agent_store(
     // keyring-backed case (it is the user's own agent store) and closes the
     // umask window a post-write `chmod` would leave open.
     atomic_write_json_restricted(&path, &payload)
-}
-
-/// Write each record's in-memory key to the keyring and blank the inline copy
-/// on success. Keys that cannot be persisted (keyring unreachable) stay inline
-/// in the JSON. Mutates `records` (a save-local clone) — the caller's in-memory
-/// records keep their keys.
-fn persist_agent_keys(records: &mut [ManagedAgentRecord]) {
-    let Some(store) = agent_secret_store() else {
-        // No keyring backend: keys stay inline.
-        return;
-    };
-    persist_agent_keys_with(store, records);
-}
-
-/// Testable core of [`persist_agent_keys`], generic over the [`KeyStore`] seam.
-fn persist_agent_keys_with(store: &impl KeyStore, records: &mut [ManagedAgentRecord]) {
-    for record in records.iter_mut() {
-        // Only a verified keyring entry lets us drop the inline copy. Both
-        // other outcomes keep the key inline: `KeptInline` (keyring
-        // unreachable) so it is not lost, and `Nothing` (empty key) because
-        // there is no verified entry to claim. This is a save-local clone, so
-        // callers keep their keys regardless.
-        if migrate_inline_key(store, record) == KeyMigration::Persisted {
-            record.private_key_nsec.clear();
-        }
-    }
-}
-
-/// One-time migration of agent keys from the production keyring service
-/// (`"buzz-desktop"`) to the dev service (`"buzz-desktop-dev"`). Only runs
-/// in debug builds — release builds never touch `"buzz-desktop"` from this
-/// path.
-///
-/// Idempotent: skips any key that already exists in the dev service so
-/// repeated boots after migration are no-ops. Leaves the production keyring
-/// untouched — a dev build and a prod install can coexist without sharing
-/// keys after this migration.
-///
-/// Call this at boot before `hydrate_keys` runs (i.e. before
-/// `load_managed_agents` is called) so agents find their keys on first boot
-/// after the service-name change.
-#[cfg(debug_assertions)]
-pub fn migrate_agent_keys_to_dev_service(app: &tauri::AppHandle) {
-    if !cfg!(feature = "system-keyring") || keyring_service() != "buzz-desktop-dev" {
-        return;
-    }
-
-    // Read the JSON store for pubkeys only — we want every instance
-    // record without running hydrate_keys (which would try the dev
-    // keyring that is empty, and log noisy "has no key" warnings).
-    let records = match load_agent_store(app) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("buzz-desktop: keyring-dev-migration: cannot read agent store: {e}");
-            return;
-        }
-    };
-
-    let pubkeys: Vec<String> = records
-        .into_iter()
-        .filter(|r| !r.pubkey.is_empty())
-        .map(|r| r.pubkey)
-        .collect();
-    // A fresh non-singleton store for the prod service — its own empty
-    // cache so reads go to the OS keyring without polluting the dev
-    // singleton's cache.
-    let prod_store = crate::secret_store::SecretStore::keyring("buzz-desktop");
-    let dev_store = crate::secret_store::SecretStore::shared(keyring_service());
-    copy_agent_keys_between_stores(&pubkeys, &prod_store, dev_store);
-}
-
-/// Marker key stored inside the dev blob after a successful agent-key migration.
-/// Its presence means all agent keys that existed in the prod service at
-/// migration time have been copied; subsequent dev boots skip the migration
-/// entirely (no prod keyring access).
-#[cfg(debug_assertions)]
-const DEV_MIGRATION_MARKER: &str = "_dev_migration_v1";
-
-/// Testable core of [`migrate_agent_keys_to_dev_service`]: copy `agent:<pubkey>`
-/// entries from `src` to `dst` for each pubkey, then write a migration-complete
-/// marker so future boots skip the entire function with zero prod-keyring access.
-///
-/// On the first migration boot:
-///   1. One `dst.load_all_readonly()` — dev blob read (1 keychain prompt)
-///   2. One `src.load_all_readonly()` — prod blob read (1 keychain prompt)
-///   3. One `dst.store_all()` — dev blob write (same service as #1; macOS may
-///      skip the ACL prompt if the initial grant was "Always Allow")
-///
-/// On subsequent boots (marker already present):
-///   1. One `dst.load_all_readonly()` — dev blob read (1 keychain prompt)
-///      Returns immediately — prod keyring is NEVER accessed.
-///
-/// Idempotency: keys already present in `dst` are not overwritten (the agent
-/// may have rotated their key in the dev service after initial migration).
-/// New agents (pubkey not in `src`) are silently skipped — they will mint a
-/// fresh key on their next onboarding run.
-#[cfg(debug_assertions)]
-fn copy_agent_keys_between_stores(pubkeys: &[String], src: &impl KeyStore, dst: &impl KeyStore) {
-    // One read of the dev blob. If the migration-complete marker is present,
-    // all prior agent keys are already in the dev service — skip entirely.
-    let dst_map: HashMap<String, String> = match dst.load_all_readonly() {
-        Ok(Some(map)) if map.contains_key(DEV_MIGRATION_MARKER) => {
-            return; // already migrated: 0 prod keyring accesses
-        }
-        Ok(Some(map)) => map,
-        Ok(None) => HashMap::new(),
-        Err(e) => {
-            eprintln!("buzz-desktop: keyring-dev-migration: cannot read dev keyring: {e}");
-            return;
-        }
-    };
-    // Skip production when a reset left no agents or onboarding created every dev key.
-    let src_map: HashMap<String, String> = if pubkeys
-        .iter()
-        .all(|pubkey| dst_map.contains_key(&agent_keyring_name(pubkey)))
-    {
-        HashMap::new()
-    } else {
-        match src.load_all_readonly() {
-            Ok(Some(map)) => map,
-            Ok(None) => HashMap::new(), // prod has no blob yet — nothing to copy
-            Err(e) => {
-                eprintln!("buzz-desktop: keyring-dev-migration: cannot read prod keyring: {e}");
-                return;
-            }
-        }
-    };
-
-    // Compute the set of entries to write: agent keys absent from dst, plus
-    // the migration-complete marker.
-    let mut to_write: HashMap<String, String> = HashMap::new();
-    let mut copied = 0usize;
-    for pubkey in pubkeys {
-        let name = agent_keyring_name(pubkey);
-        if dst_map.contains_key(&name) {
-            continue; // already in dev service — do not overwrite (idempotent)
-        }
-        if let Some(nsec) = src_map.get(&name) {
-            to_write.insert(name, nsec.clone());
-            copied += 1;
-        }
-        // absent from src → new agent, will mint a fresh key
-    }
-
-    // Always write the marker so future boots skip the prod read entirely,
-    // even when there were no keys to copy (empty dev environment).
-    to_write.insert(DEV_MIGRATION_MARKER.to_string(), "done".to_string());
-
-    if let Err(e) = dst.store_all(&to_write) {
-        eprintln!("buzz-desktop: keyring-dev-migration: cannot write to dev keyring: {e}");
-        return;
-    }
-
-    if copied > 0 {
-        eprintln!(
-            "buzz-desktop: keyring-dev-migration: copied {copied} agent key(s) from buzz-desktop"
-        );
-    }
-}
-
-/// Remove an agent's key from the keyring, returning an error on failure.
-/// Used by the snapshot-import rollback path, which must surface cleanup
-/// failures rather than swallowing them.
-pub(crate) fn try_delete_agent_key(pubkey: &str) -> Result<(), String> {
-    if let Some(store) = agent_secret_store() {
-        store.delete(&agent_keyring_name(pubkey))
-    } else {
-        // No keyring backend — nothing to clean up.
-        Ok(())
-    }
-}
-
-/// Remove an agent's key from the keyring (best-effort). Called when an agent
-/// is deleted so its secret does not linger in the OS store.
-pub fn delete_agent_key(pubkey: &str) {
-    if let Err(e) = try_delete_agent_key(pubkey) {
-        eprintln!("buzz-desktop: failed to delete agent {pubkey} key from keyring: {e}");
-    }
 }
 
 /// Atomic, symlink-preserving JSON write.
@@ -632,6 +306,77 @@ pub(crate) fn atomic_write_json_restricted(path: &Path, payload: &[u8]) -> Resul
         .map_err(|e| format!("write {}: {e}", resolved.display()))?;
     file.commit()
         .map_err(|e| format!("commit {}: {e}", resolved.display()))
+}
+
+// ── Two-store byte-level rollback ─────────────────────────────────────────
+//
+// Shared by `commands::teams::adopt::apply` (catalog adoption) and
+// `managed_agents::teams` (adopted-team deletion). Identical rollback policy
+// in both paths (I5 / I6).
+
+/// Raw pre-write snapshot of a JSON store file.
+///
+/// `None` means the file did not exist at snapshot time; restoring `None`
+/// removes the file (with `NotFound` treated as success — desired state
+/// already reached).
+pub(crate) type StoreSnapshot = Option<Vec<u8>>;
+
+/// Snapshot the raw bytes of `path`, or `None` if the file is absent.
+pub(crate) fn snapshot_store(path: &Path) -> Result<StoreSnapshot, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => Ok(Some(bytes)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("failed to snapshot {}: {e}", path.display())),
+    }
+}
+
+/// Restore `path` from a [`StoreSnapshot`].
+///
+/// `NotFound` when restoring an absent snap is treated as success — the
+/// desired state is already reached (I5).
+pub(crate) fn restore_store(path: &Path, snap: StoreSnapshot) -> Result<(), String> {
+    match snap {
+        Some(bytes) => atomic_write_json_restricted(path, &bytes),
+        None => match std::fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(format!(
+                "failed to remove {} during restore: {e}",
+                path.display()
+            )),
+        },
+    }
+}
+
+/// Write both stores via the supplied callbacks, rolling back both from
+/// caller-supplied snapshots on any failure.
+///
+/// Both restores are attempted independently, so a restore failure in one
+/// store does not prevent the other; errors from both are aggregated (I5).
+pub(crate) fn commit_stores_with_snapshots(
+    personas_path: &Path,
+    teams_path: &Path,
+    personas_snap: StoreSnapshot,
+    teams_snap: StoreSnapshot,
+    write_personas: impl FnOnce() -> Result<(), String>,
+    write_teams: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if let Err(error) = write_personas().and_then(|()| write_teams()) {
+        let personas_err = restore_store(personas_path, personas_snap).err();
+        let teams_err = restore_store(teams_path, teams_snap).err();
+        let restore_errors: Vec<&str> = [personas_err.as_deref(), teams_err.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect();
+        if !restore_errors.is_empty() {
+            return Err(format!(
+                "{error} (and the local stores could not be restored: {})",
+                restore_errors.join("; ")
+            ));
+        }
+        return Err(error);
+    }
+    Ok(())
 }
 
 /// Maximum log file size before rotation (10 MB).
@@ -721,7 +466,7 @@ pub(crate) fn append_log_marker(path: &Path, message: &str) -> Result<(), String
     writeln!(file, "{message}").map_err(|error| format!("failed to write log marker: {error}"))
 }
 
-fn agent_pids_dir(app: &AppHandle) -> Result<PathBuf, String> {
+fn agent_pids_dir<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     let dir = managed_agents_base_dir(app)?.join("agent-pids");
     fs::create_dir_all(&dir)
         .map_err(|error| format!("failed to create agent-pids dir: {error}"))?;
@@ -731,8 +476,8 @@ fn agent_pids_dir(app: &AppHandle) -> Result<PathBuf, String> {
 /// Persist a pair-scoped runtime receipt atomically. Callers must register the
 /// process in memory in the same runtime transition; on write failure they must
 /// terminate the child before releasing that transition.
-pub fn write_agent_runtime_receipt(
-    app: &AppHandle,
+pub fn write_agent_runtime_receipt<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     receipt: &ManagedAgentRuntimeReceipt,
 ) -> Result<(), String> {
     let path = agent_pids_dir(app)?.join(format!("{}.json", receipt.key.runtime_id()));
@@ -741,7 +486,10 @@ pub fn write_agent_runtime_receipt(
     atomic_write_json_restricted(&path, &payload)
 }
 
-pub fn remove_agent_runtime_receipt(app: &AppHandle, key: &ManagedAgentRuntimeKey) {
+pub fn remove_agent_runtime_receipt<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    key: &ManagedAgentRuntimeKey,
+) {
     if let Ok(dir) = agent_pids_dir(app) {
         let _ = fs::remove_file(dir.join(format!("{}.json", key.runtime_id())));
     }
@@ -751,8 +499,8 @@ pub fn remove_agent_runtime_receipt_path(path: &Path) {
     let _ = fs::remove_file(path);
 }
 
-pub fn read_all_agent_runtime_receipts(
-    app: &AppHandle,
+pub fn read_all_agent_runtime_receipts<R: tauri::Runtime>(
+    app: &AppHandle<R>,
 ) -> Vec<(PathBuf, ManagedAgentRuntimeReceipt)> {
     let Ok(dir) = agent_pids_dir(app) else {
         return Vec::new();
@@ -774,13 +522,14 @@ pub fn read_all_agent_runtime_receipts(
 }
 
 /// Remove the PID file for an agent (e.g. on normal stop).
-pub fn remove_agent_pid_file(app: &AppHandle, pubkey: &str) {
+pub fn remove_agent_pid_file<R: tauri::Runtime>(app: &AppHandle<R>, pubkey: &str) {
     if let Ok(dir) = agent_pids_dir(app) {
         let _ = fs::remove_file(dir.join(format!("{pubkey}.pid")));
     }
 }
 
 /// Read all PID files from `agent-pids/`, returning `(pubkey, pid)` pairs.
+#[cfg(unix)]
 pub fn read_all_agent_pid_files(app: &AppHandle) -> Vec<(String, u32)> {
     let Ok(dir) = agent_pids_dir(app) else {
         return Vec::new();
@@ -904,6 +653,9 @@ pub fn meaningful_agent_error_from_log(path: &Path) -> Option<AgentLogError> {
     })
 }
 
+#[cfg(test)]
+#[path = "storage_keyring_tests.rs"]
+mod keyring_tests;
 #[cfg(test)]
 #[path = "storage_tests.rs"]
 mod tests;

@@ -54,7 +54,7 @@ impl Db {
         {
             return Ok(denied("invalid_recovery_controller"));
         }
-        let mut tx = self.begin_transaction().await?;
+        let mut tx = self.begin_event_write_transaction().await?;
         self.deletion_store()
             .guard_transaction(&mut tx, community)
             .await?;

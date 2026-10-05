@@ -11,6 +11,44 @@ pub const MANUAL_COOLDOWN_SECONDS: i64 = 900;
 /// Total execution attempts across all tasks in a manual run.
 pub const MANUAL_MAX_ATTEMPTS: i32 = 2;
 
+/// Extract the exact reply markers carried by a workflow task/result.
+/// Unlike ordinary chat's permissive NIP-10 parser, this control-plane surface
+/// rejects ambiguous, malformed, or additional ancestry. Signature and scoped
+/// parent/root authorization are checked by the relay before queueing the task.
+pub fn workflow_reply_tags(tags: &nostr::Tags) -> Result<Vec<nostr::Tag>, &'static str> {
+    let mut reply_tags = Vec::new();
+    let mut root = false;
+    let mut reply = false;
+    for tag in tags.iter() {
+        let parts = tag.as_slice();
+        if parts.first().is_some_and(|key| key == "broadcast") {
+            return Err("workflow replies cannot broadcast");
+        }
+        if parts.first().is_none_or(|key| key != "e") {
+            continue;
+        }
+        if parts.len() != 4
+            || parts[1].len() != 64
+            || !parts[1]
+                .bytes()
+                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+            || !parts[2].is_empty()
+        {
+            return Err("invalid workflow reply marker");
+        }
+        match parts[3].as_str() {
+            "root" if !root => root = true,
+            "reply" if !reply => reply = true,
+            _ => return Err("ambiguous workflow reply marker"),
+        }
+        reply_tags.push(tag.clone());
+    }
+    if root && !reply {
+        return Err("workflow root requires a reply marker");
+    }
+    Ok(reply_tags)
+}
+
 /// Agent-signed control envelope. Tags must agree with this payload.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

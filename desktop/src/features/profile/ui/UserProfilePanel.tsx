@@ -1,4 +1,5 @@
 import * as React from "react";
+import { isRelayRemovedError } from "@/features/agents/managedAgentRelayCleanup";
 import { toast } from "sonner";
 
 import { useAppNavigation } from "@/app/navigation/useAppNavigation";
@@ -41,7 +42,7 @@ import {
 import { useChannelsQuery } from "@/features/channels/hooks";
 import { useMyRelayMembershipQuery } from "@/features/community-members/hooks";
 import { useIdentityArchive } from "@/features/identity-archive/hooks";
-import { usePresenceQuery } from "@/features/presence/hooks";
+import { useAgentAvailabilityLookup } from "@/features/agents/lib/useAgentAvailability";
 import {
   useContactListQuery,
   useFollowMutation,
@@ -80,7 +81,7 @@ import {
   resolveAgentInstruction,
   resolvePanelProfile,
   resolveProfileDisplayName,
-  truncatePubkey,
+  truncateNpub,
   type UserProfilePanelProps,
   useRetainedPersona,
 } from "@/features/profile/ui/UserProfilePanelUtils";
@@ -194,14 +195,12 @@ export function UserProfilePanel({
   const managedAgentsQuery = useManagedAgentsQuery({ enabled: true });
   const { instanceBuckets, linkedPersonaId, managedAgent } =
     useCanonicalManagedAgentProfile({
-      currentPubkey,
       managedAgents: managedAgentsQuery.data,
       personaId: persona?.id,
-      preferDirectManagedAgent: true,
-      preserveRequestedInstance,
       pubkey,
     });
   const resolvedPersonaFromSource = React.useMemo(() => {
+    if (pubkey && !managedAgent) return undefined;
     const personaId = linkedPersonaId ?? managedAgent?.personaId;
     if (personaId) {
       const refreshedPersona = personasQuery.data?.find(
@@ -211,7 +210,7 @@ export function UserProfilePanel({
         return refreshedPersona;
       }
     }
-    if (persona) {
+    if (!pubkey && persona) {
       return persona;
     }
     if (!managedAgent?.personaId) {
@@ -220,14 +219,15 @@ export function UserProfilePanel({
     return personasQuery.data?.find(
       (candidate) => candidate.id === managedAgent.personaId,
     );
-  }, [linkedPersonaId, managedAgent?.personaId, persona, personasQuery.data]);
+  }, [linkedPersonaId, managedAgent, persona, personasQuery.data, pubkey]);
   const profileIdentityKey =
-    managedAgent?.pubkey ?? pubkey ?? `persona:${persona?.id ?? "unknown"}`;
-  const resolvedPersona = useRetainedPersona(
+    pubkey ?? managedAgent?.pubkey ?? `persona:${persona?.id ?? "unknown"}`;
+  const retainedPersona = useRetainedPersona(
     resolvedPersonaFromSource,
     profileIdentityKey,
   );
-  const effectivePubkey = managedAgent?.pubkey ?? pubkey ?? null;
+  const resolvedPersona = pubkey && !managedAgent ? undefined : retainedPersona;
+  const effectivePubkey = pubkey ?? managedAgent?.pubkey ?? null;
   const pubkeyLower = effectivePubkey?.toLowerCase() ?? "";
 
   const profileQuery = useUserProfileQuery(effectivePubkey ?? undefined);
@@ -255,9 +255,10 @@ export function UserProfilePanel({
     effectivePubkey ? [effectivePubkey] : [],
   );
   const channelsQuery = useChannelsQuery();
-  const presenceQuery = usePresenceQuery(
+  const { query: presenceQuery, getAvailability } = useAgentAvailabilityLookup(
     effectivePubkey ? [effectivePubkey] : [],
   );
+  const presenceStatus = getAvailability(effectivePubkey);
   const userStatusQuery = useUserStatusQuery(
     effectivePubkey ? [effectivePubkey] : [],
   );
@@ -271,9 +272,6 @@ export function UserProfilePanel({
     persona: resolvedPersona,
     profile: profileQuery.data,
   });
-  const presenceStatus = pubkeyLower
-    ? presenceQuery.data?.[pubkeyLower]
-    : undefined;
   const userStatus = pubkeyLower
     ? userStatusQuery.data?.[pubkeyLower]
     : undefined;
@@ -355,6 +353,7 @@ export function UserProfilePanel({
   const canOpenAgentLogs =
     isOwner === true && managedAgent?.backend.type === "local";
   const canInstantiateAgent =
+    !pubkey &&
     isOwner === true &&
     resolvedPersona !== undefined &&
     managedAgent === undefined;
@@ -432,7 +431,7 @@ export function UserProfilePanel({
       deleteManagedAgent: deleteAgentMutation.mutateAsync,
       managedAgent,
       managedAgents: managedAgentsQuery.data,
-      presenceLookup: presenceQuery.data,
+      getAvailability,
       relayAgents: relayAgentsQuery.data,
     });
 
@@ -470,6 +469,7 @@ export function UserProfilePanel({
 
   const { handleAgentPrimaryAction, handleAgentRestart } =
     useAgentLifecycleActions({
+      availability: presenceStatus,
       channels: channelsQuery.data,
       managedAgent,
       relayAgents: relayAgentsQuery.data,
@@ -482,7 +482,9 @@ export function UserProfilePanel({
 
     try {
       const created = await createManagedAgentForPersona(resolvedPersona);
-      if (created.spawnError) {
+      if (isRelayRemovedError(created.spawnError)) {
+        // Its community was removed meanwhile: created, not started, no error.
+      } else if (created.spawnError) {
         toast.error(created.spawnError);
       } else {
         toast.success(`Started ${created.agent.name}.`);
@@ -693,7 +695,7 @@ export function UserProfilePanel({
       return (
         ownerProfile?.nip05Handle?.trim() ||
         ownerProfile?.displayName?.trim() ||
-        truncatePubkey(ownerPubkey)
+        truncateNpub(ownerPubkey)
       );
     }
 
@@ -705,7 +707,7 @@ export function UserProfilePanel({
     return (
       currentProfile?.nip05Handle?.trim() ||
       currentProfile?.displayName?.trim() ||
-      truncatePubkey(currentPubkey)
+      truncateNpub(currentPubkey)
     );
   }, [
     currentProfileQuery.data,
@@ -778,6 +780,7 @@ export function UserProfilePanel({
     {
       agentSettingsMenu,
       effectivePubkey,
+      ownerPubkey: profile?.ownerPubkey,
       logCopyValue: isDiagnosticsLikeView ? managedAgentLogContent : null,
       logSubtitle: logHeaderSubtitle,
       onBack: () => setView("summary"),

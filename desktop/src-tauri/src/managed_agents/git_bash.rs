@@ -39,7 +39,7 @@ pub(crate) fn resolve_git_bash_path() -> Option<std::path::PathBuf> {
     #[cfg(windows)]
     {
         let env = GitBashEnv::from_process();
-        return resolve_git_bash(
+        resolve_git_bash(
             &env.path,
             env.shell_override,
             env.git_bash_override,
@@ -47,11 +47,13 @@ pub(crate) fn resolve_git_bash_path() -> Option<std::path::PathBuf> {
             env.program_files,
             env.program_files_x86,
             env.local_app_data,
-        );
+        )
     }
 
     #[cfg(not(windows))]
-    None
+    {
+        None
+    }
 }
 
 /// Resolve a bash-compatible shell for install commands and login-shell discovery.
@@ -66,7 +68,7 @@ pub(crate) fn resolve_bash_path() -> Option<std::path::PathBuf> {
     #[cfg(windows)]
     {
         let env = GitBashEnv::from_process();
-        return resolve_git_bash(
+        resolve_git_bash(
             &env.path,
             None, // skip BUZZ_SHELL — install/login-shell callers require bash
             env.git_bash_override,
@@ -74,27 +76,31 @@ pub(crate) fn resolve_bash_path() -> Option<std::path::PathBuf> {
             env.program_files,
             env.program_files_x86,
             env.local_app_data,
-        );
+        )
     }
 
     #[cfg(not(windows))]
-    None
+    {
+        None
+    }
 }
 
 pub(crate) fn discover_git_bash() -> Option<GitBashPrerequisite> {
     #[cfg(windows)]
     {
         let path = resolve_git_bash_path();
-        return Some(GitBashPrerequisite {
+        Some(GitBashPrerequisite {
             available: path.is_some(),
             path: path.map(|path| path.display().to_string()),
             install_instructions_url: INSTALL_URL.to_string(),
             install_hint: INSTALL_HINT.to_string(),
-        });
+        })
     }
 
     #[cfg(not(windows))]
-    None
+    {
+        None
+    }
 }
 
 #[cfg(windows)]
@@ -174,13 +180,15 @@ pub(crate) fn resolve_git_bash(
     local_app_data: Option<PathBuf>,
 ) -> Option<PathBuf> {
     resolve_git_bash_inner(
-        path_env,
-        shell_override,
-        git_bash_override,
-        system_root,
-        program_files,
-        program_files_x86,
-        local_app_data,
+        GitBashEnv {
+            path: path_env.to_string(),
+            shell_override,
+            git_bash_override,
+            system_root,
+            program_files,
+            program_files_x86,
+            local_app_data,
+        },
         true,
     )
 }
@@ -188,22 +196,22 @@ pub(crate) fn resolve_git_bash(
 /// Inner resolver with an explicit `check_registry` toggle so tests can
 /// disable the ambient `HKLM/HKCU\SOFTWARE\GitForWindows` lookup.
 #[cfg(windows)]
-fn resolve_git_bash_inner(
-    path_env: &str,
-    shell_override: Option<PathBuf>,
-    git_bash_override: Option<PathBuf>,
-    system_root: Option<PathBuf>,
-    program_files: Option<PathBuf>,
-    program_files_x86: Option<PathBuf>,
-    local_app_data: Option<PathBuf>,
-    check_registry: bool,
-) -> Option<PathBuf> {
+fn resolve_git_bash_inner(env: GitBashEnv, check_registry: bool) -> Option<PathBuf> {
+    let GitBashEnv {
+        path,
+        shell_override,
+        git_bash_override,
+        system_root,
+        program_files,
+        program_files_x86,
+        local_app_data,
+    } = env;
     let result = shell_override
-        .and_then(|path| resolve_shell_override(&path, path_env))
+        .and_then(|shell| resolve_shell_override(&shell, &path))
         .or_else(|| git_bash_override.filter(|path| path.is_file()))
-        .or_else(|| scan_path_for_bash(path_env, system_root.as_deref()))
+        .or_else(|| scan_path_for_bash(&path, system_root.as_deref()))
         .or_else(|| {
-            scan_path_for_command(Path::new("git.exe"), path_env, None)
+            scan_path_for_command(Path::new("git.exe"), &path, None)
                 .and_then(|git| bash_from_git(&git))
         })
         .or_else(|| {
@@ -232,13 +240,15 @@ pub(crate) fn resolve_git_bash_no_registry(
     local_app_data: Option<PathBuf>,
 ) -> Option<PathBuf> {
     resolve_git_bash_inner(
-        path_env,
-        shell_override,
-        git_bash_override,
-        system_root,
-        program_files,
-        program_files_x86,
-        local_app_data,
+        GitBashEnv {
+            path: path_env.to_string(),
+            shell_override,
+            git_bash_override,
+            system_root,
+            program_files,
+            program_files_x86,
+            local_app_data,
+        },
         false,
     )
 }

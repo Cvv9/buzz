@@ -45,7 +45,8 @@ function normalizePubkeys(pubkeys: string[]) {
     .sort();
 }
 
-function presenceQueryKey(pubkeys: string[]) {
+/** Canonical normalized key shared by observers and action-time readers. */
+export function presenceQueryKey(pubkeys: string[]) {
   return ["presence", ...normalizePubkeys(pubkeys)] as const;
 }
 
@@ -97,16 +98,24 @@ export function usePresenceQuery(
 ) {
   const normalizedPubkeys = normalizePubkeys(pubkeys);
   const enabled = (options?.enabled ?? true) && normalizedPubkeys.length > 0;
+  const queryClient = useQueryClient();
   const connectionState = useRelayConnection();
   const connected = connectionState === "connected";
+  const queryKey = presenceQueryKey(normalizedPubkeys);
   const refetchInterval = useFocusedRefetchInterval(
     connected ? PRESENCE_REFETCH_INTERVAL_MS : false,
   );
 
   return useQuery<PresenceLookup>({
     enabled,
-    queryKey: presenceQueryKey(normalizedPubkeys),
-    queryFn: () => getPresence(normalizedPubkeys),
+    queryKey,
+    queryFn: () => {
+      // A polling callback already queued when its last observer unmounts must
+      // not issue an orphaned relay request.
+      const query = queryClient.getQueryCache().find({ queryKey });
+      if (!query || query.getObserversCount() === 0) return {};
+      return getPresence(normalizedPubkeys);
+    },
     // Backstop poll: catches REST-only writers (ACP agents) and TTL expiry
     // (crashed clients). WS events handle the fast path. Pause on degraded
     // connections — HTTP presence calls fail anyway and consume relay quota.
@@ -135,7 +144,10 @@ export function usePresenceSubscription() {
       queryClient.setQueriesData<PresenceLookup>(
         {
           queryKey: ["presence"],
+          // A single live author cannot heal a failed aggregate snapshot:
+          // setQueriesData would mark every cached sibling successful again.
           predicate: (query) =>
+            query.state.status === "success" &&
             presenceQueryWantsPubkey(query.queryKey, pubkey),
         },
         (old) => mergePresenceUpdate(old, pubkey, status),
@@ -206,7 +218,9 @@ export function useSetPresenceMutation(pubkey?: string) {
       queryClient.setQueriesData<PresenceLookup>(
         {
           queryKey: ["presence"],
+          // A successful self heartbeat is not a fresh roster snapshot.
           predicate: (query) =>
+            query.state.status === "success" &&
             presenceQueryWantsPubkey(query.queryKey, normalizedPubkey),
         },
         (old) => mergePresenceUpdate(old, normalizedPubkey, status),
