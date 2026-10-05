@@ -1,3 +1,11 @@
+// Chunk-boundary fixtures sign and verify more than 1,000 real events. On a
+// contended CI host that CPU work can exceed the default 30-second deadline;
+// timing out mid-export also leaves its shared FIFO occupied for later tests.
+// Keep signature, retry-budget, and FIFO assertions intact while allowing the
+// bounded cryptographic workload to finish.
+@Timeout(Duration(minutes: 2))
+library;
+
 import 'dart:async';
 import 'dart:isolate';
 
