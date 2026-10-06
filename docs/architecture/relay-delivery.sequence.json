@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "Buzz release identity and runtime verification",
+    "quality_profile": "showcase",
+    "column_fit": "spread",
+    "viewBox": [
+      1080,
+      560
+    ]
+  },
+  "participants": [
+    {
+      "id": "github",
+      "type": "external",
+      "label": "GitHub",
+      "sublabel": "Source and CI records"
+    },
+    {
+      "id": "actions",
+      "type": "backend",
+      "label": "Actions",
+      "sublabel": "Native image build"
+    },
+    {
+      "id": "registry",
+      "type": "cloud",
+      "label": "GHCR",
+      "sublabel": "Digests and attestations"
+    },
+    {
+      "id": "suite",
+      "type": "external",
+      "label": "Suite",
+      "sublabel": "Operator selection"
+    },
+    {
+      "id": "verifier",
+      "type": "security",
+      "label": "Verifier",
+      "sublabel": "Installed pin allowlist"
+    }
+  ],
+  "messages": [
+    {
+      "from": "suite",
+      "to": "github",
+      "y": 160,
+      "label": "Relay tag or rescue at that exact tag",
+      "variant": "emphasis"
+    },
+    {
+      "from": "github",
+      "to": "actions",
+      "y": 190,
+      "label": "Frozen source SHA",
+      "variant": "emphasis"
+    },
+    {
+      "from": "actions",
+      "to": "registry",
+      "y": 220,
+      "label": "Per-arch digests",
+      "variant": "default"
+    },
+    {
+      "from": "actions",
+      "to": "github",
+      "y": 250,
+      "label": "Read same-SHA CI",
+      "variant": "default"
+    },
+    {
+      "from": "github",
+      "to": "actions",
+      "y": 280,
+      "label": "Trusted CI result",
+      "variant": "return"
+    },
+    {
+      "from": "actions",
+      "to": "suite",
+      "y": 310,
+      "label": "If unqualified: no release manifest",
+      "variant": "security"
+    },
+    {
+      "from": "actions",
+      "to": "registry",
+      "y": 340,
+      "label": "If qualified: manifest",
+      "variant": "emphasis"
+    },
+    {
+      "from": "registry",
+      "to": "suite",
+      "y": 370,
+      "label": "Digest + provenance",
+      "variant": "return"
+    },
+    {
+      "from": "suite",
+      "to": "verifier",
+      "y": 400,
+      "label": "Installed contract",
+      "variant": "default"
+    },
+    {
+      "from": "verifier",
+      "to": "suite",
+      "y": 430,
+      "label": "If matched: receipt",
+      "variant": "return"
+    },
+    {
+      "from": "verifier",
+      "to": "suite",
+      "y": 460,
+      "label": "If mismatch: hold",
+      "variant": "security"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Artifact and runtime",
+      "items": [
+        "Candidate digests precede qualified release manifests",
+        "Main CI and Suite deployment remain separate decisions"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "6 October observation",
+      "items": [
+        "Healthy Azure clean relay differs from the pinned native image",
+        "Installed verifier still targets the older fresh container"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Independent recovery",
+      "items": [
+        "Timer backup completed: 28 artifacts, writers resumed",
+        "Inspected restore does not prove full app or table parity"
+      ]
+    }
+  ]
+}
