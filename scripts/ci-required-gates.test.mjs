@@ -28,7 +28,14 @@ for (const gate of gates) {
     new RegExp(`^  ${gate}:\\n([\\s\\S]*?)(?=^  [\\w-]+:|$(?![\\s\\S]))`, "m"),
   )[1];
   const condition = body.match(/^ {4}if: (.+)$/m)[1];
-  const command = body.match(/^ {8}run: (.+)$/m)[1];
+  const runMatch = body.match(/^ {8}run: (?:\|\n((?: {10}.*\n?)+)|(.+))$/m);
+  const command = runMatch[1]
+    ? runMatch[1].replace(/^ {10}/gm, "")
+    : runMatch[2];
+  // Gates may also require sibling job results (e.g. MANUAL_RESULT, ADMIN_RESULT).
+  const extraResults = [...body.matchAll(/^ {10}(\w+_RESULT): /gm)]
+    .map((m) => m[1])
+    .filter((k) => k !== "SELECTION_RESULT" && k !== "RESULT");
   function shouldRun(
     selection,
     selected = false,
@@ -57,11 +64,19 @@ for (const gate of gates) {
       );
     return runInNewContext(expression, {}, { timeout: 100 });
   }
-  function check(selection, result) {
+  function check(selection, result, overrides = {}) {
     assert.match(body, /SELECTION_RESULT: \$\{\{ needs.changes.result \}\}/);
     assert.match(body, /RESULT: \$\{\{ needs\.[\w-]+\.outputs\.[\w_]+ \}\}/);
-    return spawnSync("bash", ["-c", command], {
-      env: { ...process.env, SELECTION_RESULT: selection, RESULT: result },
+    return spawnSync("bash", ["-e", "-c", command], {
+      env: {
+        ...process.env,
+        EVENT_NAME: "push",
+        RUST_CHANGED: "true",
+        ...Object.fromEntries(extraResults.map((k) => [k, "success"])),
+        SELECTION_RESULT: selection,
+        RESULT: result,
+        ...overrides,
+      },
       timeout: 1000,
     }).status;
   }
@@ -85,6 +100,11 @@ for (const gate of gates) {
     assert.equal(check("success", "success"), 0);
     for (const result of ["", "failure", "cancelled", "skipped"]) {
       assert.notEqual(check("success", result), 0);
+    }
+    for (const key of extraResults) {
+      for (const result of ["", "failure", "cancelled", "skipped"]) {
+        assert.notEqual(check("success", "success", { [key]: result }), 0);
+      }
     }
   });
 }
