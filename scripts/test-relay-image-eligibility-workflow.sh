@@ -18,7 +18,7 @@ require_literal "  qualify:"
 require_literal "actions: read"
 require_literal "actions/workflows/ci.yml/runs"
 require_literal 'select-qualified-ci-run.jq'
-require_literal "needs: [build, qualify]"
+require_literal "needs: [build, agent-build, qualify]"
 require_literal "https://buzz.block.xyz/attestations/deployment-eligibility/v1"
 require_literal "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6"
 require_literal "if: matrix.variant == 'release'"
