@@ -324,7 +324,7 @@ test("workflow consumes guarded selection outputs", () => {
   }
   assert.match(
     workflow,
-    /id: selection\n {8}env:\n {10}FILTER_OUTPUTS: \$\{\{ toJSON\(steps.filter.outputs\) \}\}\n {8}run: node scripts\/ci-runtime-selection.mjs/,
+    /id: selection\n {8}env:\n {10}FILTER_OUTPUTS: \$\{\{ github\.event_name == 'workflow_dispatch' && '\{"rust":"true","desktop":"true","desktop-rust":"true","web":"true","mobile":"true"\}' \|\| toJSON\(steps\.filter\.outputs\) \}\}\n {8}run: node scripts\/ci-runtime-selection.mjs/,
   );
 });
 for (const count of [2999, 3000, 3001]) {
