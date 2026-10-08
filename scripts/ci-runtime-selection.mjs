@@ -13,8 +13,9 @@ if (process.env.GITHUB_EVENT_NAME === "pull_request") {
     Number.isSafeInteger(count) && count >= 0,
     "Invalid PR changed_files",
   );
-  // GitHub's PR-files endpoint returns at most 3,000 files. Never use a
-  // potentially incomplete list to skip a runtime suite.
+  // GitHub's PR-files endpoint returns at most 3,000 files. If the list may
+  // be incomplete, select every enabled production suite; native-only suites
+  // below still require the explicit manual opt-in.
   runAll = count >= 3000;
 }
 for (const key of ["rust", "desktop", "desktop-rust", "web", "mobile"]) {

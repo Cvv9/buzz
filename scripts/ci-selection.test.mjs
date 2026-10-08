@@ -402,6 +402,25 @@ test("independent desktop and mobile release workflows remain intact", () => {
 });
 
 for (const count of [2999, 3000, 3001]) {
+  test(`runtime selection PR file-list ceiling: ${count} changed files`, async () => {
+    const eventPath = join(scratch, `runtime-event-${count}.json`);
+    writeFileSync(
+      eventPath,
+      JSON.stringify({ pull_request: { changed_files: count } }),
+    );
+    const rawOutputs = Object.fromEntries(
+      ["rust", "desktop", "desktop-rust", "web", "mobile"].map((key) => [key, "false"]),
+    );
+    const outputs = await runSelection(rawOutputs, "pull_request", false, eventPath);
+    const fallback = count >= 3000;
+    assert.equal(outputs.rust, fallback ? "true" : "false");
+    assert.equal(outputs.web, fallback ? "true" : "false");
+    for (const key of ["desktop", "desktop-rust", "mobile"]) {
+      assert.equal(outputs[key], "false");
+    }
+    assert.equal(outputs["run-native-apps"], "false");
+  });
+
   pathsFilterTest(`PR file-list ceiling: ${count} changed files`, async () => {
     const paths = Array.from(
       { length: Math.min(count, 3000) },
@@ -409,10 +428,12 @@ for (const count of [2999, 3000, 3001]) {
     );
     if (count > 3000) paths.push("desktop/src/omitted-by-api.ts");
     const outputs = await select(paths, true);
-    for (const [key, value] of Object.entries(outputs)) {
-      const nativeOnly = ["desktop", "desktop-rust", "mobile"].includes(key);
-      assert.equal(value, count >= 3000 && !nativeOnly ? "true" : "false");
-    }
+    assert.deepEqual(
+      Object.keys(outputs)
+        .filter((key) => outputs[key] === "true")
+        .sort(),
+      count >= 3000 ? ["rust", "web"] : [],
+    );
   });
 }
 
