@@ -3,7 +3,7 @@ import { generateSecretKey, getPublicKey } from "nostr-tools/pure";
 import { nsecEncode } from "nostr-tools/nip19";
 import { installWorkspaceRelayMock } from "./helpers/workspaceRelayMock";
 
-test("thread summary bar stays collapsed and opens the focused thread panel", async ({
+test("short replies appear inline and the focused thread panel resizes", async ({
   page,
 }) => {
   const secretKey = generateSecretKey();
@@ -19,18 +19,21 @@ test("thread summary bar stays collapsed and opens the focused thread panel", as
   await page.getByLabel("Confirm password").fill("thread-test-password");
   await page.getByRole("button", { name: "Sign in with recovery key" }).click();
 
-  const summaryBar = page.getByTestId(`thread-summary-${rootId}`);
-  await expect(summaryBar).toBeVisible();
-  await expect(summaryBar).toContainText("1 reply");
-
-  // Replies stay collapsed — there is no inline thread section in the timeline.
-  await expect(page.getByTestId(`inline-thread-${rootId}`)).toHaveCount(0);
-  await expect(page.getByText("A threaded reply")).toHaveCount(0);
-
-  // Clicking the summary bar opens the focused thread panel (not inline).
-  await summaryBar.click();
+  const inline = page.getByTestId(`thread-inline-${rootId}`);
+  await expect(inline.getByText("A threaded reply")).toBeVisible();
+  await expect(page.getByTestId(`thread-summary-${rootId}`)).toHaveCount(0);
+  await page.getByTestId(`thread-reply-${rootId}`).click();
   await expect(page.getByRole("heading", { name: "Thread" })).toBeVisible();
-  await expect(page.getByText("A threaded reply")).toBeVisible();
+  const panel = page.getByTestId("thread-panel");
+  await expect(panel.getByText("A threaded reply")).toBeVisible();
+  const handle = page.getByRole("separator", { name: "Resize thread panel" });
+  await expect(handle).toHaveAttribute("aria-valuenow", "384");
+  await handle.focus();
+  await page.keyboard.press("ArrowLeft");
+  await expect(handle).toHaveAttribute("aria-valuenow", "408");
+  expect((await panel.boundingBox())?.width).toBe(408);
+  await page.keyboard.press("Home");
+  await expect(handle).toHaveAttribute("aria-valuenow", "320");
 
   // The hover "Reply" action opens the same panel rather than an inline composer.
   await page.getByLabel("Close thread").click();
