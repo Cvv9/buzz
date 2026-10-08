@@ -526,9 +526,18 @@ jobs:
           BUZZ_TEST_S3_BUCKET: buzz-media
         run: |
           cargo nextest run \
+            -j 1 \
             --archive-file target/ci/backend-integration-tests.tar.zst \
             -E 'package(buzz-relay) and test(/api::git::settings::tests::external_infra::/)' \
             --run-ignored ignored-only
+      - name: Capture MinIO diagnostics after backend regression failures
+        if: failure()
+        run: |
+          docker inspect --format='status={{.State.Status}} oom-killed={{.State.OOMKilled}} restarts={{.RestartCount}} memory-limit={{.HostConfig.Memory}}' buzz-minio || true
+          docker logs --tail 200 buzz-minio 2>&1 \
+            | sed -E -e 's/[Bb]uzz_dev(_secret)?/[REDACTED]/g' \
+                -e 's/(password|secret.?key|access.?key|token)([=: ]+)[^[:space:],]+/\1\2[REDACTED]/Ig' \
+                -e 's/(Authorization: )[[:graph:]]+/\1[REDACTED]/Ig' || true
       - name: Relay quota accounting and rejection regressions
         env:
           BUZZ_TEST_REDIS_URL: redis://localhost:6379

@@ -2946,7 +2946,12 @@ mod tests {
             state.nip_fi_verifier = Some(verifier.clone());
 
             let uri = format!("/workflows/{}/runs", uuid::Uuid::nil());
-            let url = format!("https://{host}{uri}");
+            let tenant = buzz_core::tenant::TenantContext::resolved(
+                buzz_core::CommunityId::from_uuid(community_id),
+                &host,
+            );
+            let url =
+                crate::api::bridge::nip98_expected_url(&state.config.relay_url, &tenant, &uri);
             let req = axum::http::Request::get(&uri)
                 .header("host", &host)
                 .header(axum::http::header::AUTHORIZATION, nip98(&keys, &url, "GET"))

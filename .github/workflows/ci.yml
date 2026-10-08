@@ -389,6 +389,8 @@ jobs:
     # This empty database belongs only to this job. Do not apply the desired-state
     # schema used by the older integration suites: these fixtures exercise the
     # embedded SQLx migration chain, including manual execution serving fences.
+    # Keep host ports below the Linux ephemeral source-port range: these tests
+    # open many DB/Redis connections before starting the relay listeners.
     services:
       postgres:
         image: postgres:17-alpine
@@ -397,21 +399,21 @@ jobs:
           POSTGRES_PASSWORD: buzz_test_only
           POSTGRES_DB: buzz_manual_tests_v1
         ports:
-          - 55441:5432
+          - 15441:5432
         options: >-
           --health-cmd "pg_isready -h 127.0.0.1 -U buzz -d buzz_manual_tests_v1"
           --health-interval 2s --health-timeout 5s --health-retries 30
       redis:
         image: redis:7-alpine
         ports:
-          - 56441:6379
+          - 16441:6379
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 2s --health-timeout 5s --health-retries 30
     env:
-      DATABASE_URL: postgres://buzz:buzz_test_only@127.0.0.1:55441/buzz_manual_tests_v1
-      REDIS_URL: redis://127.0.0.1:56441
-      RELAY_URL: ws://127.0.0.1:55341
+      DATABASE_URL: postgres://buzz:buzz_test_only@127.0.0.1:15441/buzz_manual_tests_v1
+      REDIS_URL: redis://127.0.0.1:16441
+      RELAY_URL: ws://127.0.0.1:15341
       BUZZ_TEST_CLI: ${{ github.workspace }}/target/ci/buzz
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -456,9 +458,9 @@ jobs:
       - name: Start membership-enforced isolated relay
         env:
           BUZZ_AUTO_MIGRATE: "true"
-          BUZZ_BIND_ADDR: 127.0.0.1:55341
-          BUZZ_HEALTH_PORT: "55342"
-          BUZZ_METRICS_PORT: "55343"
+          BUZZ_BIND_ADDR: 127.0.0.1:15341
+          BUZZ_HEALTH_PORT: "15342"
+          BUZZ_METRICS_PORT: "15343"
           BUZZ_REQUIRE_AUTH_TOKEN: "true"
           BUZZ_REQUIRE_RELAY_MEMBERSHIP: "true"
           BUZZ_ALLOW_INSECURE_DEV_PUBKEY: "false"
@@ -473,7 +475,7 @@ jobs:
           chmod +x ./target/ci/buzz-relay "$BUZZ_TEST_CLI"
           psql "$DATABASE_URL" -XAtw -v ON_ERROR_STOP=1 -c "
             INSERT INTO communities (id,host)
-            VALUES ('00000000-0000-4000-8000-00000000c0de','127.0.0.1:55341')
+            VALUES ('00000000-0000-4000-8000-00000000c0de','127.0.0.1:15341')
             ON CONFLICT (lower(host)) DO NOTHING;"
           nohup ./target/ci/buzz-relay > /tmp/buzz-manual-relay.log 2>&1 &
           echo $! > /tmp/buzz-manual-relay.pid
@@ -482,7 +484,7 @@ jobs:
               cat /tmp/buzz-manual-relay.log
               exit 1
             fi
-            if curl -fsS http://127.0.0.1:55342/_readiness >/dev/null; then
+            if curl -fsS http://127.0.0.1:15342/_readiness >/dev/null; then
               exit 0
             fi
             sleep 1
