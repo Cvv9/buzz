@@ -177,7 +177,7 @@ export function WorkspacePage({
         (routeMode === "new-message" || addingDmMembers),
     ),
   });
-  // Hosted agents have no kind 0 profile; the agent directory carries names.
+  // Hosted directory names take precedence over kind 0 fallback profiles.
   const dmRecipientProfiles = React.useMemo(
     () =>
       mergeDmRecipientProfiles(recipientProfilesQuery.data, agentsQuery.data),

@@ -13,7 +13,13 @@ import {
 } from "../../src/features/pairing/pairing-policy";
 import { installWorkspaceRelayMock } from "./helpers/workspaceRelayMock";
 
-for (const scenario of ["abort", "correct-code", "five-wrong-codes"] as const) {
+for (const scenario of [
+  "abort",
+  "legacy-abort",
+  "sent-abort",
+  "correct-code",
+  "five-wrong-codes",
+] as const) {
   test(`phone pairing source handles ${scenario} over signed encrypted events`, async ({
     page,
   }) => {
@@ -133,20 +139,28 @@ for (const scenario of ["abort", "correct-code", "five-wrong-codes"] as const) {
       type: "offer",
       session_id: pairingHex(await derivePairingSessionId(qr.sessionSecret)),
       version: 1,
-      confirmation: "desktop-code-v1",
+      ...(scenario === "legacy-abort"
+        ? {}
+        : { confirmation: "desktop-code-v1" }),
     });
     const instruction = page.getByText(
-      "Type this code into the Buzz app on your phone",
+      scenario === "legacy-abort"
+        ? "Compare this code with the target device"
+        : "Type this code into the Buzz app on your phone",
     );
     await expect(instruction).toBeVisible();
     expect(messages.some((message) => message.type === "payload")).toBe(false);
-    if (scenario === "abort") {
+    if (scenario === "abort" || scenario === "legacy-abort") {
       await send({ type: "abort", reason: "user_denied" });
-      await expect(page.getByRole("alert")).toHaveText(
-        "The target cancelled pairing.",
-      );
-      await expect(instruction).toHaveCount(0);
-      await expect(page.getByTestId("pairing-qr")).toHaveCount(0);
+    } else if (scenario === "sent-abort") {
+      const code = (
+        await instruction.locator("..").locator("p").nth(1).textContent()
+      )?.trim();
+      await send({ type: "code-submit", code, request_id: "sent-abort" });
+      await expect
+        .poll(() => messages.some((message) => message.type === "payload"))
+        .toBe(true);
+      await send({ type: "abort", reason: "user_denied" });
     } else if (scenario === "correct-code") {
       const code = (
         await instruction.locator("..").locator("p").nth(1).textContent()
@@ -184,6 +198,17 @@ for (const scenario of ["abort", "correct-code", "five-wrong-codes"] as const) {
       expect(messages.some((message) => message.type === "payload")).toBe(
         false,
       );
+    }
+    if (
+      scenario === "abort" ||
+      scenario === "legacy-abort" ||
+      scenario === "sent-abort"
+    ) {
+      await expect(page.getByRole("alert")).toHaveText(
+        "The target cancelled pairing.",
+      );
+      await expect(instruction).toHaveCount(0);
+      await expect(page.getByTestId("pairing-qr")).toHaveCount(0);
     }
   });
 }

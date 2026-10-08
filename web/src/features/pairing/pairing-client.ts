@@ -476,6 +476,19 @@ export class BrowserPairingSession {
     if (!this.peerPubkey || event.pubkey !== this.peerPubkey) return;
     if (
       this.role === "source" &&
+      ["source-confirm", "source-code-entry", "source-sent"].includes(
+        this.snapshotValue.stage,
+      )
+    ) {
+      const message = this.decrypt(event);
+      if (message?.type === "abort") {
+        this.processedIds.add(event.id);
+        this.finish("aborted", "The target cancelled pairing.");
+        return;
+      }
+    }
+    if (
+      this.role === "source" &&
       this.snapshotValue.stage === "source-code-entry"
     ) {
       await this.handleCodeSubmit(event);
@@ -508,8 +521,6 @@ export class BrowserPairingSession {
           message.success ? "completed" : "aborted",
           message.success ? null : "Target could not import the identity.",
         );
-      } else if (message?.type === "abort") {
-        this.finish("aborted", "The target cancelled pairing.");
       }
     }
   }
@@ -547,11 +558,6 @@ export class BrowserPairingSession {
 
   private async handleCodeSubmit(event: NostrEvent) {
     const message = this.decrypt(event);
-    if (message?.type === "abort") {
-      this.processedIds.add(event.id);
-      this.finish("aborted", "The target cancelled pairing.");
-      return;
-    }
     if (message?.type !== "code-submit" || !this.desktopCode) return;
     this.processedIds.add(event.id);
     this.codeAttempts += 1;

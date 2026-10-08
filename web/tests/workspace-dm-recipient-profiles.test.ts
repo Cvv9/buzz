@@ -21,7 +21,30 @@ test("direct-message picker names hosted agents from the agent directory", () =>
   assert.equal(merged.get(HUMAN)?.name, "Vikram");
   assert.equal(merged.get(AGENT)?.name, "Project Brain");
   assert.equal(merged.get(AGENT)?.isAgent, true);
-  assert.equal(merged.get(NAMED_AGENT)?.name, "Already named");
+  assert.equal(merged.get(NAMED_AGENT)?.name, "Directory name");
+  assert.equal(profiles.get(NAMED_AGENT)?.name, "Already named");
   assert.equal(merged.get("d".repeat(64))?.name, "Chief of Staff");
   assert.equal(mergeDmRecipientProfiles(undefined, undefined).size, 0);
+});
+
+test("hosted directory uses kind 0 only when presentation is missing", () => {
+  const profiles = new Map([
+    [AGENT, { pubkey: AGENT, name: "Fallback name", picture: "fallback.png" }],
+  ]);
+  const merged = mergeDmRecipientProfiles(profiles, [
+    { pubkey: AGENT, name: truncatePubkey(AGENT), isAgent: true },
+  ]);
+  assert.equal(merged.get(AGENT)?.name, "Fallback name");
+  assert.equal(merged.get(AGENT)?.picture, "fallback.png");
+  assert.equal(merged.get(AGENT)?.isAgent, true);
+  const canonical = mergeDmRecipientProfiles(profiles, [
+    {
+      pubkey: AGENT,
+      name: "Canonical name",
+      picture: "canonical.png",
+      isAgent: true,
+    },
+  ]);
+  assert.equal(canonical.get(AGENT)?.name, "Canonical name");
+  assert.equal(canonical.get(AGENT)?.picture, "canonical.png");
 });
