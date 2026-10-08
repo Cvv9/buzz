@@ -116,11 +116,21 @@ function ProjectsPageContent() {
   const projectsQuery = useProjectCollection();
   return (
     <PageShell>
-      <nav className="mb-8 flex items-center gap-3 text-sm text-muted-foreground">
+      <nav
+        aria-label="Project navigation"
+        className="mb-8 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground"
+      >
+        <Link className="hover:text-foreground" to="/">
+          Workspace
+        </Link>
+        <span aria-hidden="true">/</span>
         <Link className="hover:text-foreground" to="/repos">
           Repositories
         </Link>
-        <span>Projects</span>
+        <span aria-hidden="true">/</span>
+        <span aria-current="page" className="text-foreground">
+          Projects
+        </span>
       </nav>
       <header className="rounded-2xl border border-border bg-card p-5 shadow-sm sm:p-7">
         <div className="flex items-start gap-3">

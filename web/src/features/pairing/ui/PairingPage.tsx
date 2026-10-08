@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Link } from "@tanstack/react-router";
+import { BrowserSettingsBreadcrumb } from "@/features/settings/ui/BrowserSettingsBreadcrumb";
 import { QrCode } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import {
@@ -150,6 +151,7 @@ export function PairingPage() {
 
   return (
     <main className="mx-auto w-full max-w-2xl space-y-6 p-5 sm:p-8">
+      <BrowserSettingsBreadcrumb current="Pair another browser" />
       <header>
         <p className="text-sm text-muted-foreground">
           NIP-AB · short-lived device transfer
@@ -195,7 +197,7 @@ export function PairingPage() {
                   data-testid="pairing-qr"
                   level="M"
                   role="img"
-                  size={196}
+                  size={288}
                   value={snapshot.pairingUri}
                 />
               </div>
