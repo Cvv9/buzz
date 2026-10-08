@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { appendFileSync, readFileSync } from "node:fs";
 
 const filters = JSON.parse(process.env.FILTER_OUTPUTS);
+const runNativeApps =
+  process.env.GITHUB_EVENT_NAME === "workflow_dispatch" &&
+  process.env.RUN_NATIVE_APPS === "true";
 let runAll = false;
 if (process.env.GITHUB_EVENT_NAME === "pull_request") {
   const event = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, "utf8"));
@@ -19,8 +22,14 @@ for (const key of ["rust", "desktop", "desktop-rust", "web", "mobile"]) {
     ["true", "false"].includes(filters[key]),
     `Invalid ${key} selection`,
   );
+  const nativeOnly = ["desktop", "desktop-rust", "mobile"].includes(key);
+  const selected = runAll || filters[key] === "true";
   appendFileSync(
     process.env.GITHUB_OUTPUT,
-    `${key}=${runAll ? "true" : filters[key]}\n`,
+    `${key}=${nativeOnly ? runNativeApps && selected : selected}\n`,
   );
 }
+appendFileSync(
+  process.env.GITHUB_OUTPUT,
+  `run-native-apps=${runNativeApps}\n`,
+);

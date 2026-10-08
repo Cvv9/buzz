@@ -4,6 +4,12 @@ on:
     branches: [main, release]
   pull_request:
   workflow_dispatch:
+    inputs:
+      run_native_apps:
+        description: Run native desktop, Windows, macOS, and mobile validation
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
@@ -28,6 +34,7 @@ jobs:
       desktop-rust: ${{ steps.selection.outputs.desktop-rust }}
       web: ${{ steps.selection.outputs.web }}
       mobile: ${{ steps.selection.outputs.mobile }}
+      run-native-apps: ${{ steps.selection.outputs.run-native-apps }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -85,6 +92,8 @@ jobs:
               - 'web/**'
               - 'admin-web/**'
               - 'pnpm-lock.yaml'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_ci-*.yml'
             mobile:
               - 'mobile/**'
               - 'scripts/mobile-release.sh'
@@ -102,6 +111,7 @@ jobs:
         id: selection
         env:
           FILTER_OUTPUTS: ${{ github.event_name == 'workflow_dispatch' && '{"rust":"true","desktop":"true","desktop-rust":"true","web":"true","mobile":"true"}' || toJSON(steps.filter.outputs) }}
+          RUN_NATIVE_APPS: ${{ github.event_name == 'workflow_dispatch' && inputs.run_native_apps || false }}
         run: node scripts/ci-runtime-selection.mjs
       - name: Validate PostgreSQL test discovery
         if: github.event_name == 'push' || steps.selection.outputs.rust == 'true'
@@ -163,11 +173,12 @@ jobs:
   rust:
     name: Rust
     needs: [changes]
-    if: github.event_name == 'push' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.desktop-rust == 'true'
+    if: github.event_name == 'push' || needs.changes.outputs.rust == 'true' || (needs.changes.outputs.run-native-apps == 'true' && needs.changes.outputs.desktop-rust == 'true')
     uses: ./.github/workflows/_ci-rust.yml
     with:
       rust: ${{ needs.changes.outputs.rust == 'true' }}
       desktop_rust: ${{ needs.changes.outputs.desktop-rust == 'true' }}
+      run_native_apps: ${{ needs.changes.outputs.run-native-apps == 'true' }}
       lane: required
 
   rust-cross-compile-domain:
@@ -178,27 +189,30 @@ jobs:
     with:
       rust: ${{ needs.changes.outputs.rust == 'true' }}
       desktop_rust: ${{ needs.changes.outputs.desktop-rust == 'true' }}
+      run_native_apps: ${{ needs.changes.outputs.run-native-apps == 'true' }}
       lane: cross-compile
 
   desktop-domain:
     name: Desktop Domain
     needs: [changes]
-    if: github.event_name == 'push' || needs.changes.outputs.desktop == 'true' || needs.changes.outputs.desktop-rust == 'true' || needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.run-native-apps == 'true'
     uses: ./.github/workflows/_ci-desktop.yml
     with:
       rust: ${{ needs.changes.outputs.rust == 'true' }}
       desktop: ${{ needs.changes.outputs.desktop == 'true' }}
       desktop_rust: ${{ needs.changes.outputs.desktop-rust == 'true' }}
+      run_native_apps: ${{ needs.changes.outputs.run-native-apps == 'true' }}
 
   relay-artifacts-domain:
     name: Relay Artifact Producer
     needs: [changes]
-    if: github.event_name == 'push' || needs.changes.outputs.desktop == 'true' || needs.changes.outputs.desktop-rust == 'true' || needs.changes.outputs.rust == 'true'
+    if: github.event_name == 'push' || needs.changes.outputs.rust == 'true'
     uses: ./.github/workflows/_ci-relay.yml
     with:
       rust: ${{ needs.changes.outputs.rust == 'true' }}
       desktop: ${{ needs.changes.outputs.desktop == 'true' }}
       desktop_rust: ${{ needs.changes.outputs.desktop-rust == 'true' }}
+      run_native_apps: ${{ needs.changes.outputs.run-native-apps == 'true' }}
       lane: artifacts
 
   postgres-domain:
@@ -210,47 +224,52 @@ jobs:
       rust: ${{ needs.changes.outputs.rust == 'true' }}
       desktop: ${{ needs.changes.outputs.desktop == 'true' }}
       desktop_rust: ${{ needs.changes.outputs.desktop-rust == 'true' }}
+      run_native_apps: ${{ needs.changes.outputs.run-native-apps == 'true' }}
       lane: postgres
 
   desktop-macos-domain:
     name: Desktop macOS Domain
     needs: [changes]
-    if: github.event_name == 'push' || needs.changes.outputs.desktop == 'true' || needs.changes.outputs.desktop-rust == 'true' || needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.run-native-apps == 'true'
     uses: ./.github/workflows/_ci-desktop-macos.yml
     with:
       rust: ${{ needs.changes.outputs.rust == 'true' }}
       desktop: ${{ needs.changes.outputs.desktop == 'true' }}
       desktop_rust: ${{ needs.changes.outputs.desktop-rust == 'true' }}
+      run_native_apps: ${{ needs.changes.outputs.run-native-apps == 'true' }}
 
   relay-domain:
     name: Relay and PostgreSQL
     needs: [changes, relay-artifacts-domain]
-    if: github.event_name == 'push' || needs.changes.outputs.desktop == 'true' || needs.changes.outputs.desktop-rust == 'true' || needs.changes.outputs.rust == 'true'
+    if: github.event_name == 'push' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.run-native-apps == 'true'
     uses: ./.github/workflows/_ci-relay.yml
     with:
       rust: ${{ needs.changes.outputs.rust == 'true' }}
       desktop: ${{ needs.changes.outputs.desktop == 'true' }}
       desktop_rust: ${{ needs.changes.outputs.desktop-rust == 'true' }}
+      run_native_apps: ${{ needs.changes.outputs.run-native-apps == 'true' }}
       lane: required
 
   clients:
     name: Clients
     needs: [changes]
-    if: github.event_name == 'push' || needs.changes.outputs.web == 'true' || needs.changes.outputs.mobile == 'true'
+    if: github.event_name == 'push' || needs.changes.outputs.web == 'true' || needs.changes.outputs.run-native-apps == 'true'
     uses: ./.github/workflows/_ci-clients.yml
     with:
       web: ${{ needs.changes.outputs.web == 'true' }}
       mobile: ${{ needs.changes.outputs.mobile == 'true' }}
+      run_native_apps: ${{ needs.changes.outputs.run-native-apps == 'true' }}
       lane: required
 
   mobile-swift-domain:
     name: Mobile Swift Domain
     needs: [changes]
-    if: needs.changes.outputs.mobile == 'true'
+    if: needs.changes.outputs.run-native-apps == 'true' && needs.changes.outputs.mobile == 'true'
     uses: ./.github/workflows/_ci-clients.yml
     with:
       web: ${{ needs.changes.outputs.web == 'true' }}
       mobile: ${{ needs.changes.outputs.mobile == 'true' }}
+      run_native_apps: ${{ needs.changes.outputs.run-native-apps == 'true' }}
       lane: mobile-swift
 
   security-domain:
@@ -263,7 +282,7 @@ jobs:
 
   rust-lint:
     name: Rust Lint
-    if: always() && (needs.changes.result != 'success' || ((github.event_name == 'push' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.desktop-rust == 'true')))
+    if: always() && (needs.changes.result != 'success' || github.event_name == 'push' || needs.changes.outputs.rust == 'true' || (needs.changes.outputs.run-native-apps == 'true' && needs.changes.outputs.desktop-rust == 'true'))
     needs: [changes, rust]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -291,7 +310,7 @@ jobs:
 
   windows-rust:
     name: Windows Rust (x86_64-pc-windows-msvc)
-    if: always() && (needs.changes.result != 'success' || ((github.event_name == 'push' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.desktop-rust == 'true')))
+    if: always() && (needs.changes.result != 'success' || (needs.changes.outputs.run-native-apps == 'true' && (github.event_name == 'push' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.desktop-rust == 'true')))
     needs: [changes, rust]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -305,7 +324,7 @@ jobs:
 
   desktop:
     name: Desktop
-    if: always() && (needs.changes.result != 'success' || ((github.event_name == 'push' || needs.changes.outputs.desktop == 'true' || needs.changes.outputs.desktop-rust == 'true' || needs.changes.outputs.rust == 'true')))
+    if: always() && (needs.changes.result != 'success' || needs.changes.outputs.run-native-apps == 'true')
     needs: [changes, desktop-domain]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -319,7 +338,7 @@ jobs:
 
   desktop-build-macos:
     name: Desktop Build (macOS)
-    if: always() && (needs.changes.result != 'success' || ((github.event_name == 'push' || needs.changes.outputs.desktop == 'true' || needs.changes.outputs.desktop-rust == 'true' || needs.changes.outputs.rust == 'true')))
+    if: always() && (needs.changes.result != 'success' || needs.changes.outputs.run-native-apps == 'true')
     needs: [changes, desktop-macos-domain]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -333,7 +352,7 @@ jobs:
 
   desktop-e2e-relay:
     name: Desktop E2E Relay
-    if: always() && (needs.changes.result != 'success' || ((github.event_name == 'push' || needs.changes.outputs.desktop == 'true' || needs.changes.outputs.desktop-rust == 'true' || needs.changes.outputs.rust == 'true')))
+    if: always() && (needs.changes.result != 'success' || (github.event_name == 'push' || needs.changes.outputs.rust == 'true'))
     needs: [changes, relay-artifacts-domain]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -347,7 +366,7 @@ jobs:
 
   desktop-e2e-integration:
     name: Desktop E2E Integration
-    if: always() && (needs.changes.result != 'success' || (needs.relay-artifacts-domain.result == 'success' && (github.event_name == 'push' || needs.changes.outputs.desktop == 'true' || needs.changes.outputs.desktop-rust == 'true' || needs.changes.outputs.rust == 'true')))
+    if: always() && (needs.changes.result != 'success' || (needs.changes.outputs.run-native-apps == 'true' && needs.relay-artifacts-domain.result == 'success'))
     needs: [changes, relay-artifacts-domain, relay-domain]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -578,7 +597,7 @@ jobs:
 
   mobile:
     name: Mobile
-    if: always() && (needs.changes.result != 'success' || ((github.event_name == 'push' || needs.changes.outputs.mobile == 'true')))
+    if: always() && (needs.changes.result != 'success' || (needs.changes.outputs.run-native-apps == 'true' && needs.changes.outputs.mobile == 'true'))
     needs: [changes, clients]
     runs-on: ubuntu-latest
     timeout-minutes: 5

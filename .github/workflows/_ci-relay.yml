@@ -11,6 +11,10 @@ on:
       desktop_rust:
         required: true
         type: boolean
+      run_native_apps:
+        required: false
+        type: boolean
+        default: true
       lane:
         required: true
         type: string
@@ -214,7 +218,7 @@ jobs:
     name: Desktop E2E Integration (${{ matrix.shard }}/2)
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    if: inputs.lane == 'required' && (github.event_name == 'push' || inputs.desktop || inputs.desktop_rust || inputs.rust)
+    if: inputs.lane == 'required' && inputs.run_native_apps && (github.event_name == 'push' || inputs.desktop || inputs.desktop_rust || inputs.rust)
     strategy:
       fail-fast: false
       matrix:
@@ -391,7 +395,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     needs: [desktop-e2e-integration-shard]
-    if: always() && inputs.lane == 'required' && (github.event_name == 'push' || inputs.desktop || inputs.desktop_rust || inputs.rust)
+    if: always() && inputs.lane == 'required' && inputs.run_native_apps && (github.event_name == 'push' || inputs.desktop || inputs.desktop_rust || inputs.rust)
     permissions:
       contents: read
     steps:
