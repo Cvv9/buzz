@@ -131,7 +131,7 @@ jobs:
           ON CONFLICT (lower(host)) DO NOTHING
           ;"
 
-      - name: Reproduce one exact test with allowlisted MinIO trace
+      - name: Reproduce delegation then race tests with allowlisted MinIO trace
         id: reproduce
         if: steps.verify.outputs.enabled == 'true'
         env:
@@ -197,9 +197,16 @@ jobs:
           cargo nextest run \
             -j 1 \
             --archive-file target/ci/backend-integration-tests.tar.zst \
+            -E 'package(buzz-relay) and test(/api::git::settings::tests::external_infra::default_branch_delegation_and_revocation/)' \
+            --run-ignored ignored-only
+          delegation_status=$?
+
+          cargo nextest run \
+            -j 1 \
+            --archive-file target/ci/backend-integration-tests.tar.zst \
             -E 'package(buzz-relay) and test(/api::git::settings::tests::external_infra::default_branch_push_races_and_fresh_clone/)' \
             --run-ignored ignored-only
-          test_status=$?
+          race_status=$?
 
           wait "$trace_pid"
           trace_status=$?
@@ -214,7 +221,10 @@ jobs:
             exit 1
           fi
           echo "Captured allowlisted MinIO request metadata; raw trace was not written or printed."
-          exit "$test_status"
+          echo "Exact test exit statuses: delegation_and_revocation=$delegation_status push_races_and_fresh_clone=$race_status"
+          if [ "$delegation_status" -ne 0 ] || [ "$race_status" -ne 0 ]; then
+            exit 1
+          fi
 
       - name: Upload only filtered MinIO trace
         if: always() && steps.verify.outputs.enabled == 'true' && steps.reproduce.outcome != 'skipped'
