@@ -15,6 +15,8 @@ import { useEffect, useRef } from "react";
 import { WorkspaceComposer } from "./WorkspaceComposer";
 import { WorkspaceMessageRow } from "./WorkspaceMessageRow";
 import { WorkspaceThreadSummaryBar } from "./WorkspaceThreadSummaryBar";
+import { useWorkspaceThreadPanelResize } from "../useWorkspaceThreadPanelResize";
+import { shouldShowThreadInline } from "../workspace-thread-inline-policy.mjs";
 import {
   lastReplyTimestamp,
   selectReplierPubkeys,
@@ -55,9 +57,10 @@ type WorkspaceConversationProps = {
   activeChannel: WorkspaceChannel | null;
   agents: WorkspaceProfile[];
   customEmoji: readonly CustomEmoji[];
-  // Inline thread expansion was replaced by the Slack-style summary bar + thread
-  // panel; `expandedThreadIds`, `onCloseInlineThread`, `onToggleInlineThread`,
-  // and `onReply` are still accepted (WorkspacePage owns the call site) but no
+  // Threads up to the inline limit render their replies under the root
+  // message; longer threads show the summary bar that opens the thread panel.
+  // `expandedThreadIds`, `onCloseInlineThread`, `onToggleInlineThread`, and
+  // `onReply` are still accepted (WorkspacePage owns the call site) but no
   // longer drive any rendering here.
   expandedThreadIds: Set<string>;
   firstUnreadMessageId: string | null;
@@ -148,6 +151,7 @@ export function WorkspaceConversation({
   onToggleStar,
   onTyping,
 }: WorkspaceConversationProps) {
+  const threadResize = useWorkspaceThreadPanelResize(ownPubkey);
   const timelineRef = useRef<HTMLDivElement>(null);
   const anchoredChannelRef = useRef<string | null>(null);
   const onTimelineReadyRef = useRef(onTimelineReady);
@@ -381,7 +385,52 @@ export function WorkspaceConversation({
                     onReact={(emoji) => onToggleReaction(message, emoji)}
                     onReply={() => onOpenThreadPanel(message.id)}
                   />
-                  {replyCount > 0 ? (
+                  {shouldShowThreadInline(replyCount) ? (
+                    <div
+                      className="mb-3 ml-10 border-l-2 border-border pl-2 sm:ml-14"
+                      data-testid={`thread-inline-${message.id}`}
+                    >
+                      {replies.map((reply) => {
+                        const replyPresentation = messagePresentation(
+                          reply,
+                          profileFor,
+                        );
+                        return (
+                          <WorkspaceMessageRow
+                            customEmoji={customEmoji}
+                            key={reply.id}
+                            message={reply}
+                            ownPubkey={ownPubkey}
+                            profile={replyPresentation.profile}
+                            status={
+                              replyPresentation.workflowName
+                                ? null
+                                : statusFor(replyPresentation.statusPubkey)
+                            }
+                            workflowName={replyPresentation.workflowName}
+                            reactions={reactions?.get(reply.id) ?? []}
+                            reactionActorName={reactionActorName}
+                            onDelete={() => {
+                              if (window.confirm("Delete this message?")) {
+                                onDeleteMessage(reply);
+                              }
+                            }}
+                            onEdit={() => onEditMessage(reply)}
+                            onReact={(emoji) => onToggleReaction(reply, emoji)}
+                            onReply={() => onOpenThreadPanel(message.id)}
+                          />
+                        );
+                      })}
+                      <button
+                        className="ml-10 mt-1 rounded-lg px-2 py-1 text-xs font-semibold text-[#777800] hover:bg-accent dark:text-[#d7d72e] sm:ml-14"
+                        data-testid={`thread-reply-${message.id}`}
+                        type="button"
+                        onClick={() => onOpenThreadPanel(message.id)}
+                      >
+                        Reply in thread
+                      </button>
+                    </div>
+                  ) : replyCount > 0 ? (
                     <WorkspaceThreadSummaryBar
                       lastReplyAt={lastReplyTimestamp(replies)}
                       messageId={message.id}
@@ -438,7 +487,16 @@ export function WorkspaceConversation({
       </section>
 
       {threadRoot ? (
-        <aside className="fixed inset-0 z-40 flex flex-col bg-[#f8f9f4] dark:bg-[#171916] md:static md:w-[24rem] md:border-l md:border-black/8 md:dark:border-white/8">
+        <aside
+          className="fixed inset-0 z-40 flex flex-col bg-[#f8f9f4] dark:bg-[#171916] md:relative md:w-[var(--workspace-thread-width)] md:shrink-0 md:border-l md:border-black/8 md:dark:border-white/8"
+          data-testid="thread-panel"
+          style={threadResize.style}
+        >
+          <div
+            {...threadResize.separator}
+            className="absolute inset-y-0 -left-1 z-50 hidden w-2 cursor-col-resize touch-none select-none hover:bg-primary/20 focus-visible:bg-primary/20 focus-visible:outline-none md:block"
+            title="Drag to resize; double-click to reset"
+          />
           <header className="flex h-16 shrink-0 items-center gap-3 border-b border-border px-4">
             <button
               aria-label="Close thread"
