@@ -438,7 +438,7 @@ provider. After activating Hermit:
 ```sh
 cargo test -p buzz-core -p buzz-sdk -p buzz-workflow
 cargo test -p buzz-db workflow_manual -- --ignored --nocapture
-cargo test -p buzz-db workflow_execution::tests -- --ignored --test-threads=1
+cargo test -p buzz-db workflow_execution::workflow_execution_postgres_tests -- --ignored --test-threads=1
 # Requires a built CLI and a membership-enforced isolated relay; RELAY_URL
 # must be a loopback ws:// URL and BUZZ_TEST_CLI its absolute executable path.
 cargo test -p buzz-test-client --test e2e_workflow_manual_runs -- --ignored --test-threads=1

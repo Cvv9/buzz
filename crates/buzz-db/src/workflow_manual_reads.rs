@@ -68,7 +68,7 @@ impl Db {
 }
 
 #[cfg(test)]
-mod tests {
+mod workflow_manual_reads_postgres_tests {
     use super::*;
     use buzz_core::channel::{ChannelType, ChannelVisibility};
     use nostr::Keys;

@@ -428,7 +428,7 @@ jobs:
         shell: bash
         run: |
           cargo nextest run -p buzz-db --lib \
-            -E 'test(/workflow_manual::tests::/) + test(/workflow_manual_reads::tests::/) + test(/workflow_execution::tests::/)' \
+            -E 'test(/workflow_manual::workflow_manual_postgres_tests::/) + test(/workflow_manual_reads::workflow_manual_reads_postgres_tests::/) + test(/workflow_execution::workflow_execution_postgres_tests::/)' \
             --test-threads 1 --run-ignored ignored-only 2>&1 | tee /tmp/buzz-manual-ledger-tests.log
           psql "$DATABASE_URL" -XAtw -v ON_ERROR_STOP=1 \
             -c 'SELECT version,success FROM _sqlx_migrations ORDER BY version' > /tmp/buzz-manual-migrations.log

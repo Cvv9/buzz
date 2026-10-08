@@ -714,7 +714,7 @@ async fn workflow_manual_committed_outbox_survives_process_death_and_exact_repla
         .args([
             "--ignored",
             "--exact",
-            "workflow_manual::tests::workflow_manual_committed_outbox_survives_process_death_and_exact_replay",
+            "workflow_manual::workflow_manual_postgres_tests::workflow_manual_committed_outbox_survives_process_death_and_exact_replay",
         ])
         .env(CHILD_PATH_ENV, &path)
         .stdout(std::process::Stdio::null())
