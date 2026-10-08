@@ -35,6 +35,7 @@ jobs:
         run: |
           set -euo pipefail
           mode=ordered
+          trace=true
           mapfile -t mode_markers < <(grep -Eo '<!-- minio-diagnostic: [^>]* -->' <<<"$PR_BODY" || true)
           if [ "${#mode_markers[@]}" -gt 1 ]; then echo "::error::Use at most one minio-diagnostic mode marker."; exit 1; fi
           if [ "${#mode_markers[@]}" -eq 1 ]; then
@@ -42,10 +43,12 @@ jobs:
               '<!-- minio-diagnostic: solo -->') mode=solo ;;
               '<!-- minio-diagnostic: ordered -->') mode=ordered ;;
               '<!-- minio-diagnostic: suite -->') mode=suite ;;
+              '<!-- minio-diagnostic: untraced-suite -->') mode=untraced-suite; trace=false ;;
               *) echo "::error::Unsupported minio-diagnostic mode marker."; exit 1 ;;
             esac
           fi
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "trace=$trace" >> "$GITHUB_OUTPUT"
           commit_json="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${PR_HEAD_SHA}")"
           if ! jq -e --arg marker '[run-minio-transport-diag]' \
             '.commit.message | contains($marker)' <<<"$commit_json" >/dev/null; then
@@ -144,7 +147,7 @@ jobs:
           ON CONFLICT (lower(host)) DO NOTHING
           ;"
 
-      - name: Reproduce delegation then race tests with allowlisted MinIO trace
+      - name: Reproduce selected archived tests
         id: reproduce
         if: steps.verify.outputs.enabled == 'true'
         env:
@@ -154,20 +157,22 @@ jobs:
           BUZZ_TEST_S3_ENDPOINT: http://localhost:9000
           BUZZ_TEST_S3_BUCKET: buzz-media
           DIAGNOSTIC_MODE: ${{ steps.verify.outputs.mode }}
+          DIAGNOSTIC_TRACE: ${{ steps.verify.outputs.trace }}
         run: |
           set -euo pipefail
           case "$DIAGNOSTIC_MODE" in
-            solo) tests=(default_branch_push_races_and_fresh_clone) ;;
-            ordered) tests=(default_branch_delegation_and_revocation default_branch_push_races_and_fresh_clone) ;;
-            suite) tests=(default_branch_delegation_and_revocation default_branch_push_races_and_fresh_clone default_branch_replay_outage_and_deletion_fail_closed default_branch_route_permissions_and_protocol nip_fi_denied_assertion_does_not_advance_snapshot_digest) ;;
+            solo) filter='package(buzz-relay) and test(/api::git::settings::tests::external_infra::default_branch_push_races_and_fresh_clone/)' ;;
+            ordered) filter='package(buzz-relay) and test(/api::git::settings::tests::external_infra::(default_branch_delegation_and_revocation|default_branch_push_races_and_fresh_clone)/)' ;;
+            suite|untraced-suite) filter='package(buzz-relay) and test(/api::git::settings::tests::external_infra::/)' ;;
             *) echo "Unsupported diagnostic mode."; exit 1 ;;
           esac
-          trace_file="$RUNNER_TEMP/minio-transport-trace.jsonl"
-          : > "$trace_file"
 
-          timeout --signal=TERM 120s docker exec buzz-minio \
-            mc admin trace --path 'buzz-media/*' --verbose --json local 2>/dev/null |
-            jq --unbuffered -c '
+          if [ "$DIAGNOSTIC_TRACE" = true ]; then
+            trace_file="$RUNNER_TEMP/minio-transport-trace.jsonl"
+            : > "$trace_file"
+            timeout --signal=TERM 120s docker exec buzz-minio \
+              mc admin trace --path 'buzz-media/*' --verbose --json local 2>/dev/null |
+              jq --unbuffered -c '
               def header($headers; $name):
                 [($headers // {} | to_entries[]? |
                   select((.key | ascii_downcase) == ($name | ascii_downcase)) |
@@ -203,45 +208,48 @@ jobs:
                 response_etag: safe_validator(.response.headers; "ETag"),
                 response_bytes: (.callStats.tx | number_or_null)
               }
-            ' 2>/dev/null > "$trace_file" &
-          trace_pid=$!
+              ' 2>/dev/null > "$trace_file" &
+            trace_pid=$!
 
-          sleep 2
-          if ! kill -0 "$trace_pid" 2>/dev/null; then
-            wait "$trace_pid" || true
-            echo "MinIO trace did not stay connected; no transport conclusion is valid."
-            exit 1
+            sleep 2
+            if ! kill -0 "$trace_pid" 2>/dev/null; then
+              wait "$trace_pid" || true
+              echo "MinIO trace did not stay connected; no transport conclusion is valid."
+              exit 1
+            fi
           fi
 
           set +e
-          test_status=0
-          for test_name in "${tests[@]}"; do
-            cargo nextest run \
-              -j 1 \
-              --archive-file target/ci/backend-integration-tests.tar.zst \
-              -E "package(buzz-relay) and test(/api::git::settings::tests::external_infra::${test_name}/)" \
-              --run-ignored ignored-only
-            if [ "$?" -ne 0 ]; then test_status=1; fi
-          done
-
-          wait "$trace_pid"
-          trace_status=$?
+          cargo nextest run \
+            -j 1 \
+            --archive-file target/ci/backend-integration-tests.tar.zst \
+            -E "$filter" \
+            --run-ignored ignored-only
+          test_status=$?
           set -e
 
-          if [ "$trace_status" -ne 0 ] && [ "$trace_status" -ne 124 ]; then
-            echo "MinIO trace exited unexpectedly with status $trace_status."
-            exit 1
+          if [ "$DIAGNOSTIC_TRACE" = true ]; then
+            set +e
+            wait "$trace_pid"
+            trace_status=$?
+            set -e
+            if [ "$trace_status" -ne 0 ] && [ "$trace_status" -ne 124 ]; then
+              echo "MinIO trace exited unexpectedly with status $trace_status."
+              exit 1
+            fi
+            if [ ! -s "$trace_file" ]; then
+              echo "No allowlisted MinIO trace records were captured; absence is not evidence that the request was not sent."
+              exit 1
+            fi
+            echo "Captured allowlisted MinIO request metadata; raw trace was not written or printed."
+          else
+            echo "No MinIO trace was requested in untraced-suite mode; this run is not transport-trace evidence."
           fi
-          if [ ! -s "$trace_file" ]; then
-            echo "No allowlisted MinIO trace records were captured; absence is not evidence that the request was not sent."
-            exit 1
-          fi
-          echo "Captured allowlisted MinIO request metadata; raw trace was not written or printed."
           echo "Diagnostic mode '$DIAGNOSTIC_MODE' completed with aggregate test exit status $test_status."
           exit "$test_status"
 
       - name: Upload only filtered MinIO trace
-        if: always() && steps.verify.outputs.enabled == 'true' && steps.reproduce.outcome != 'skipped'
+        if: always() && steps.verify.outputs.enabled == 'true' && steps.verify.outputs.trace == 'true' && steps.reproduce.outcome != 'skipped'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
         with:
           name: minio-transport-trace-pr89
