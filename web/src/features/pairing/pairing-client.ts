@@ -547,6 +547,11 @@ export class BrowserPairingSession {
 
   private async handleCodeSubmit(event: NostrEvent) {
     const message = this.decrypt(event);
+    if (message?.type === "abort") {
+      this.processedIds.add(event.id);
+      this.finish("aborted", "The target cancelled pairing.");
+      return;
+    }
     if (message?.type !== "code-submit" || !this.desktopCode) return;
     this.processedIds.add(event.id);
     this.codeAttempts += 1;
