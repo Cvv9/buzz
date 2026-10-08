@@ -894,7 +894,13 @@ they must not make private `30179` payloads visible to browser readers.
   NIP-11-advertised pairing relay, uses kind `24134` with an exact recipient
   `p` tag, fresh in-memory ephemeral secp256k1 ECDH, a 120-second session,
   SAS/transcript confirmation, and separate explicit source-send and
-  target-import gestures. Only an `nsec` recovery payload is supported.
+  target-import gestures. A source sends the same `custom` JSON payload as
+  desktop (relay origin, pubkey, `nsec`) so a phone can import it; a target
+  accepts that form or a bare `nsec` payload from an older browser.
+  When the phone's offer advertises `desktop-code-v1`, the browser source
+  shows a separate random six-digit code, sends `desktop-code`, checks each
+  `code-submit` (five guesses), and releases the proof and payload only on a
+  match, matching the desktop app.
 - **Cache/realtime.** Preferences are local browser state scoped by relay and
   pubkey. Pairing holds no persistent session secrets, keys, ciphertext, or
   payload; completion, cancellation, expiry, and route unmount clear memory.

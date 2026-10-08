@@ -1,5 +1,6 @@
 import * as React from "react";
 import { Link } from "@tanstack/react-router";
+import { BrowserSettingsBreadcrumb } from "@/features/settings/ui/BrowserSettingsBreadcrumb";
 import { QrCode } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import {
@@ -7,6 +8,7 @@ import {
   type PairingSnapshot,
 } from "@/features/pairing/pairing-client";
 import {
+  DESKTOP_CODE_MAX_ATTEMPTS,
   PAIRING_SESSION_TIMEOUT_MS,
   pairingCapabilities,
 } from "@/features/pairing/pairing-policy";
@@ -149,6 +151,7 @@ export function PairingPage() {
 
   return (
     <main className="mx-auto w-full max-w-2xl space-y-6 p-5 sm:p-8">
+      <BrowserSettingsBreadcrumb current="Pair another browser" />
       <header>
         <p className="text-sm text-muted-foreground">
           NIP-AB · short-lived device transfer
@@ -194,7 +197,7 @@ export function PairingPage() {
                   data-testid="pairing-qr"
                   level="M"
                   role="img"
-                  size={196}
+                  size={288}
                   value={snapshot.pairingUri}
                 />
               </div>
@@ -235,11 +238,21 @@ export function PairingPage() {
         {snapshot.role === "source" && snapshot.code ? (
           <div className="mt-4 rounded-lg bg-muted p-4">
             <p className="text-sm text-muted-foreground">
-              Compare this code with the target device
+              {snapshot.stage === "source-code-entry"
+                ? "Type this code into the Buzz app on your phone"
+                : "Compare this code with the target device"}
             </p>
             <p className="mt-1 font-mono text-3xl font-semibold tracking-[0.2em]">
               {snapshot.code}
             </p>
+            {snapshot.stage === "source-code-entry" ? (
+              <p className="mt-2 text-xs text-muted-foreground">
+                {typeof snapshot.attemptsRemaining === "number" &&
+                snapshot.attemptsRemaining < DESKTOP_CODE_MAX_ATTEMPTS
+                  ? `Wrong code entered. ${snapshot.attemptsRemaining} attempts left.`
+                  : "Waiting for the phone. The identity transfers only after the code matches."}
+              </p>
+            ) : null}
             {snapshot.stage === "source-confirm" ? (
               <Button
                 className="mt-4"
