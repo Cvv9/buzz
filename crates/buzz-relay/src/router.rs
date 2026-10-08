@@ -2953,11 +2953,30 @@ mod tests {
                 .header(buzz_auth::CLIENT_ATTACHED_HEADER, "Bearer a.b.c")
                 .body(axum::body::Body::empty())
                 .unwrap();
-            let resp = build_router(Arc::new(state)).oneshot(req).await.unwrap();
+            let resp = build_router(Arc::new(state.clone()))
+                .oneshot(req)
+                .await
+                .unwrap();
             assert_ne!(
                 resp.status(),
                 axum::http::StatusCode::UNAUTHORIZED,
                 "admitted"
+            );
+
+            let xpubkey_req = axum::http::Request::get(&uri)
+                .header("host", &host)
+                .header("x-pubkey", key.to_hex())
+                .header(buzz_auth::CLIENT_ATTACHED_HEADER, "Bearer a.b.c")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let xpubkey_resp = build_router(Arc::new(state))
+                .oneshot(xpubkey_req)
+                .await
+                .unwrap();
+            assert_eq!(
+                xpubkey_resp.status(),
+                axum::http::StatusCode::UNAUTHORIZED,
+                "X-Pubkey must not bypass required NIP-98 authentication"
             );
 
             let stages: Vec<String> = snapshotter
