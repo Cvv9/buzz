@@ -23,15 +23,23 @@ const gates = [
   "mobile",
   "security",
 ];
+const nativeGates = new Set([
+  "windows-rust",
+  "desktop",
+  "desktop-build-macos",
+  "desktop-e2e-integration",
+  "mobile",
+]);
 for (const gate of gates) {
   const body = workflow.match(
-    new RegExp(`^  ${gate}:\\n([\\s\\S]*?)(?=^  [\\w-]+:|$(?![\\s\\S]))`, "m"),
+    new RegExp(`^  ${gate}:\\r?\\n([\\s\\S]*?)(?=^  [\\w-]+:|$(?![\\s\\S]))`, "m"),
   )[1];
-  const condition = body.match(/^ {4}if: (.+)$/m)[1];
-  const runMatch = body.match(/^ {8}run: (?:\|\n((?: {10}.*\n?)+)|(.+))$/m);
+  const condition = body.match(/^ {4}if: ([^\r\n]+)$/m)[1];
+  const runMatch = body.match(/^ {8}run: (?:\|\r?\n((?: {10}.*\r?\n?)+)|([^\r\n]+))$/m);
   const command = runMatch[1]
     ? runMatch[1].replace(/^ {10}/gm, "")
     : runMatch[2];
+  const normalizedCommand = command.replace(/\r/g, "");
   // Gates may also require sibling job results (e.g. MANUAL_RESULT, ADMIN_RESULT).
   const extraResults = [...body.matchAll(/^ {10}(\w+_RESULT): /gm)]
     .map((m) => m[1])
@@ -41,6 +49,7 @@ for (const gate of gates) {
     selected = false,
     event = "pull_request",
     artifacts = "skipped",
+    nativeApps = false,
   ) {
     // These workflow conditions use only booleans, string equality and grouping.
     // Evaluate the actual expression after substituting its GitHub context values.
@@ -56,6 +65,8 @@ for (const gate of gates) {
         (key) => {
           if (key === "github.event_name") return JSON.stringify(event);
           if (key === "needs.changes.result") return JSON.stringify(selection);
+          if (key === "needs.changes.outputs.run-native-apps")
+            return JSON.stringify(nativeApps ? "true" : "false");
           if (key === "needs.relay-artifacts-domain.result")
             return JSON.stringify(artifacts);
           assert.match(key, /^needs\.changes\.outputs\./);
@@ -67,7 +78,7 @@ for (const gate of gates) {
   function check(selection, result, overrides = {}) {
     assert.match(body, /SELECTION_RESULT: \$\{\{ needs.changes.result \}\}/);
     assert.match(body, /RESULT: \$\{\{ needs\.[\w-]+\.outputs\.[\w_]+ \}\}/);
-    return spawnSync("bash", ["-e", "-c", command], {
+    return spawnSync("bash", ["-e", "-c", normalizedCommand], {
       env: {
         ...process.env,
         EVENT_NAME: "push",
@@ -95,8 +106,20 @@ for (const gate of gates) {
   });
   test(`${gate}: successful selection preserves path gating and suite results`, () => {
     assert.equal(shouldRun("success"), false);
-    assert.equal(shouldRun("success", true, "pull_request", "success"), true);
-    assert.equal(shouldRun("success", false, "push", "success"), true);
+    assert.equal(
+      shouldRun("success", true, "pull_request", "success"),
+      !nativeGates.has(gate),
+    );
+    assert.equal(
+      shouldRun("success", false, "push", "success"),
+      !nativeGates.has(gate),
+    );
+    if (nativeGates.has(gate)) {
+      assert.equal(
+        shouldRun("success", true, "workflow_dispatch", "success", true),
+        true,
+      );
+    }
     assert.equal(check("success", "success"), 0);
     for (const result of ["", "failure", "cancelled", "skipped"]) {
       assert.notEqual(check("success", result), 0);
