@@ -2911,13 +2911,13 @@ mod tests {
             }
         }
 
-        // Pins: the workflow handler's shared NIP-98 closure keeps the dev
-        // `X-Pubkey` proof unsigned, so shadow admits it as Off does but
-        // records a NIP-98 would-deny; only the guard verifies, as in enforce.
-        // Mutation: dropping the unsigned marker records `admit`.
+        // Pins: a signed NIP-98 workflow read reaches assertion verification in
+        // Shadow mode, where the malformed attached assertion is observed but
+        // does not block the ordinary workflow handler. The test uses the same
+        // required auth posture as production instead of dev-key admission.
         #[tokio::test(flavor = "current_thread")]
         #[ignore = "requires Postgres — runs in postgres-ci nextest lane"]
-        async fn shadow_workflow_never_counts_x_pubkey_as_an_enforce_proof() {
+        async fn shadow_workflow_observes_invalid_assertion_after_signed_nip98() {
             use tower::ServiceExt;
             let recorder = metrics_util::debugging::DebuggingRecorder::new();
             let snapshotter = recorder.snapshotter();
@@ -2932,11 +2932,12 @@ mod tests {
                 .execute(base.db.pool())
                 .await
                 .expect("seed community");
-            let key = nostr::Keys::generate().public_key();
+            let keys = nostr::Keys::generate();
+            let key = keys.public_key();
             let verifier = Arc::new(ScriptedVerifier::new(Ok(Some(key))));
             let mut state = (*base).clone();
             let config = Arc::make_mut(&mut state.config);
-            config.require_auth_token = false;
+            config.require_auth_token = true;
             config.nip_fi.mode = buzz_auth::NipFiMode::Shadow;
             config.nip_fi.communities = crate::nip_fi_config::NipFiCommunities::for_test(
                 &format!("https://{host}"),
@@ -2944,9 +2945,11 @@ mod tests {
             );
             state.nip_fi_verifier = Some(verifier.clone());
 
-            let req = axum::http::Request::get(format!("/workflows/{}/runs", uuid::Uuid::nil()))
+            let uri = format!("/workflows/{}/runs", uuid::Uuid::nil());
+            let url = format!("https://{host}{uri}");
+            let req = axum::http::Request::get(&uri)
                 .header("host", &host)
-                .header("x-pubkey", key.to_hex())
+                .header(axum::http::header::AUTHORIZATION, nip98(&keys, &url, "GET"))
                 .header(buzz_auth::CLIENT_ATTACHED_HEADER, "Bearer a.b.c")
                 .body(axum::body::Body::empty())
                 .unwrap();
@@ -2967,7 +2970,10 @@ mod tests {
                     Some(stage.value().to_owned())
                 })
                 .collect();
-            assert_eq!((stages, verifier.calls()), (vec!["nip98".to_owned()], 1));
+            assert_eq!(
+                (stages, verifier.calls()),
+                (vec!["assertion".to_owned()], 1)
+            );
         }
 
         fn nip98(keys: &nostr::Keys, url: &str, method: &str) -> String {

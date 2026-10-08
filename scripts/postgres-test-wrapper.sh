@@ -56,6 +56,13 @@ case "$qualified_test_name" in
     schema_mode="migration"
     source_database="template0"
     ;;
+  *::workflow_execution::workflow_execution_postgres_tests::* | \
+  *::workflow_manual::workflow_manual_postgres_tests::* | \
+  *::workflow_manual_reads::workflow_manual_reads_postgres_tests::* | \
+  *::api::git::transport::git_read_authorization_postgres_tests::*)
+    schema_mode="migration"
+    source_database="template0"
+    ;;
 esac
 
 cleanup() {

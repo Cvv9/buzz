@@ -58,6 +58,22 @@ run_case \
   runtime::migration::postgres_tests::run_migrations_applies_consolidated_initial_schema_on_fresh_database \
   migration \
   template0
+run_case \
+  workflow_execution::workflow_execution_postgres_tests::manual_execution_records_scoped_credential \
+  migration \
+  template0
+run_case \
+  workflow_manual::workflow_manual_postgres_tests::manual_workflow_reads_are_scoped \
+  migration \
+  template0
+run_case \
+  workflow_manual_reads::workflow_manual_reads_postgres_tests::manual_run_is_visible_to_owner \
+  migration \
+  template0
+run_case \
+  api::git::transport::git_read_authorization_postgres_tests::git_read_requires_membership \
+  migration \
+  template0
 run_case ordinary_database_test desired desired_template
 
 echo "PostgreSQL wrapper schema-mode checks passed"
