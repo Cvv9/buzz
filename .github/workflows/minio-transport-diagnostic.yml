@@ -1,0 +1,226 @@
+name: Temporary MinIO transport diagnostic (PR 89)
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize]
+    paths:
+      - .github/workflows/minio-transport-diagnostic.yml
+
+# One-off diagnostics only. The archived artifact and source revision are
+# pinned below; this workflow is removed before PR 89 is merged.
+permissions:
+  actions: read
+  contents: read
+
+env:
+  ARTIFACT_RUN_ID: "37824041479"
+  ARTIFACT_SOURCE_SHA: "2beb6efac7b5372a0977a47d785ebb9b45bdb368"
+  ARTIFACT_ID: "11571039622"
+  COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
+
+jobs:
+  minio-transport-diagnostic:
+    name: Diagnose the archived manifest race
+    if: github.event.pull_request.number == 89
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - id: verify
+        name: Validate diagnostic commit and archived CI artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          commit_json="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${PR_HEAD_SHA}")"
+          if ! jq -e --arg marker '[run-minio-transport-diag]' \
+            '.commit.message | contains($marker)' <<<"$commit_json" >/dev/null; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Diagnostic commit marker absent; skipping the one-off run."
+            exit 0
+          fi
+
+          run_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${ARTIFACT_RUN_ID}")"
+          jq -e \
+            --arg sha "$ARTIFACT_SOURCE_SHA" \
+            --argjson run_id "$ARTIFACT_RUN_ID" \
+            '
+              .id == $run_id and
+              .head_sha == $sha and
+              .event == "pull_request" and
+              .status == "completed" and
+              .conclusion == "failure" and
+              .path == ".github/workflows/ci.yml" and
+              any(.pull_requests[]?; .number == 89)
+            ' <<<"$run_json" >/dev/null
+
+          artifacts_json="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${ARTIFACT_RUN_ID}/artifacts")"
+          jq -e \
+            --argjson artifact_id "$ARTIFACT_ID" \
+            '
+              [.artifacts[]? |
+                select(
+                  .id == $artifact_id and
+                  .name == "desktop-e2e-relay" and
+                  .expired == false and
+                  .size_in_bytes > 0
+                )] | length == 1
+            ' <<<"$artifacts_json" >/dev/null
+
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          echo "Verified the tagged commit, failed PR 89 run, exact source SHA, and unexpired relay artifact."
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        if: steps.verify.outputs.enabled == 'true'
+        with:
+          ref: 2beb6efac7b5372a0977a47d785ebb9b45bdb368
+          persist-credentials: false
+
+      - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1
+        if: steps.verify.outputs.enabled == 'true'
+
+      - name: Install cargo-nextest
+        if: steps.verify.outputs.enabled == 'true'
+        uses: taiki-e/install-action@0fd46367812ee04360509b4169d9f659d6892bb2 # v2.79.15
+        with:
+          tool: cargo-nextest@0.9.136
+
+      - name: Start isolated integration services
+        if: steps.verify.outputs.enabled == 'true'
+        run: |
+          docker compose up -d --wait --wait-timeout 120 postgres redis minio
+          docker compose up -d minio-init
+          init_status="$(docker wait buzz-minio-init)"
+          if [ "$init_status" -ne 0 ]; then
+            docker logs buzz-minio-init || true
+            exit "$init_status"
+          fi
+
+      - name: Download exact archived relay and test binary
+        if: steps.verify.outputs.enabled == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: desktop-e2e-relay
+          path: target/ci
+          repository: ${{ github.repository }}
+          run-id: ${{ env.ARTIFACT_RUN_ID }}
+          github-token: ${{ github.token }}
+
+      - name: Apply schema and seed deployment community
+        if: steps.verify.outputs.enabled == 'true'
+        env:
+          PGHOST: localhost
+          PGPORT: "5432"
+          PGUSER: buzz
+          PGPASSWORD: buzz_dev
+          PGDATABASE: buzz
+          PGSCHEMA_PLAN_HOST: localhost
+          PGSCHEMA_PLAN_PORT: "5432"
+          PGSCHEMA_PLAN_DB: buzz
+          PGSCHEMA_PLAN_USER: buzz
+          PGSCHEMA_PLAN_PASSWORD: buzz_dev
+        run: |
+          ./bin/pgschema apply --file schema/schema.sql --auto-approve
+          docker exec -i -e PGPASSWORD=buzz_dev buzz-postgres \
+            psql -U buzz -d buzz -v ON_ERROR_STOP=1 < scripts/reconcile-schema-after-pgschema.sql
+          docker exec -e PGPASSWORD=buzz_dev buzz-postgres \
+            psql -U buzz -d buzz -qtA -c "
+          INSERT INTO communities (id, host)
+          VALUES ('00000000-0000-4000-8000-00000000c0de', 'localhost:3000')
+          ON CONFLICT (lower(host)) DO NOTHING
+          ;"
+
+      - name: Reproduce one exact test with allowlisted MinIO trace
+        id: reproduce
+        if: steps.verify.outputs.enabled == 'true'
+        env:
+          BUZZ_TEST_SCHEMA_MODE: desired
+          BUZZ_TEST_DATABASE_URL: postgres://buzz:buzz_dev@localhost:5432/buzz
+          BUZZ_TEST_REDIS_URL: redis://localhost:6379
+          BUZZ_TEST_S3_ENDPOINT: http://localhost:9000
+          BUZZ_TEST_S3_BUCKET: buzz-media
+        run: |
+          set -euo pipefail
+          trace_file="$RUNNER_TEMP/minio-transport-trace.jsonl"
+          : > "$trace_file"
+
+          timeout --signal=TERM 120s docker exec buzz-minio \
+            mc admin trace --path 'buzz-media/*' --verbose --json local 2>/dev/null |
+            jq --unbuffered -c '
+              def header($headers; $name):
+                [($headers // {} | to_entries[]? |
+                  select((.key | ascii_downcase) == ($name | ascii_downcase)) |
+                  .value)][0] // null;
+              def content_length($headers):
+                header($headers; "Content-Length") as $value |
+                if ($value | type) == "number" then $value
+                elif ($value | type) == "string" and ($value | test("^[0-9]+$")) then ($value | tonumber)
+                else null end;
+              def safe_validator($headers; $name):
+                header($headers; $name) as $value |
+                if ($value | type) == "string" and
+                  ($value | test("^(W/)?(\"[A-Za-z0-9_-]{16,128}\"|[A-Za-z0-9_-]{16,128}|\\*)$"))
+                then $value else null end;
+              def number_or_null:
+                if type == "number" and . >= 0 then . else null end;
+              select(
+                ((.request.path // "") | startswith("/buzz-media/")) or
+                ((.request.path // "") | startswith("buzz-media/"))
+              ) |
+              select((.request.method // "") | test("^(GET|HEAD|PUT|POST|DELETE)$")) |
+              select((.response.statusCode | type) == "number") |
+              {
+                time: (.time // .request.time // null),
+                method: (.request.method // null),
+                path: .request.path,
+                status: (.response.statusCode // null),
+                request_content_length: content_length(.request.headers),
+                request_if_match: safe_validator(.request.headers; "If-Match"),
+                request_if_none_match: safe_validator(.request.headers; "If-None-Match"),
+                request_bytes: (.callStats.rx | number_or_null),
+                response_content_length: content_length(.response.headers),
+                response_etag: safe_validator(.response.headers; "ETag"),
+                response_bytes: (.callStats.tx | number_or_null)
+              }
+            ' 2>/dev/null > "$trace_file" &
+          trace_pid=$!
+
+          sleep 2
+          if ! kill -0 "$trace_pid" 2>/dev/null; then
+            wait "$trace_pid" || true
+            echo "MinIO trace did not stay connected; no transport conclusion is valid."
+            exit 1
+          fi
+
+          set +e
+          cargo nextest run \
+            -j 1 \
+            --archive-file target/ci/backend-integration-tests.tar.zst \
+            -E 'package(buzz-relay) and test(/api::git::settings::tests::external_infra::default_branch_push_races_and_fresh_clone/)' \
+            --run-ignored ignored-only
+          test_status=$?
+
+          wait "$trace_pid"
+          trace_status=$?
+          set -e
+
+          if [ "$trace_status" -ne 0 ] && [ "$trace_status" -ne 124 ]; then
+            echo "MinIO trace exited unexpectedly with status $trace_status."
+            exit 1
+          fi
+          if [ ! -s "$trace_file" ]; then
+            echo "No allowlisted MinIO trace records were captured; absence is not evidence that the request was not sent."
+            exit 1
+          fi
+          echo "Captured allowlisted MinIO request metadata; raw trace was not written or printed."
+          exit "$test_status"
+
+      - name: Upload only filtered MinIO trace
+        if: always() && steps.verify.outputs.enabled == 'true' && steps.reproduce.outcome != 'skipped'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.0
+        with:
+          name: minio-transport-trace-pr89
+          path: ${{ runner.temp }}/minio-transport-trace.jsonl
+          if-no-files-found: error
+          retention-days: 1
