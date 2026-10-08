@@ -2912,12 +2912,12 @@ mod tests {
         }
 
         // Pins: a signed NIP-98 workflow read reaches assertion verification in
-        // Shadow mode, where the malformed attached assertion is observed but
-        // does not block the ordinary workflow handler. The test uses the same
-        // required auth posture as production instead of dev-key admission.
+        // Shadow mode, where the scripted verifier admits the attached assertion
+        // and the ordinary workflow handler proceeds. A second request proves
+        // the assertion and X-Pubkey cannot replace required NIP-98 auth.
         #[tokio::test(flavor = "current_thread")]
         #[ignore = "requires Postgres — runs in postgres-ci nextest lane"]
-        async fn shadow_workflow_observes_invalid_assertion_after_signed_nip98() {
+        async fn shadow_workflow_still_requires_nip98_after_assertion_admit() {
             use tower::ServiceExt;
             let recorder = metrics_util::debugging::DebuggingRecorder::new();
             let snapshotter = recorder.snapshotter();
@@ -2960,7 +2960,27 @@ mod tests {
             assert_ne!(
                 resp.status(),
                 axum::http::StatusCode::UNAUTHORIZED,
-                "admitted"
+                "signed NIP-98 request with admitted assertion reaches the handler"
+            );
+            let stage_counts = || {
+                let mut stages: Vec<(String, u64)> = snapshotter
+                    .snapshot()
+                    .into_vec()
+                    .into_iter()
+                    .filter(|(k, ..)| k.key().name() == "buzz_nip_fi_shadow_total")
+                    .filter_map(|(k, .., value)| {
+                        let stage = k.key().labels().find(|l| l.key() == "stage")?;
+                        Some((stage.value().to_owned(), counter(&value)))
+                    })
+                    .collect();
+                stages.sort();
+                stages
+            };
+            assert_eq!(stage_counts(), vec![("admit".to_owned(), 1)]);
+            assert_eq!(
+                verifier.calls(),
+                2,
+                "guard and handler verify the assertion"
             );
 
             let xpubkey_req = axum::http::Request::get(&uri)
@@ -2979,19 +2999,14 @@ mod tests {
                 "X-Pubkey must not bypass required NIP-98 authentication"
             );
 
-            let stages: Vec<String> = snapshotter
-                .snapshot()
-                .into_vec()
-                .into_iter()
-                .filter(|(k, ..)| k.key().name() == "buzz_nip_fi_shadow_total")
-                .filter_map(|(k, ..)| {
-                    let stage = k.key().labels().find(|l| l.key() == "stage")?;
-                    Some(stage.value().to_owned())
-                })
-                .collect();
             assert_eq!(
-                (stages, verifier.calls()),
-                (vec!["assertion".to_owned()], 1)
+                stage_counts(),
+                vec![("admit".to_owned(), 1), ("nip98".to_owned(), 1)]
+            );
+            assert_eq!(
+                verifier.calls(),
+                3,
+                "X-Pubkey-only request still evaluates attached assertion before NIP-98 denial"
             );
         }
 
