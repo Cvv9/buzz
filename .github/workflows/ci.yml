@@ -474,7 +474,7 @@ jobs:
         shell: bash
         run: |
           cargo nextest run \
-            -p buzz-test-client --test e2e_workflow_manual_runs \
+            -p buzz-test-client --test postgres_e2e_workflow_manual_runs \
             --test-threads 1 --run-ignored ignored-only 2>&1 | tee /tmp/buzz-manual-transport-tests.log
       - name: Upload manual workflow evidence
         if: always()
