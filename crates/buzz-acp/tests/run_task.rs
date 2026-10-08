@@ -218,12 +218,18 @@ fn file_and_stdin_run_one_fresh_equipped_session_without_service() {
             .iter()
             .filter(|v| v["method"] == "session/set_config_option")
             .collect();
-        for expected in ["chosen", "high", "bypassPermissions"] {
+        for expected in ["chosen", "high", "dontAsk"] {
             assert!(
                 options.iter().any(|v| v["params"]["value"] == expected),
                 "missing {expected}: {wire:?}"
             );
         }
+        assert!(
+            !options
+                .iter()
+                .any(|v| v["params"]["value"] == "bypassPermissions"),
+            "unattended bypass must never be selected by the default permission mode"
+        );
     }
 }
 
