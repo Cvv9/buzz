@@ -9,6 +9,7 @@ import {
 } from "nostr-tools/pure";
 import {
   exportBrowserIdentity,
+  getBrowserSecretKey,
   importBrowserIdentity,
   type BrowserIdentity,
 } from "@/shared/lib/browser-identity";
@@ -17,9 +18,11 @@ import { relayHttpBaseUrl } from "@/shared/lib/relay-url";
 import {
   KIND_PAIRING,
   PAIRING_SESSION_TIMEOUT_MS,
+  decodeIdentityPayload,
   derivePairingSas,
   derivePairingSessionId,
   derivePairingTranscriptHash,
+  encodeIdentityPayload,
   encodePairingUri,
   pairingConstantTimeEqual,
   pairingEventHasExactRecipient,
@@ -350,13 +353,25 @@ export class BrowserPairingSession {
       );
     }
     const nsec = await exportBrowserIdentity();
+    const secret = await getBrowserSecretKey();
+    if (!secret) throw new Error("Sign in before pairing another device.");
     try {
       const transcript = await this.transcriptHash();
       this.send({
         type: "sas-confirm",
         transcript_hash: pairingHex(transcript),
       });
-      this.send({ type: "payload", payload_type: "nsec", payload: nsec });
+      // The phone app needs the relay origin next to the key; a browser
+      // target reads the same JSON through decodeIdentityPayload.
+      this.send({
+        type: "payload",
+        payload_type: "custom",
+        payload: encodeIdentityPayload({
+          relayUrl: relayHttpBaseUrl(),
+          pubkey: getPublicKey(secret),
+          nsec,
+        }),
+      });
       this.setSnapshot({ ...this.snapshotValue, stage: "source-sent" });
     } finally {
       // JavaScript strings cannot be reliably zeroized; never retain it on this session.
@@ -521,7 +536,16 @@ export class BrowserPairingSession {
       return;
     }
     this.processedIds.add(event.id);
-    this.payload = message.payload;
+    try {
+      this.payload = decodeIdentityPayload(
+        message.payload_type,
+        message.payload,
+      ).nsec;
+    } catch {
+      this.send({ type: "abort", reason: "protocol_error" });
+      this.finish("aborted", "Pairing payload was invalid.");
+      return;
+    }
     this.setSnapshot({ ...this.snapshotValue, stage: "target-ready-import" });
   }
 

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  decodeIdentityPayload,
+  encodeIdentityPayload,
   encodePairingUri,
   pairingConstantTimeEqual,
   parsePairingMessage,
@@ -64,4 +66,45 @@ test("NIP-AB accepts only exact supported transfer messages", () => {
     pairingConstantTimeEqual(new Uint8Array([1, 2]), new Uint8Array([1, 3])),
     false,
   );
+});
+
+test("NIP-AB identity payload carries the relay for phones and still reads a bare nsec", () => {
+  const nsec = `nsec1${"q".repeat(58)}`;
+  const encoded = encodeIdentityPayload({
+    relayUrl: "https://buzz.example",
+    pubkey: "c".repeat(64),
+    nsec,
+  });
+  assert.deepEqual(JSON.parse(encoded), {
+    relayUrl: "https://buzz.example",
+    pubkey: "c".repeat(64),
+    nsec,
+  });
+  assert.deepEqual(
+    parsePairingMessage({
+      type: "payload",
+      payload_type: "custom",
+      payload: encoded,
+    }),
+    { type: "payload", payload_type: "custom", payload: encoded },
+  );
+  assert.deepEqual(decodeIdentityPayload("custom", encoded), {
+    nsec,
+    relayUrl: "https://buzz.example",
+    pubkey: "c".repeat(64),
+  });
+  assert.deepEqual(decodeIdentityPayload("nsec", nsec), {
+    nsec,
+    relayUrl: null,
+    pubkey: null,
+  });
+  assert.equal(
+    parsePairingMessage({
+      type: "payload",
+      payload_type: "custom",
+      payload: JSON.stringify({ relayUrl: "https://buzz.example" }),
+    }),
+    null,
+  );
+  assert.throws(() => decodeIdentityPayload("custom", "{}"), /nsec/);
 });

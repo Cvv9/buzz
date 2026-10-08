@@ -13,7 +13,7 @@ export type PairingQrPayload = {
 export type PairingMessage =
   | { type: "offer"; session_id: string; version: 1 }
   | { type: "sas-confirm"; transcript_hash: string }
-  | { type: "payload"; payload_type: "nsec"; payload: string }
+  | { type: "payload"; payload_type: "nsec" | "custom"; payload: string }
   | { type: "complete"; success: boolean }
   | {
       type: "abort";
@@ -205,6 +205,65 @@ export function pairingConstantTimeEqual(left: Uint8Array, right: Uint8Array) {
   return mismatch === 0;
 }
 
+export type PairingIdentityPayload = {
+  nsec: string;
+  relayUrl: string | null;
+  pubkey: string | null;
+};
+
+/**
+ * Desktop and the phone app exchange the identity as a `custom` JSON payload
+ * that also names the relay origin; the phone refuses a bare nsec.
+ */
+export function encodeIdentityPayload(identity: {
+  relayUrl: string;
+  pubkey: string;
+  nsec: string;
+}) {
+  return JSON.stringify({
+    relayUrl: identity.relayUrl,
+    pubkey: identity.pubkey,
+    nsec: identity.nsec,
+  });
+}
+
+function identityFromJson(payload: string): PairingIdentityPayload | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payload);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return null;
+  }
+  const record = parsed as Record<string, unknown>;
+  if (typeof record.nsec !== "string" || !record.nsec.startsWith("nsec1")) {
+    return null;
+  }
+  return {
+    nsec: record.nsec,
+    relayUrl: typeof record.relayUrl === "string" ? record.relayUrl : null,
+    pubkey: typeof record.pubkey === "string" ? record.pubkey : null,
+  };
+}
+
+/** Read the identity out of a verified payload: bare nsec from a browser, JSON from desktop or phone. */
+export function decodeIdentityPayload(
+  payloadType: "nsec" | "custom",
+  payload: string,
+): PairingIdentityPayload {
+  if (payloadType === "nsec") {
+    if (!payload.startsWith("nsec1")) {
+      throw new Error("Pairing payload did not contain an nsec.");
+    }
+    return { nsec: payload, relayUrl: null, pubkey: null };
+  }
+  const identity = identityFromJson(payload);
+  if (!identity) throw new Error("Pairing payload did not contain an nsec.");
+  return identity;
+}
+
 /** Strictly parse only the payload types the browser can safely import today. */
 export function parsePairingMessage(value: unknown): PairingMessage | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -223,15 +282,37 @@ export function parsePairingMessage(value: unknown): PairingMessage | null {
         Object.keys(message).length === 2
         ? { type: "sas-confirm", transcript_hash: message.transcript_hash }
         : null;
-    case "payload":
-      return message.payload_type === "nsec" &&
-        typeof message.payload === "string" &&
-        message.payload.startsWith("nsec1") &&
-        new TextEncoder().encode(message.payload).byteLength <=
-          PAIRING_MAX_PAYLOAD_BYTES &&
-        Object.keys(message).length === 3
-        ? { type: "payload", payload_type: "nsec", payload: message.payload }
-        : null;
+    case "payload": {
+      if (
+        typeof message.payload !== "string" ||
+        Object.keys(message).length !== 3 ||
+        new TextEncoder().encode(message.payload).byteLength >
+          PAIRING_MAX_PAYLOAD_BYTES
+      ) {
+        return null;
+      }
+      if (
+        message.payload_type === "nsec" &&
+        message.payload.startsWith("nsec1")
+      ) {
+        return {
+          type: "payload",
+          payload_type: "nsec",
+          payload: message.payload,
+        };
+      }
+      if (
+        message.payload_type === "custom" &&
+        identityFromJson(message.payload)
+      ) {
+        return {
+          type: "payload",
+          payload_type: "custom",
+          payload: message.payload,
+        };
+      }
+      return null;
+    }
     case "complete":
       return typeof message.success === "boolean" &&
         Object.keys(message).length === 2
