@@ -8,6 +8,10 @@ on:
       mobile:
         required: true
         type: boolean
+      run_native_apps:
+        required: false
+        type: boolean
+        default: true
       lane:
         required: true
         type: string
@@ -61,7 +65,7 @@ jobs:
     name: Mobile
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: inputs.lane == 'required' && (github.event_name == 'push' || inputs.mobile)
+    if: inputs.lane == 'required' && inputs.run_native_apps && (github.event_name == 'push' || inputs.mobile)
     permissions:
       contents: read
     steps:
@@ -123,7 +127,7 @@ jobs:
     name: Mobile Swift
     runs-on: macos-latest
     timeout-minutes: 30
-    if: inputs.lane == 'mobile-swift' && inputs.mobile
+    if: inputs.lane == 'mobile-swift' && inputs.run_native_apps && inputs.mobile
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: cashapp/activate-hermit@cea9af7913204a965fd488637a8d1811bba2e616 # v1

@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import net from 'node:net';
 import { pathToFileURL } from 'node:url';
 
-const roles = { postgres: [55441, 5432], relay: [55341, 55341] };
+const roles = { postgres: [15441, 5432], relay: [15341, 15341] };
 
 function privateIpv4(address) {
   if (net.isIP(address) !== 4) return false;

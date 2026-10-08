@@ -587,7 +587,7 @@ fn hydrate_error_to_response(owner: &str, repo: &str, err: HydrateError) -> Resp
 // nonexistent repo so membership cannot be probed through the git endpoints.
 
 #[cfg(test)]
-mod git_read_authorization_tests {
+mod git_read_authorization_postgres_tests {
     use super::{authorize_git_read, read_role_allows, resolve_repo_binding, RepoBinding};
     use buzz_core::channel::{ChannelType, ChannelVisibility, MemberRole};
     use nostr::{EventBuilder, Keys, Kind, Tag};

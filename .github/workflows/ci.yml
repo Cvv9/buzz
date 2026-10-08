@@ -4,6 +4,12 @@ on:
     branches: [main, release]
   pull_request:
   workflow_dispatch:
+    inputs:
+      run_native_apps:
+        description: Run native desktop, Windows, macOS, and mobile validation
+        required: false
+        type: boolean
+        default: false
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
@@ -28,6 +34,7 @@ jobs:
       desktop-rust: ${{ steps.selection.outputs.desktop-rust }}
       web: ${{ steps.selection.outputs.web }}
       mobile: ${{ steps.selection.outputs.mobile }}
+      run-native-apps: ${{ steps.selection.outputs.run-native-apps }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
@@ -85,6 +92,8 @@ jobs:
               - 'web/**'
               - 'admin-web/**'
               - 'pnpm-lock.yaml'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_ci-*.yml'
             mobile:
               - 'mobile/**'
               - 'scripts/mobile-release.sh'
@@ -102,6 +111,7 @@ jobs:
         id: selection
         env:
           FILTER_OUTPUTS: ${{ github.event_name == 'workflow_dispatch' && '{"rust":"true","desktop":"true","desktop-rust":"true","web":"true","mobile":"true"}' || toJSON(steps.filter.outputs) }}
+          RUN_NATIVE_APPS: ${{ github.event_name == 'workflow_dispatch' && inputs.run_native_apps || false }}
         run: node scripts/ci-runtime-selection.mjs
       - name: Validate PostgreSQL test discovery
         if: github.event_name == 'push' || steps.selection.outputs.rust == 'true'
@@ -163,11 +173,12 @@ jobs:
   rust:
     name: Rust
     needs: [changes]
-    if: github.event_name == 'push' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.desktop-rust == 'true'
+    if: github.event_name == 'push' || needs.changes.outputs.rust == 'true' || (needs.changes.outputs.run-native-apps == 'true' && needs.changes.outputs.desktop-rust == 'true')
     uses: ./.github/workflows/_ci-rust.yml
     with:
       rust: ${{ needs.changes.outputs.rust == 'true' }}
       desktop_rust: ${{ needs.changes.outputs.desktop-rust == 'true' }}
+      run_native_apps: ${{ needs.changes.outputs.run-native-apps == 'true' }}
       lane: required
 
   rust-cross-compile-domain:
@@ -178,27 +189,30 @@ jobs:
     with:
       rust: ${{ needs.changes.outputs.rust == 'true' }}
       desktop_rust: ${{ needs.changes.outputs.desktop-rust == 'true' }}
+      run_native_apps: ${{ needs.changes.outputs.run-native-apps == 'true' }}
       lane: cross-compile
 
   desktop-domain:
     name: Desktop Domain
     needs: [changes]
-    if: github.event_name == 'push' || needs.changes.outputs.desktop == 'true' || needs.changes.outputs.desktop-rust == 'true' || needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.run-native-apps == 'true'
     uses: ./.github/workflows/_ci-desktop.yml
     with:
       rust: ${{ needs.changes.outputs.rust == 'true' }}
       desktop: ${{ needs.changes.outputs.desktop == 'true' }}
       desktop_rust: ${{ needs.changes.outputs.desktop-rust == 'true' }}
+      run_native_apps: ${{ needs.changes.outputs.run-native-apps == 'true' }}
 
   relay-artifacts-domain:
     name: Relay Artifact Producer
     needs: [changes]
-    if: github.event_name == 'push' || needs.changes.outputs.desktop == 'true' || needs.changes.outputs.desktop-rust == 'true' || needs.changes.outputs.rust == 'true'
+    if: github.event_name == 'push' || needs.changes.outputs.rust == 'true'
     uses: ./.github/workflows/_ci-relay.yml
     with:
       rust: ${{ needs.changes.outputs.rust == 'true' }}
       desktop: ${{ needs.changes.outputs.desktop == 'true' }}
       desktop_rust: ${{ needs.changes.outputs.desktop-rust == 'true' }}
+      run_native_apps: ${{ needs.changes.outputs.run-native-apps == 'true' }}
       lane: artifacts
 
   postgres-domain:
@@ -210,47 +224,52 @@ jobs:
       rust: ${{ needs.changes.outputs.rust == 'true' }}
       desktop: ${{ needs.changes.outputs.desktop == 'true' }}
       desktop_rust: ${{ needs.changes.outputs.desktop-rust == 'true' }}
+      run_native_apps: ${{ needs.changes.outputs.run-native-apps == 'true' }}
       lane: postgres
 
   desktop-macos-domain:
     name: Desktop macOS Domain
     needs: [changes]
-    if: github.event_name == 'push' || needs.changes.outputs.desktop == 'true' || needs.changes.outputs.desktop-rust == 'true' || needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.run-native-apps == 'true'
     uses: ./.github/workflows/_ci-desktop-macos.yml
     with:
       rust: ${{ needs.changes.outputs.rust == 'true' }}
       desktop: ${{ needs.changes.outputs.desktop == 'true' }}
       desktop_rust: ${{ needs.changes.outputs.desktop-rust == 'true' }}
+      run_native_apps: ${{ needs.changes.outputs.run-native-apps == 'true' }}
 
   relay-domain:
     name: Relay and PostgreSQL
     needs: [changes, relay-artifacts-domain]
-    if: github.event_name == 'push' || needs.changes.outputs.desktop == 'true' || needs.changes.outputs.desktop-rust == 'true' || needs.changes.outputs.rust == 'true'
+    if: github.event_name == 'push' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.run-native-apps == 'true'
     uses: ./.github/workflows/_ci-relay.yml
     with:
       rust: ${{ needs.changes.outputs.rust == 'true' }}
       desktop: ${{ needs.changes.outputs.desktop == 'true' }}
       desktop_rust: ${{ needs.changes.outputs.desktop-rust == 'true' }}
+      run_native_apps: ${{ needs.changes.outputs.run-native-apps == 'true' }}
       lane: required
 
   clients:
     name: Clients
     needs: [changes]
-    if: github.event_name == 'push' || needs.changes.outputs.web == 'true' || needs.changes.outputs.mobile == 'true'
+    if: github.event_name == 'push' || needs.changes.outputs.web == 'true' || needs.changes.outputs.run-native-apps == 'true'
     uses: ./.github/workflows/_ci-clients.yml
     with:
       web: ${{ needs.changes.outputs.web == 'true' }}
       mobile: ${{ needs.changes.outputs.mobile == 'true' }}
+      run_native_apps: ${{ needs.changes.outputs.run-native-apps == 'true' }}
       lane: required
 
   mobile-swift-domain:
     name: Mobile Swift Domain
     needs: [changes]
-    if: needs.changes.outputs.mobile == 'true'
+    if: needs.changes.outputs.run-native-apps == 'true' && needs.changes.outputs.mobile == 'true'
     uses: ./.github/workflows/_ci-clients.yml
     with:
       web: ${{ needs.changes.outputs.web == 'true' }}
       mobile: ${{ needs.changes.outputs.mobile == 'true' }}
+      run_native_apps: ${{ needs.changes.outputs.run-native-apps == 'true' }}
       lane: mobile-swift
 
   security-domain:
@@ -263,7 +282,7 @@ jobs:
 
   rust-lint:
     name: Rust Lint
-    if: always() && (needs.changes.result != 'success' || ((github.event_name == 'push' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.desktop-rust == 'true')))
+    if: always() && (needs.changes.result != 'success' || github.event_name == 'push' || needs.changes.outputs.rust == 'true' || (needs.changes.outputs.run-native-apps == 'true' && needs.changes.outputs.desktop-rust == 'true'))
     needs: [changes, rust]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -291,7 +310,7 @@ jobs:
 
   windows-rust:
     name: Windows Rust (x86_64-pc-windows-msvc)
-    if: always() && (needs.changes.result != 'success' || ((github.event_name == 'push' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.desktop-rust == 'true')))
+    if: always() && (needs.changes.result != 'success' || (needs.changes.outputs.run-native-apps == 'true' && (github.event_name == 'push' || needs.changes.outputs.rust == 'true' || needs.changes.outputs.desktop-rust == 'true')))
     needs: [changes, rust]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -305,7 +324,7 @@ jobs:
 
   desktop:
     name: Desktop
-    if: always() && (needs.changes.result != 'success' || ((github.event_name == 'push' || needs.changes.outputs.desktop == 'true' || needs.changes.outputs.desktop-rust == 'true' || needs.changes.outputs.rust == 'true')))
+    if: always() && (needs.changes.result != 'success' || needs.changes.outputs.run-native-apps == 'true')
     needs: [changes, desktop-domain]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -319,7 +338,7 @@ jobs:
 
   desktop-build-macos:
     name: Desktop Build (macOS)
-    if: always() && (needs.changes.result != 'success' || ((github.event_name == 'push' || needs.changes.outputs.desktop == 'true' || needs.changes.outputs.desktop-rust == 'true' || needs.changes.outputs.rust == 'true')))
+    if: always() && (needs.changes.result != 'success' || needs.changes.outputs.run-native-apps == 'true')
     needs: [changes, desktop-macos-domain]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -333,7 +352,7 @@ jobs:
 
   desktop-e2e-relay:
     name: Desktop E2E Relay
-    if: always() && (needs.changes.result != 'success' || ((github.event_name == 'push' || needs.changes.outputs.desktop == 'true' || needs.changes.outputs.desktop-rust == 'true' || needs.changes.outputs.rust == 'true')))
+    if: always() && (needs.changes.result != 'success' || (github.event_name == 'push' || needs.changes.outputs.rust == 'true'))
     needs: [changes, relay-artifacts-domain]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -347,7 +366,7 @@ jobs:
 
   desktop-e2e-integration:
     name: Desktop E2E Integration
-    if: always() && (needs.changes.result != 'success' || (needs.relay-artifacts-domain.result == 'success' && (github.event_name == 'push' || needs.changes.outputs.desktop == 'true' || needs.changes.outputs.desktop-rust == 'true' || needs.changes.outputs.rust == 'true')))
+    if: always() && (needs.changes.result != 'success' || (needs.changes.outputs.run-native-apps == 'true' && needs.relay-artifacts-domain.result == 'success'))
     needs: [changes, relay-artifacts-domain, relay-domain]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -370,6 +389,8 @@ jobs:
     # This empty database belongs only to this job. Do not apply the desired-state
     # schema used by the older integration suites: these fixtures exercise the
     # embedded SQLx migration chain, including manual execution serving fences.
+    # Keep host ports below the Linux ephemeral source-port range: these tests
+    # open many DB/Redis connections before starting the relay listeners.
     services:
       postgres:
         image: postgres:17-alpine
@@ -378,21 +399,21 @@ jobs:
           POSTGRES_PASSWORD: buzz_test_only
           POSTGRES_DB: buzz_manual_tests_v1
         ports:
-          - 55441:5432
+          - 15441:5432
         options: >-
           --health-cmd "pg_isready -h 127.0.0.1 -U buzz -d buzz_manual_tests_v1"
           --health-interval 2s --health-timeout 5s --health-retries 30
       redis:
         image: redis:7-alpine
         ports:
-          - 56441:6379
+          - 16441:6379
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 2s --health-timeout 5s --health-retries 30
     env:
-      DATABASE_URL: postgres://buzz:buzz_test_only@127.0.0.1:55441/buzz_manual_tests_v1
-      REDIS_URL: redis://127.0.0.1:56441
-      RELAY_URL: ws://127.0.0.1:55341
+      DATABASE_URL: postgres://buzz:buzz_test_only@127.0.0.1:15441/buzz_manual_tests_v1
+      REDIS_URL: redis://127.0.0.1:16441
+      RELAY_URL: ws://127.0.0.1:15341
       BUZZ_TEST_CLI: ${{ github.workspace }}/target/ci/buzz
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -428,7 +449,7 @@ jobs:
         shell: bash
         run: |
           cargo nextest run -p buzz-db --lib \
-            -E 'test(/workflow_manual::tests::/) + test(/workflow_manual_reads::tests::/) + test(/workflow_execution::tests::/)' \
+            -E 'test(/workflow_manual::workflow_manual_postgres_tests::/) + test(/workflow_manual_reads::workflow_manual_reads_postgres_tests::/) + test(/workflow_execution::workflow_execution_postgres_tests::/)' \
             --test-threads 1 --run-ignored ignored-only 2>&1 | tee /tmp/buzz-manual-ledger-tests.log
           psql "$DATABASE_URL" -XAtw -v ON_ERROR_STOP=1 \
             -c 'SELECT version,success FROM _sqlx_migrations ORDER BY version' > /tmp/buzz-manual-migrations.log
@@ -437,9 +458,9 @@ jobs:
       - name: Start membership-enforced isolated relay
         env:
           BUZZ_AUTO_MIGRATE: "true"
-          BUZZ_BIND_ADDR: 127.0.0.1:55341
-          BUZZ_HEALTH_PORT: "55342"
-          BUZZ_METRICS_PORT: "55343"
+          BUZZ_BIND_ADDR: 127.0.0.1:15341
+          BUZZ_HEALTH_PORT: "15342"
+          BUZZ_METRICS_PORT: "15343"
           BUZZ_REQUIRE_AUTH_TOKEN: "true"
           BUZZ_REQUIRE_RELAY_MEMBERSHIP: "true"
           BUZZ_ALLOW_INSECURE_DEV_PUBKEY: "false"
@@ -454,7 +475,7 @@ jobs:
           chmod +x ./target/ci/buzz-relay "$BUZZ_TEST_CLI"
           psql "$DATABASE_URL" -XAtw -v ON_ERROR_STOP=1 -c "
             INSERT INTO communities (id,host)
-            VALUES ('00000000-0000-4000-8000-00000000c0de','127.0.0.1:55341')
+            VALUES ('00000000-0000-4000-8000-00000000c0de','127.0.0.1:15341')
             ON CONFLICT (lower(host)) DO NOTHING;"
           nohup ./target/ci/buzz-relay > /tmp/buzz-manual-relay.log 2>&1 &
           echo $! > /tmp/buzz-manual-relay.pid
@@ -463,7 +484,7 @@ jobs:
               cat /tmp/buzz-manual-relay.log
               exit 1
             fi
-            if curl -fsS http://127.0.0.1:55342/_readiness >/dev/null; then
+            if curl -fsS http://127.0.0.1:15342/_readiness >/dev/null; then
               exit 0
             fi
             sleep 1
@@ -474,7 +495,7 @@ jobs:
         shell: bash
         run: |
           cargo nextest run \
-            -p buzz-test-client --test e2e_workflow_manual_runs \
+            -p buzz-test-client --test postgres_e2e_workflow_manual_runs \
             --test-threads 1 --run-ignored ignored-only 2>&1 | tee /tmp/buzz-manual-transport-tests.log
       - name: Upload manual workflow evidence
         if: always()
@@ -578,7 +599,7 @@ jobs:
 
   mobile:
     name: Mobile
-    if: always() && (needs.changes.result != 'success' || ((github.event_name == 'push' || needs.changes.outputs.mobile == 'true')))
+    if: always() && (needs.changes.result != 'success' || (needs.changes.outputs.run-native-apps == 'true' && needs.changes.outputs.mobile == 'true'))
     needs: [changes, clients]
     runs-on: ubuntu-latest
     timeout-minutes: 5

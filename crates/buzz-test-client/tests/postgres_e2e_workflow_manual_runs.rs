@@ -488,11 +488,11 @@ async fn e2e_workflow_recover_claim_after_revocation_is_receipt_only() {
         .to_string();
     let parsed = url::Url::parse(&base).unwrap();
     assert_eq!(parsed.host_str(), Some("127.0.0.1"));
-    assert_eq!(parsed.port(), Some(55341), "isolated QA relay only");
+    assert_eq!(parsed.port(), Some(15341), "isolated QA relay only");
     let database = std::env::var("DATABASE_URL").expect("isolated DB");
     let db_url = url::Url::parse(&database).unwrap();
     assert_eq!(db_url.host_str(), Some("127.0.0.1"));
-    assert_eq!(db_url.port(), Some(55441));
+    assert_eq!(db_url.port(), Some(15441));
     assert!(db_url.path().starts_with("/buzz_manual_tests_v"));
     let pool = sqlx::PgPool::connect(&database).await.unwrap();
     let db = buzz_db::Db::from_pool(pool.clone());

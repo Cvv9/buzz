@@ -6395,10 +6395,9 @@ mod postgres_tests {
     //
     // ## Setup
     //
-    // NIP-FI Off mode + `require_auth_token = false` allows X-Pubkey dev-mode
-    // auth to bypass NIP-98 and NIP-FI gates, admitting the request to the
-    // application layer.  The actor is seeded as community "owner" so the
-    // moderation authz check passes without requiring real relay member rows.
+    // NIP-FI Off mode leaves strict NIP-98 application auth in force while
+    // bypassing the NIP-FI assertion gate. The actor is seeded as community
+    // "owner" so moderation authorization passes without extra policy rows.
     //
     // ## Falsifying mutation
     //
@@ -6414,8 +6413,8 @@ mod postgres_tests {
             .build()
             .expect("current_thread runtime");
 
-        // Off mode: NIP-FI gate is transparent; require_auth_token=false allows
-        // X-Pubkey dev-mode auth to admit the request.
+        // Off mode is transparent to NIP-FI, while strict NIP-98 auth admits
+        // the request to the malformed-query handler.
         let Some(state) = rt.block_on(nip_fi_off_test_state()) else {
             panic!("local Postgres not reachable");
         };
@@ -6435,24 +6434,15 @@ mod postgres_tests {
         )
         .expect("seed actor as owner");
 
-        // Build headers: X-Pubkey dev-mode admission (require_auth_token=false).
-        // No Nostr-Federated-Identity header — NIP-FI is Off, so the guard is
-        // transparent and the per-handler check admits unconditionally.
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert("x-pubkey", actor_hex.parse().expect("valid header"));
+        let uri = "/moderation/reports?status=open&limit=abc";
+        let url = format!("https://{host}{uri}");
+        let headers = make_nip98_headers(&actor_keys, &url, "GET", b"");
 
         // Malformed query: `status=open` is valid but `limit=abc` is not.
         // Old behavior: `.ok().unwrap_or_default()` → status=None, limit=None
         //   (all fields dropped), handler returns 200.
         // New behavior: `parse_query_or_400` → 400 BAD_REQUEST.
-        let status = rt.block_on(oneshot_request(
-            state,
-            "GET",
-            "/moderation/reports?status=open&limit=abc",
-            &host,
-            headers,
-            b"",
-        ));
+        let status = rt.block_on(oneshot_request(state, "GET", uri, &host, headers, b""));
 
         assert_eq!(
             status,
@@ -7505,20 +7495,24 @@ mod postgres_tests {
     async fn post_query(
         state: Arc<crate::state::AppState>,
         host: &str,
-        pubkey_hex: &str,
+        keys: &Keys,
         body: &[u8],
     ) -> (axum::http::StatusCode, axum::body::Bytes) {
         use axum::body::Body;
         use axum::http::{header, Request};
         use tower::ServiceExt;
 
+        let url = format!("https://{host}/query");
+        let authorization = make_nip98_headers(keys, &url, "POST", body)
+            .remove(header::AUTHORIZATION)
+            .expect("signed NIP-98 authorization");
         let resp = crate::router::build_router(state)
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/query")
                     .header(header::HOST, host)
-                    .header("x-pubkey", pubkey_hex)
+                    .header(header::AUTHORIZATION, authorization)
                     .header("content-type", "application/json")
                     .body(Body::from(body.to_vec()))
                     .expect("build request"),
@@ -7720,7 +7714,6 @@ mod postgres_tests {
             Arc::new(state)
         });
 
-        let pubkey_hex = author.public_key().to_hex();
         let channel_str = channel_id.to_string();
 
         // Probe 1: routed read (no consistency) → replica → event absent.
@@ -7731,7 +7724,7 @@ mod postgres_tests {
             "limit": 10,
         }]))
         .expect("serialize routed filter");
-        let (status, resp_body) = rt.block_on(post_query(state.clone(), &host, &pubkey_hex, &body));
+        let (status, resp_body) = rt.block_on(post_query(state.clone(), &host, &author, &body));
         assert_eq!(
             status,
             axum::http::StatusCode::OK,
@@ -7756,7 +7749,7 @@ mod postgres_tests {
             "consistency": "strong",
         }]))
         .expect("serialize strong filter");
-        let (status, resp_body) = rt.block_on(post_query(state.clone(), &host, &pubkey_hex, &body));
+        let (status, resp_body) = rt.block_on(post_query(state.clone(), &host, &author, &body));
         assert_eq!(
             status,
             axum::http::StatusCode::OK,
@@ -7785,7 +7778,7 @@ mod postgres_tests {
             "consistency": "weak",
         }]))
         .expect("serialize bad filter");
-        let (status, _) = rt.block_on(post_query(state.clone(), &host, &pubkey_hex, &body));
+        let (status, _) = rt.block_on(post_query(state.clone(), &host, &author, &body));
         assert_eq!(
             status,
             axum::http::StatusCode::BAD_REQUEST,
@@ -7969,15 +7962,20 @@ mod postgres_tests {
             use axum::body::Body;
             use axum::http::{header, Request};
             use tower::ServiceExt;
+            let url = format!("https://{}{uri}", self.host);
+            let body = serde_json::to_vec(&[filter]).expect("json");
+            let authorization = make_nip98_headers(&self.reader, &url, "POST", &body)
+                .remove(header::AUTHORIZATION)
+                .expect("signed NIP-98 authorization");
             let resp = crate::router::build_router(self.state.clone())
                 .oneshot(
                     Request::builder()
                         .method("POST")
                         .uri(uri)
                         .header(header::HOST, &self.host)
-                        .header("x-pubkey", self.reader.public_key().to_hex())
+                        .header(header::AUTHORIZATION, authorization)
                         .header("content-type", "application/json")
-                        .body(Body::from(serde_json::to_vec(&[filter]).expect("json")))
+                        .body(Body::from(body))
                         .expect("request"),
                 )
                 .await

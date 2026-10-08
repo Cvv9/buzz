@@ -2911,13 +2911,13 @@ mod tests {
             }
         }
 
-        // Pins: the workflow handler's shared NIP-98 closure keeps the dev
-        // `X-Pubkey` proof unsigned, so shadow admits it as Off does but
-        // records a NIP-98 would-deny; only the guard verifies, as in enforce.
-        // Mutation: dropping the unsigned marker records `admit`.
+        // Pins: a signed NIP-98 workflow read reaches assertion verification in
+        // Shadow mode, where the scripted verifier admits the attached assertion
+        // and the ordinary workflow handler proceeds. A second request proves
+        // the assertion and X-Pubkey cannot replace required NIP-98 auth.
         #[tokio::test(flavor = "current_thread")]
         #[ignore = "requires Postgres — runs in postgres-ci nextest lane"]
-        async fn shadow_workflow_never_counts_x_pubkey_as_an_enforce_proof() {
+        async fn shadow_workflow_still_requires_nip98_after_assertion_admit() {
             use tower::ServiceExt;
             let recorder = metrics_util::debugging::DebuggingRecorder::new();
             let snapshotter = recorder.snapshotter();
@@ -2932,11 +2932,12 @@ mod tests {
                 .execute(base.db.pool())
                 .await
                 .expect("seed community");
-            let key = nostr::Keys::generate().public_key();
+            let keys = nostr::Keys::generate();
+            let key = keys.public_key();
             let verifier = Arc::new(ScriptedVerifier::new(Ok(Some(key))));
             let mut state = (*base).clone();
             let config = Arc::make_mut(&mut state.config);
-            config.require_auth_token = false;
+            config.require_auth_token = true;
             config.nip_fi.mode = buzz_auth::NipFiMode::Shadow;
             config.nip_fi.communities = crate::nip_fi_config::NipFiCommunities::for_test(
                 &format!("https://{host}"),
@@ -2944,30 +2945,75 @@ mod tests {
             );
             state.nip_fi_verifier = Some(verifier.clone());
 
-            let req = axum::http::Request::get(format!("/workflows/{}/runs", uuid::Uuid::nil()))
+            let uri = format!("/workflows/{}/runs", uuid::Uuid::nil());
+            let tenant = buzz_core::tenant::TenantContext::resolved(
+                buzz_core::CommunityId::from_uuid(community_id),
+                &host,
+            );
+            let url =
+                crate::api::bridge::nip98_expected_url(&state.config.relay_url, &tenant, &uri);
+            let req = axum::http::Request::get(&uri)
+                .header("host", &host)
+                .header(axum::http::header::AUTHORIZATION, nip98(&keys, &url, "GET"))
+                .header(buzz_auth::CLIENT_ATTACHED_HEADER, "Bearer a.b.c")
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let resp = build_router(Arc::new(state.clone()))
+                .oneshot(req)
+                .await
+                .unwrap();
+            assert_ne!(
+                resp.status(),
+                axum::http::StatusCode::UNAUTHORIZED,
+                "signed NIP-98 request with admitted assertion reaches the handler"
+            );
+            let stage_counts = || {
+                let mut stages: Vec<(String, u64)> = snapshotter
+                    .snapshot()
+                    .into_vec()
+                    .into_iter()
+                    .filter(|(k, ..)| k.key().name() == "buzz_nip_fi_shadow_total")
+                    .filter_map(|(k, .., value)| {
+                        let stage = k.key().labels().find(|l| l.key() == "stage")?;
+                        Some((stage.value().to_owned(), counter(&value)))
+                    })
+                    .collect();
+                stages.sort();
+                stages
+            };
+            assert_eq!(stage_counts(), vec![("admit".to_owned(), 1)]);
+            assert_eq!(
+                verifier.calls(),
+                2,
+                "guard and handler verify the assertion"
+            );
+
+            let xpubkey_req = axum::http::Request::get(&uri)
                 .header("host", &host)
                 .header("x-pubkey", key.to_hex())
                 .header(buzz_auth::CLIENT_ATTACHED_HEADER, "Bearer a.b.c")
                 .body(axum::body::Body::empty())
                 .unwrap();
-            let resp = build_router(Arc::new(state)).oneshot(req).await.unwrap();
-            assert_ne!(
-                resp.status(),
+            let xpubkey_resp = build_router(Arc::new(state))
+                .oneshot(xpubkey_req)
+                .await
+                .unwrap();
+            assert_eq!(
+                xpubkey_resp.status(),
                 axum::http::StatusCode::UNAUTHORIZED,
-                "admitted"
+                "X-Pubkey must not bypass required NIP-98 authentication"
             );
 
-            let stages: Vec<String> = snapshotter
-                .snapshot()
-                .into_vec()
-                .into_iter()
-                .filter(|(k, ..)| k.key().name() == "buzz_nip_fi_shadow_total")
-                .filter_map(|(k, ..)| {
-                    let stage = k.key().labels().find(|l| l.key() == "stage")?;
-                    Some(stage.value().to_owned())
-                })
-                .collect();
-            assert_eq!((stages, verifier.calls()), (vec!["nip98".to_owned()], 1));
+            // Snapshotter::snapshot consumes the previous interval; this request must not admit.
+            assert_eq!(
+                stage_counts(),
+                vec![("admit".to_owned(), 0), ("nip98".to_owned(), 1)]
+            );
+            assert_eq!(
+                verifier.calls(),
+                3,
+                "X-Pubkey-only request still evaluates attached assertion before NIP-98 denial"
+            );
         }
 
         fn nip98(keys: &nostr::Keys, url: &str, method: &str) -> String {

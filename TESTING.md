@@ -2,6 +2,20 @@
 
 ## Automated Tests
 
+### GitHub Actions CI profiles
+
+Pull requests select server and browser suites from changed paths; pushes run the
+web/admin-web and Linux Rust, relay, database, and agent-runtime checks. Workflow
+changes select both the web and server contract suites. The dedicated Manual
+Workflow Integration job continues to use its isolated PostgreSQL 17 database.
+
+Desktop/Tauri, Windows and macOS builds, mobile builds, and desktop Playwright
+smoke/integration suites are optional native checks. They do not run on normal
+pull requests or pushes. To run them, dispatch the `CI` workflow and enable
+`run_native_apps`; the default dispatch profile leaves them off while retaining
+the web and server checks. This changes CI selection only; release and deployment
+workflows are unchanged.
+
 ```bash
 just test-unit          # unit tests — no infrastructure needed
 just test               # unit + integration (starts Docker if needed)
@@ -427,7 +441,7 @@ CLI-side, only two matter for testing:
 | ACP agent ignores all events | `BUZZ_ACP_RESPOND_TO=owner-only` (default) with no owner configured | Set `BUZZ_ACP_RESPOND_TO=anyone` for testing |
 | ACP logs `discovered 0 channel(s)` / `no channel subscriptions resolved` | Agent identity isn't a member of any channel | `buzz channels add-member --channel "$CHANNEL" --pubkey "$AGENT_PUBKEY" --role member` from another identity |
 | `GOOSE_MODE` warning, agent hangs | Not set | `export GOOSE_MODE=auto` |
-| Tests pass locally but CI fails | Forgot to run `just ci` | `just ci` runs the gate (fmt, clippy, unit tests, desktop/web builds) |
+| Tests pass locally but CI fails | Forgot to run `just ci` | `just ci` runs the broad local gate, including desktop, web, mobile, and Rust checks |
 
 ### Manual scheduled-agent workflow admission
 
@@ -438,10 +452,10 @@ provider. After activating Hermit:
 ```sh
 cargo test -p buzz-core -p buzz-sdk -p buzz-workflow
 cargo test -p buzz-db workflow_manual -- --ignored --nocapture
-cargo test -p buzz-db workflow_execution::tests -- --ignored --test-threads=1
+cargo test -p buzz-db workflow_execution::workflow_execution_postgres_tests -- --ignored --test-threads=1
 # Requires a built CLI and a membership-enforced isolated relay; RELAY_URL
 # must be a loopback ws:// URL and BUZZ_TEST_CLI its absolute executable path.
-cargo test -p buzz-test-client --test e2e_workflow_manual_runs -- --ignored --test-threads=1
+cargo test -p buzz-test-client --test postgres_e2e_workflow_manual_runs -- --ignored --test-threads=1
 ```
 
 The DB suite covers concurrent distinct signed requests, same-agent and community

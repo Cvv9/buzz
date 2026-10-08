@@ -3644,8 +3644,7 @@ mod tests {
     //      `assert_eq!(query_count, 0)` panics.
     //   C) Change gate to `off_mode` → `acquire_effect()` always succeeds →
     //      same as (B).
-    #[tokio::test]
-    async fn p1a_huddle_liveness_req_barrier_expiry_blocks_query_and_emission() {
+    async fn p1a_huddle_liveness_req_barrier_expiry_blocks_query_and_emission_body() {
         use nostr::{Filter, Keys};
         use std::collections::HashMap;
         use std::sync::Arc;
@@ -4040,6 +4039,12 @@ mod tests {
     }
 
     mod postgres_tests {
+        #[tokio::test]
+        #[ignore = "requires Postgres for handle_req workflow credential preflight"]
+        async fn p1a_huddle_liveness_req_barrier_expiry_blocks_query_and_emission() {
+            super::p1a_huddle_liveness_req_barrier_expiry_blocks_query_and_emission_body().await;
+        }
+
         #[tokio::test]
         #[ignore = "requires Postgres"]
         async fn w3_b2_req_barrier_expiry_mid_flight_blocks_subscription_registration() {

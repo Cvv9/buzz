@@ -11,6 +11,10 @@ on:
       desktop_rust:
         required: true
         type: boolean
+      run_native_apps:
+        required: false
+        type: boolean
+        default: true
     outputs:
       desktop_macos_result:
         value: ${{ jobs.results.outputs.desktop_macos_result }}
@@ -25,7 +29,7 @@ jobs:
     name: Desktop Build (macOS)
     runs-on: macos-latest
     timeout-minutes: 45
-    if: github.event_name == 'push' || inputs.desktop || inputs.desktop_rust || inputs.rust
+    if: inputs.run_native_apps && (github.event_name == 'push' || inputs.desktop || inputs.desktop_rust || inputs.rust)
     permissions:
       contents: read
     steps:

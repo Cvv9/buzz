@@ -3,6 +3,30 @@ use crate::thread_window::{AuxQuery, ScanBudget};
 use buzz_core::thread_window::Request;
 use nostr::{EventBuilder, Kind, Tag, Timestamp};
 
+async fn thread_window_migration_versions() -> (i64, i64, i64) {
+    let migrator = sqlx::migrate::Migrator::new(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations"),
+    )
+    .await
+    .expect("load embedded migration files");
+    let thread_window = migrator
+        .iter()
+        .find(|migration| migration.description == "thread window index")
+        .expect("thread window index migration exists");
+    let before_thread_window = migrator
+        .iter()
+        .filter(|migration| migration.version < thread_window.version)
+        .map(|migration| migration.version)
+        .max()
+        .expect("thread window index has a prior migration");
+    let latest = migrator
+        .iter()
+        .map(|migration| migration.version)
+        .max()
+        .expect("migrations are non-empty");
+    (before_thread_window, thread_window.version, latest)
+}
+
 fn request(channel: Uuid, root: &nostr::Event, upper: u64) -> Request {
     Request::parse(&serde_json::json!({"thread_window":true,"#h":[channel],
         "#e":[root.id.to_hex()],"kinds":[9],"limit":50,
@@ -156,8 +180,10 @@ async fn thread_window_upper_fence_terminal_snapshot_and_fallback() {
 #[tokio::test]
 #[ignore = "requires Postgres"]
 async fn migration_schema_thread_window_prebuild_validation_and_old_ledger() {
+    let (before_thread_window, thread_window, _) = thread_window_migration_versions().await;
     let admin = PgPool::connect(&admin_url().await).await.unwrap();
-    let (pool, name) = create_scratch_db_through(&admin, "tw_prebuild", Some(48)).await;
+    let (pool, name) =
+        create_scratch_db_through(&admin, "tw_prebuild", Some(before_thread_window)).await;
     for setup in [
         "CREATE INDEX idx_thread_metadata_window ON thread_metadata (community_id,root_event_id,event_created_at ASC,event_id ASC)",
         // Simulate an invalid concurrent-build remnant only in this disposable superuser DB.
@@ -170,7 +196,18 @@ async fn migration_schema_thread_window_prebuild_validation_and_old_ledger() {
             "must reject catalog shape, not merely time out: {error}");
         let version: i64 = sqlx::query_scalar("SELECT max(version) FROM _sqlx_migrations")
             .fetch_one(&pool).await.unwrap();
-        assert_eq!(version, 48);
+        assert_eq!(version, before_thread_window);
+        let failed_migration_record: Option<bool> = sqlx::query_scalar(
+            "SELECT success FROM _sqlx_migrations WHERE version = $1",
+        )
+        .bind(thread_window)
+        .fetch_optional(&pool)
+        .await
+        .unwrap();
+        assert!(
+            failed_migration_record.is_none(),
+            "the rejected thread-window migration must not be recorded"
+        );
         sqlx::query("DROP INDEX CONCURRENTLY idx_thread_metadata_window").execute(&pool).await.unwrap();
     }
     sqlx::query("CREATE INDEX CONCURRENTLY idx_thread_metadata_window ON thread_metadata (community_id,root_event_id,event_created_at DESC,event_id ASC)")
@@ -187,8 +224,9 @@ async fn migration_schema_thread_window_prebuild_validation_and_old_ledger() {
             .await
             .unwrap()
     );
-    // Model the previous binary's exact embedded ledger, not run_to(48),
-    // which would still know version 49 and cannot test VersionMissing.
+    // Model the previous binary's exact embedded ledger immediately before
+    // the thread-window migration. It must reject the current ledger's new
+    // version rather than silently treating it as already applied.
     let current = sqlx::migrate::Migrator::new(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations"),
     )
@@ -197,13 +235,13 @@ async fn migration_schema_thread_window_prebuild_validation_and_old_ledger() {
     let old = sqlx::migrate::Migrator::with_migrations(
         current
             .iter()
-            .filter(|m| m.version <= 48)
+            .filter(|m| m.version <= before_thread_window)
             .cloned()
             .collect(),
     );
     assert!(matches!(
         old.run(&pool).await,
-        Err(sqlx::migrate::MigrateError::VersionMissing(49))
+        Err(sqlx::migrate::MigrateError::VersionMissing(version)) if version == thread_window
     ));
     drop_scratch_db(&admin, pool, &name).await;
 }
@@ -211,8 +249,10 @@ async fn migration_schema_thread_window_prebuild_validation_and_old_ledger() {
 #[tokio::test]
 #[ignore = "requires Postgres"]
 async fn migration_schema_thread_window_prebuild_does_not_queue_behind_writer() {
+    let (before_thread_window, _, latest) = thread_window_migration_versions().await;
     let admin = PgPool::connect(&admin_url().await).await.unwrap();
-    let (pool, name) = create_scratch_db_through(&admin, "tw_prebuild_writer", Some(48)).await;
+    let (pool, name) =
+        create_scratch_db_through(&admin, "tw_prebuild_writer", Some(before_thread_window)).await;
     let community = Uuid::new_v4();
     let channel = Uuid::new_v4();
     seed_community_channel(&pool, community, channel, &nostr::Keys::generate()).await;
@@ -311,7 +351,7 @@ async fn migration_schema_thread_window_prebuild_does_not_queue_behind_writer() 
         production_result.is_ok(),
         "production migrator must preserve ingestion progress: {production_result:?}"
     );
-    assert_eq!(version, 55);
+    assert_eq!(version, latest);
     assert_eq!(final_oid, oid, "prebuild must not be replaced");
     assert_eq!(count, 4, "all writer witnesses must persist");
 }

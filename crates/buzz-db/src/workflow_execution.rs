@@ -1175,4 +1175,4 @@ impl Db {
 
 #[cfg(test)]
 #[path = "workflow_execution_tests.rs"]
-mod tests;
+mod workflow_execution_postgres_tests;

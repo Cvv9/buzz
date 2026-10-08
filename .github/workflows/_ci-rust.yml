@@ -8,6 +8,10 @@ on:
       desktop_rust:
         required: true
         type: boolean
+      run_native_apps:
+        required: false
+        type: boolean
+        default: true
       lane:
         required: true
         type: string
@@ -29,7 +33,7 @@ jobs:
     name: Rust Lint
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    if: inputs.lane == 'required' && (github.event_name == 'push' || inputs.rust || inputs.desktop_rust)
+    if: inputs.lane == 'required' && (github.event_name == 'push' || inputs.rust || (inputs.run_native_apps && inputs.desktop_rust))
     permissions:
       contents: read
     steps:
@@ -41,6 +45,7 @@ jobs:
       - name: Format check
         run: just fmt-check
       - name: Desktop Tauri format check
+        if: inputs.run_native_apps
         run: just desktop-tauri-fmt-check
       - name: Clippy
         run: just clippy
@@ -111,7 +116,7 @@ jobs:
     # Windows runners are slow and this compiles the workspace + Tauri crate
     # cold across four steps; budget generously.
     timeout-minutes: 45
-    if: inputs.lane == 'required' && (github.event_name == 'push' || inputs.rust || inputs.desktop_rust)
+    if: inputs.lane == 'required' && inputs.run_native_apps && (github.event_name == 'push' || inputs.rust || inputs.desktop_rust)
     permissions:
       contents: read
     env:

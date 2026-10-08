@@ -435,4 +435,4 @@ impl Db {
 
 #[cfg(test)]
 #[path = "workflow_manual_tests.rs"]
-mod tests;
+mod workflow_manual_postgres_tests;

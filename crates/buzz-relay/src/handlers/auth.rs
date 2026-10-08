@@ -3247,7 +3247,9 @@ mod tests {
             sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
                 "CREATE SCHEMA {schema}; \
                  CREATE TABLE {schema}.community_bans (LIKE public.community_bans INCLUDING ALL); \
-                 CREATE TABLE {schema}.users (LIKE public.users INCLUDING ALL);"
+                 CREATE TABLE {schema}.users (LIKE public.users INCLUDING ALL); \
+                 CREATE TABLE {schema}.workflow_run_credentials \
+                   (LIKE public.workflow_run_credentials INCLUDING ALL);"
             )))
             .execute(&admin)
             .await

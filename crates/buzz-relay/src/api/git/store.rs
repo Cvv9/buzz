@@ -305,8 +305,12 @@ impl GitStore {
     /// error, including that already-classified losing outcome. Conditional
     /// writes instead need one observed attempt: a 412 means the precondition
     /// lost, while a transport failure remains an error for the caller to
-    /// surface. This direct request uses the same bucket-owned pooled reqwest
-    /// client, signer, and credentials as rust-s3's high-level helper.
+    /// surface. Conditional writes use an isolated reqwest pool. A previously
+    /// used S3 connection may have been closed by the server after an earlier
+    /// write; reusing that stale socket can fail before a response is received.
+    /// Cloning the bucket with a fresh client preserves its endpoint,
+    /// addressing, credentials, signing, and request options without retrying
+    /// a conditional operation.
     ///
     /// `ReqwestRequest::response` consumes non-2xx bodies before returning a
     /// `HttpFailWithBody`; this method consumes successful bodies too, so both
@@ -318,8 +322,27 @@ impl GitStore {
         content_type: &str,
         headers: axum::http::HeaderMap,
     ) -> Result<ConditionalPutResult, S3Error> {
+        // This rust-s3 API rebuilds the client with cloned options. GitStore
+        // owns the default strict certificate and hostname validation policy.
+        let bucket = self.bucket.set_dangerous_config(false, false)?;
+        Self::put_object_conditionally_once_with_bucket(&bucket, key, bytes, content_type, headers)
+            .await
+    }
+
+    /// Execute one conditional PUT through the supplied bucket client.
+    ///
+    /// Keeping request construction and response draining here also lets the
+    /// pool-reuse test exercise rust-s3's body-drain behavior with an explicitly
+    /// shared test client, while production conditional writes use a fresh one.
+    async fn put_object_conditionally_once_with_bucket(
+        bucket: &Bucket,
+        key: &str,
+        bytes: &[u8],
+        content_type: &str,
+        headers: axum::http::HeaderMap,
+    ) -> Result<ConditionalPutResult, S3Error> {
         let request = ReqwestRequest::new(
-            self.bucket.as_ref(),
+            bucket,
             key,
             Command::PutObject {
                 content: bytes,
@@ -1205,6 +1228,237 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn conditional_put_does_not_reuse_a_failed_connection() {
+        use std::io;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::{TcpListener, TcpStream};
+        use tokio::sync::oneshot;
+        use tokio::time::{timeout, Duration};
+
+        async fn read_request(reader: &mut BufReader<TcpStream>) -> io::Result<String> {
+            const MAX_HEADER_BYTES: usize = 16 * 1024;
+            let mut headers = Vec::new();
+            loop {
+                let mut line = Vec::new();
+                if reader.read_until(b'\n', &mut line).await? == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "request ended before headers",
+                    ));
+                }
+                headers.extend_from_slice(&line);
+                if headers.len() > MAX_HEADER_BYTES {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "request headers exceeded test bound",
+                    ));
+                }
+                if headers.ends_with(b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            let header_text = std::str::from_utf8(&headers).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidData, "non-UTF8 request headers")
+            })?;
+            let content_length = header_text
+                .lines()
+                .find_map(|line| {
+                    line.strip_prefix("content-length:")
+                        .or_else(|| line.strip_prefix("Content-Length:"))
+                })
+                .map(str::trim)
+                .map(str::parse::<usize>)
+                .transpose()
+                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid content length"))?
+                .unwrap_or(0);
+            let mut body = vec![0; content_length];
+            reader.read_exact(&mut body).await?;
+            Ok(header_text.to_owned())
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test S3 server");
+        let address = listener.local_addr().expect("read test S3 address");
+        let put_attempts = Arc::new(AtomicUsize::new(0));
+        let server_attempts = Arc::clone(&put_attempts);
+        let (first_put_done_tx, first_put_done_rx) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (socket, _) = timeout(Duration::from_secs(3), listener.accept())
+                .await
+                .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "no first PUT connected"))??;
+            let mut reader = BufReader::new(socket);
+
+            let first = timeout(Duration::from_secs(3), read_request(&mut reader))
+                .await
+                .map_err(|_| {
+                    io::Error::new(io::ErrorKind::TimedOut, "timed out reading first PUT")
+                })??;
+            server_attempts.fetch_add(1, Ordering::SeqCst);
+            if !first.starts_with("PUT /test-bucket/probe/conditional-first HTTP/1.1\r\n")
+                || !first.contains("if-none-match: *\r\n")
+                || !first.contains("authorization: AWS4-HMAC-SHA256 Credential=test-access-key/")
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "first conditional PUT lost its path, precondition, or signature",
+                ));
+            }
+
+            let failure_body = "x".repeat(64 * 1024);
+            let response = format!(
+                "HTTP/1.1 412 Precondition Failed\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n{}",
+                failure_body.len(),
+                failure_body
+            );
+            reader.get_mut().write_all(response.as_bytes()).await?;
+            reader.get_mut().flush().await?;
+
+            // Wait until the caller has consumed the 412 body. Keep the
+            // connection open so we can deterministically observe whether the
+            // next conditional PUT reuses it or opens an isolated connection.
+            first_put_done_rx.await.map_err(|_| {
+                io::Error::new(io::ErrorKind::BrokenPipe, "client dropped first-PUT signal")
+            })?;
+
+            enum SecondRequest {
+                Reused(io::Result<String>),
+                Fresh(io::Result<(TcpStream, std::net::SocketAddr)>),
+            }
+            let route = timeout(Duration::from_secs(3), async {
+                tokio::select! {
+                    request = read_request(&mut reader) => SecondRequest::Reused(request),
+                    accepted = listener.accept() => SecondRequest::Fresh(accepted),
+                }
+            })
+            .await
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "second PUT used neither connection",
+                )
+            })?;
+
+            let mut second_reader = match route {
+                SecondRequest::Reused(Ok(request)) => {
+                    server_attempts.fetch_add(1, Ordering::SeqCst);
+                    if !request
+                        .starts_with("PUT /test-bucket/probe/conditional-second HTTP/1.1\r\n")
+                        || !request.contains("if-none-match: *\r\n")
+                        || !request
+                            .contains("authorization: AWS4-HMAC-SHA256 Credential=test-access-key/")
+                    {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "reused connection PUT lost its path, precondition, or signature",
+                        ));
+                    }
+
+                    // A server may close a previously reused idle connection
+                    // without returning a response. Count that wire attempt,
+                    // then permit a fresh-connection retry to expose any
+                    // accidental generic retry behavior in the client.
+                    drop(reader);
+                    let fresh = timeout(Duration::from_secs(1), listener.accept()).await;
+                    let Ok(Ok((socket, _))) = fresh else {
+                        return Ok(());
+                    };
+                    BufReader::new(socket)
+                }
+                SecondRequest::Reused(Err(error))
+                    if error.kind() == io::ErrorKind::UnexpectedEof =>
+                {
+                    // A short-lived conditional-write client may close its
+                    // connection after draining the 412 response. Accept the
+                    // next conditional PUT on its fresh connection.
+                    let (socket, _) = timeout(Duration::from_secs(3), listener.accept())
+                        .await
+                        .map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "fresh client did not connect after old socket EOF",
+                        )
+                    })??;
+                    BufReader::new(socket)
+                }
+                SecondRequest::Reused(Err(error)) => return Err(error),
+                SecondRequest::Fresh(accepted) => {
+                    let (socket, _) = accepted?;
+                    BufReader::new(socket)
+                }
+            };
+
+            let second = timeout(Duration::from_secs(3), read_request(&mut second_reader))
+                .await
+                .map_err(|_| {
+                    io::Error::new(io::ErrorKind::TimedOut, "timed out reading second PUT")
+                })??;
+            server_attempts.fetch_add(1, Ordering::SeqCst);
+            if !second.starts_with("PUT /test-bucket/probe/conditional-second HTTP/1.1\r\n")
+                || !second.contains("if-none-match: *\r\n")
+                || !second.contains("authorization: AWS4-HMAC-SHA256 Credential=test-access-key/")
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "second conditional PUT lost its path, precondition, or signature",
+                ));
+            }
+
+            second_reader
+                .get_mut()
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await?;
+            second_reader.get_mut().flush().await
+        });
+
+        let store = GitStore::new(
+            &format!("http://{address}"),
+            "test-access-key",
+            "test-secret-key",
+            "test-bucket",
+            "us-east-1",
+            buzz_media::config::S3AddressingStyle::Path,
+        )
+        .expect("construct test store");
+
+        let first_status = timeout(
+            Duration::from_secs(3),
+            store.put_immutable_raw("probe/conditional-first", b"first payload"),
+        )
+        .await
+        .expect("first conditional PUT completed")
+        .expect("first conditional PUT classified");
+        assert_eq!(first_status, 412);
+
+        first_put_done_tx
+            .send(())
+            .expect("server waits for the first PUT to finish");
+
+        let second_result = timeout(
+            Duration::from_secs(3),
+            store.put_immutable_raw("probe/conditional-second", b"second payload"),
+        )
+        .await;
+        let server_result = timeout(Duration::from_secs(4), server)
+            .await
+            .expect("test S3 server finished")
+            .expect("test S3 server task joined");
+
+        let second_status = second_result
+            .expect("second conditional PUT did not time out")
+            .expect(
+                "second conditional PUT must use a fresh connection after a stale-socket failure",
+            );
+        assert_eq!(second_status, 200);
+        server_result.expect("test S3 server observed both signed conditional PUTs");
+        assert_eq!(put_attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
     async fn conditional_412_is_single_attempt_and_drained_for_pool_reuse() {
         use std::io;
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1326,14 +1580,22 @@ mod tests {
         )
         .expect("construct test store");
 
-        let status = timeout(
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(axum::http::header::IF_NONE_MATCH, "*".parse().unwrap());
+        let result = timeout(
             Duration::from_secs(3),
-            store.put_immutable_raw("probe/conditional-412", b"payload"),
+            GitStore::put_object_conditionally_once_with_bucket(
+                store.bucket.as_ref(),
+                "probe/conditional-412",
+                b"payload",
+                "application/octet-stream",
+                headers,
+            ),
         )
         .await
         .expect("conditional PUT completed")
         .expect("conditional PUT classified");
-        assert_eq!(status, 412);
+        assert!(matches!(result, ConditionalPutResult::PreconditionFailed));
 
         let body = timeout(Duration::from_secs(3), store.get("probe/after-412"))
             .await
