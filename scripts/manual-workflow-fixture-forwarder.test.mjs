@@ -30,7 +30,7 @@ async function echo(port, content) {
 }
 
 test('target derives only from exact owned internal network and running labeled container', () => {
-  assert.deepEqual(fixtureEndpoint(name, id, 'postgres', ...documents()), { listenPort: 55441, targetPort: 5432, targetHost: '172.22.0.2' });
+  assert.deepEqual(fixtureEndpoint(name, id, 'postgres', ...documents()), { listenPort: 15441, targetPort: 5432, targetHost: '172.22.0.2' });
   for (const mutate of [
     (n) => { n.Internal = false; },
     (n) => { n.Name = 'different'; },

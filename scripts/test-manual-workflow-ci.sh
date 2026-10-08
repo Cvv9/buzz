@@ -16,7 +16,7 @@ node --input-type=module <<'JS'
 import net from 'node:net';
 const servers=[];
 try {
-  for (const port of [55341,55441]) {
+  for (const port of [15341,15441]) {
     const server=net.createServer(); servers.push(server);
     await new Promise((resolve,reject)=>server.once('error',reject).listen(port,'127.0.0.1',resolve));
   }
@@ -104,7 +104,7 @@ redis=$(docker create --name "$name-redis" --label "buzz.manual-test=$name" --ne
 containers+=("$redis")
 docker start "$postgres" "$redis" >/dev/null
 start_forwarder "$postgres" postgres
-export DATABASE_URL='postgres://buzz:buzz_test_only@127.0.0.1:55441/buzz_manual_tests_v1'
+export DATABASE_URL='postgres://buzz:buzz_test_only@127.0.0.1:15441/buzz_manual_tests_v1'
 ready=false
 for _ in {1..60}; do
   # The temporary init server accepts local sockets before the forwarded TCP
@@ -121,7 +121,7 @@ relay=$(docker create --name "$name-relay" --label "buzz.manual-test=$name" --ne
   --read-only --tmpfs /tmp:rw,nosuid,nodev,size=128m \
   --tmpfs /var/lib/buzz:rw,nosuid,nodev,uid=1000,gid=1000,size=128m \
   -e DATABASE_URL=postgres://buzz:buzz_test_only@postgres:5432/buzz_manual_tests_v1 -e REDIS_URL=redis://redis:6379 \
-  -e BUZZ_AUTO_MIGRATE=true -e BUZZ_BIND_ADDR=0.0.0.0:55341 -e RELAY_URL=ws://host.docker.internal:55341 \
+  -e BUZZ_AUTO_MIGRATE=true -e BUZZ_BIND_ADDR=0.0.0.0:15341 -e RELAY_URL=ws://host.docker.internal:15341 \
   -e BUZZ_HEALTH_PORT=8080 -e BUZZ_REQUIRE_AUTH_TOKEN=true -e BUZZ_REQUIRE_RELAY_MEMBERSHIP=true \
   -e BUZZ_ALLOW_INSECURE_DEV_PUBKEY=false -e BUZZ_GIT_CONFORMANCE_PROBE=false \
   -e RELAY_OWNER_PUBKEY=79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798 \
@@ -138,6 +138,6 @@ for _ in {1..90}; do
 done
 $ready || { echo 'Fixture relay did not become ready' >&2; exit 1; }
 psql "$DATABASE_URL" -XAt -v ON_ERROR_STOP=1 -c 'SELECT version,success FROM _sqlx_migrations ORDER BY version' > "$artifacts/migrations.txt"
-curl -fsS -H 'Host: host.docker.internal:55341' http://127.0.0.1:55341/info > "$artifacts/relay-info.json"
+curl -fsS -H 'Host: host.docker.internal:15341' http://127.0.0.1:15341/info > "$artifacts/relay-info.json"
 BUZZ_MANUAL_TEST_NETWORK="$name" BUZZ_MANUAL_TEST_ARTIFACT_ROOT="$artifacts" BUZZ_MANUAL_TEST_CLEANUP=1 \
   node scripts/test-manual-workflow-harness.mjs "$agent_image" --event-origin 2>&1 | tee "$artifacts/harness.log"

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Actual isolated relay → Linux harness → patched ACP adapter acceptance test.
  * Usage: DATABASE_URL=postgres://.../buzz_manual_tests_v3 node scripts/test-manual-workflow-harness.mjs IMAGE
- * Requires the isolated relay on 55341 and existing web dependencies. Never uses provider credentials.
+ * Requires the isolated relay on 15341 and existing web dependencies. Never uses provider credentials.
  * Retains local evidence by default; scoped CI options collect artifacts and remove owned runtime resources.
  */
 import assert from 'node:assert/strict';
@@ -20,8 +20,8 @@ const {finalizeEvent,getPublicKey,verifyEvent}=require('nostr-tools');
 const image=process.argv[2]; assert(image,'IMAGE argument required');
 const database=process.env.DATABASE_URL; assert(database,'explicit isolated DATABASE_URL required');
 const db=new URL(database);
-assert(['127.0.0.1','localhost'].includes(db.hostname) && db.port==='55441' && /^\/buzz_manual_tests_v\d+$/.test(db.pathname),'only isolated local manual-workflow database permitted');
-const port=55341, host='host.docker.internal', authority=`${host}:${port}`;
+assert(['127.0.0.1','localhost'].includes(db.hostname) && db.port==='15441' && /^\/buzz_manual_tests_v\d+$/.test(db.pathname),'only isolated local manual-workflow database permitted');
+const port=15341, host='host.docker.internal', authority=`${host}:${port}`;
 const remote=`http://${authority}`;
 const bytes=hex=>Uint8Array.from(Buffer.from(hex,'hex'));
 // Public fixture keys only. Unique owner/agent avoid interference with other tests.

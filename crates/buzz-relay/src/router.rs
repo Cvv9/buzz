@@ -3004,9 +3004,10 @@ mod tests {
                 "X-Pubkey must not bypass required NIP-98 authentication"
             );
 
+            // Snapshotter::snapshot consumes the previous interval; this request must not admit.
             assert_eq!(
                 stage_counts(),
-                vec![("admit".to_owned(), 1), ("nip98".to_owned(), 1)]
+                vec![("admit".to_owned(), 0), ("nip98".to_owned(), 1)]
             );
             assert_eq!(
                 verifier.calls(),
