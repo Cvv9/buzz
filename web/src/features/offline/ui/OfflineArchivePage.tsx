@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as React from "react";
+import { BrowserSettingsBreadcrumb } from "@/features/settings/ui/BrowserSettingsBreadcrumb";
 import { Link } from "@tanstack/react-router";
 import { useWorkspaceIdentity } from "@/features/workspace/useWorkspaceIdentity";
 import {
@@ -188,6 +189,7 @@ export function OfflineArchivePage() {
 
   return (
     <main className="mx-auto w-full max-w-3xl space-y-6 p-5 sm:p-8">
+      <BrowserSettingsBreadcrumb current="Local archive" />
       <header>
         <p className="text-sm text-muted-foreground">
           Encrypted on this browser

@@ -1,4 +1,10 @@
+import { Buffer } from "node:buffer";
 import { expect, type Page, test } from "@playwright/test";
+
+const PNG_FIXTURE = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAADAgL+nmzkAAAAASUVORK5CYII=",
+  "base64",
+);
 
 interface ObjectUrlLog {
   created: string[];
@@ -69,7 +75,11 @@ test("nip98 mode: attachments are fetched with a signed credential and rendered 
       path: new URL(route.request().url()).pathname,
       authorization: route.request().headers().authorization,
     });
-    route.fulfill({ contentType: "application/octet-stream", body: "bytes" });
+    const isImage = route.request().url().endsWith(`/${imageHash}`);
+    route.fulfill({
+      contentType: isImage ? "image/png" : "application/octet-stream",
+      body: isImage ? PNG_FIXTURE : "bytes",
+    });
   });
   await page.route(`**/api/admin/v1/feedback/${id}`, (route) =>
     route.fulfill({
@@ -199,8 +209,13 @@ test("attachment object urls are revoked when the view is left", async ({
   await routeFeedbackDetail(page);
   await page.route(
     `**/api/admin/v1/feedback/${FEEDBACK_ID}/attachments/**`,
-    (route) =>
-      route.fulfill({ contentType: "application/octet-stream", body: "bytes" }),
+    (route) => {
+      const isImage = route.request().url().endsWith(`/${IMAGE_HASH}`);
+      return route.fulfill({
+        contentType: isImage ? "image/png" : "application/octet-stream",
+        body: isImage ? PNG_FIXTURE : "bytes",
+      });
+    },
   );
 
   await page.goto(`/feedback/${FEEDBACK_ID}`);

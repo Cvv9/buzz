@@ -9,6 +9,59 @@ const png = Buffer.from(
   "base64",
 );
 
+test("rejected attachment uploads show the relay reason and retain the draft", async ({
+  page,
+}) => {
+  const secretKey = generateSecretKey();
+  await installWorkspaceRelayMock(page, getPublicKey(secretKey));
+  let body: Record<string, string> = {
+    error: "Community uploads are disabled",
+  };
+  await page.route("**/upload", async (route) => {
+    await route.fulfill({
+      status: 403,
+      contentType: "application/json",
+      body: JSON.stringify(body),
+    });
+  });
+  await page.goto("/");
+  await page.getByLabel("Display name").fill("Vikram");
+  await page.getByLabel("Recovery key").fill(nsecEncode(secretKey));
+  await page
+    .getByLabel("Password", { exact: true })
+    .fill("media-test-password");
+  await page.getByLabel("Confirm password").fill("media-test-password");
+  await page.getByRole("button", { name: "Sign in with recovery key" }).click();
+  const composer = page.getByLabel("Message general");
+  await expect(composer).toBeVisible();
+  await composer.fill("Keep this draft");
+  for (const rejection of [
+    {
+      body: { error: "Community uploads are disabled" },
+      text: "The media service rejected this attachment: Community uploads are disabled.",
+    },
+    {
+      body: { message: "File exceeds quota" },
+      text: "The media service rejected this attachment: File exceeds quota.",
+    },
+    {
+      body: {},
+      text: "The media service rejected this attachment (HTTP 403).",
+    },
+  ]) {
+    body = rejection.body;
+    await page.locator('input[type="file"]').setInputFiles({
+      name: "denied.png",
+      mimeType: "image/png",
+      buffer: png,
+    });
+    await expect(page.getByText(rejection.text, { exact: true })).toBeVisible();
+    await expect(composer).toHaveValue("Keep this draft");
+    await expect(page.getByLabel("Retry denied.png")).toBeVisible();
+    await page.getByLabel("Remove denied.png").click();
+  }
+});
+
 test("workspace composer uploads imeta attachments and renders protected media", async ({
   page,
 }) => {

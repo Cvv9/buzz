@@ -9,6 +9,7 @@ import {
 } from "nostr-tools/pure";
 import {
   exportBrowserIdentity,
+  getBrowserSecretKey,
   importBrowserIdentity,
   type BrowserIdentity,
 } from "@/shared/lib/browser-identity";
@@ -16,11 +17,17 @@ import type { NostrEvent } from "@/shared/lib/nostr-client";
 import { relayHttpBaseUrl } from "@/shared/lib/relay-url";
 import {
   KIND_PAIRING,
+  DESKTOP_CODE_CONFIRMATION,
+  DESKTOP_CODE_MAX_ATTEMPTS,
   PAIRING_SESSION_TIMEOUT_MS,
+  decodeIdentityPayload,
   derivePairingSas,
+  desktopCodeMatches,
   derivePairingSessionId,
   derivePairingTranscriptHash,
+  encodeIdentityPayload,
   encodePairingUri,
+  generateDesktopCode,
   pairingConstantTimeEqual,
   pairingEventHasExactRecipient,
   pairingHex,
@@ -32,6 +39,7 @@ import {
 type PairingStage =
   | "waiting-offer"
   | "source-confirm"
+  | "source-code-entry"
   | "source-sent"
   | "target-waiting-source"
   | "target-confirm"
@@ -47,6 +55,8 @@ export type PairingSnapshot = {
   code: string | null;
   pairingUri: string | null;
   error: string | null;
+  /** Guesses left while a phone types the code shown here; null otherwise. */
+  attemptsRemaining?: number | null;
 };
 
 type PairingRelayInformation = { pairing_relay_url?: unknown };
@@ -248,6 +258,8 @@ export class BrowserPairingSession {
   private sasInput: Uint8Array | null = null;
   private pendingPayload: NostrEvent | null = null;
   private payload: string | null = null;
+  private desktopCode: string | null = null;
+  private codeAttempts = 0;
   private snapshotValue: PairingSnapshot;
 
   private constructor(
@@ -349,14 +361,31 @@ export class BrowserPairingSession {
         "Wait for a verified target offer before confirming pairing.",
       );
     }
+    await this.sendIdentity();
+  }
+
+  /** Release the source proof and the identity payload to the locked peer. */
+  private async sendIdentity() {
     const nsec = await exportBrowserIdentity();
+    const secret = await getBrowserSecretKey();
+    if (!secret) throw new Error("Sign in before pairing another device.");
     try {
       const transcript = await this.transcriptHash();
       this.send({
         type: "sas-confirm",
         transcript_hash: pairingHex(transcript),
       });
-      this.send({ type: "payload", payload_type: "nsec", payload: nsec });
+      // The phone app needs the relay origin next to the key; a browser
+      // target reads the same JSON through decodeIdentityPayload.
+      this.send({
+        type: "payload",
+        payload_type: "custom",
+        payload: encodeIdentityPayload({
+          relayUrl: relayHttpBaseUrl(),
+          pubkey: getPublicKey(secret),
+          nsec,
+        }),
+      });
       this.setSnapshot({ ...this.snapshotValue, stage: "source-sent" });
     } finally {
       // JavaScript strings cannot be reliably zeroized; never retain it on this session.
@@ -446,6 +475,26 @@ export class BrowserPairingSession {
     }
     if (!this.peerPubkey || event.pubkey !== this.peerPubkey) return;
     if (
+      this.role === "source" &&
+      ["source-confirm", "source-code-entry", "source-sent"].includes(
+        this.snapshotValue.stage,
+      )
+    ) {
+      const message = this.decrypt(event);
+      if (message?.type === "abort") {
+        this.processedIds.add(event.id);
+        this.finish("aborted", "The target cancelled pairing.");
+        return;
+      }
+    }
+    if (
+      this.role === "source" &&
+      this.snapshotValue.stage === "source-code-entry"
+    ) {
+      await this.handleCodeSubmit(event);
+      return;
+    }
+    if (
       this.role === "target" &&
       this.snapshotValue.stage === "target-waiting-source"
     ) {
@@ -472,8 +521,6 @@ export class BrowserPairingSession {
           message.success ? "completed" : "aborted",
           message.success ? null : "Target could not import the identity.",
         );
-      } else if (message?.type === "abort") {
-        this.finish("aborted", "The target cancelled pairing.");
       }
     }
   }
@@ -492,7 +539,59 @@ export class BrowserPairingSession {
     this.peerPubkey = event.pubkey;
     await this.computeSas(event.pubkey, this.ownPubkey, event.pubkey);
     this.processedIds.add(event.id);
+    if (message.confirmation === DESKTOP_CODE_CONFIRMATION) {
+      // Phone flow: show a separate random code here, let the phone user type
+      // it, and release the identity only on a match (five guesses).
+      this.desktopCode = generateDesktopCode();
+      this.codeAttempts = 0;
+      this.send({ type: "desktop-code" });
+      this.setSnapshot({
+        ...this.snapshotValue,
+        stage: "source-code-entry",
+        code: this.desktopCode,
+        attemptsRemaining: DESKTOP_CODE_MAX_ATTEMPTS,
+      });
+      return;
+    }
     this.setSnapshot({ ...this.snapshotValue, stage: "source-confirm" });
+  }
+
+  private async handleCodeSubmit(event: NostrEvent) {
+    const message = this.decrypt(event);
+    if (message?.type !== "code-submit" || !this.desktopCode) return;
+    this.processedIds.add(event.id);
+    this.codeAttempts += 1;
+    if (desktopCodeMatches(this.desktopCode, message.code)) {
+      this.desktopCode = null;
+      try {
+        await this.sendIdentity();
+      } catch (error) {
+        this.send({ type: "abort", reason: "protocol_error" });
+        this.finish(
+          "aborted",
+          error instanceof Error ? error.message : "Could not send identity.",
+        );
+      }
+      return;
+    }
+    const remaining = Math.max(
+      DESKTOP_CODE_MAX_ATTEMPTS - this.codeAttempts,
+      0,
+    );
+    this.send({
+      type: "code-rejected",
+      request_id: message.request_id,
+      remaining_attempts: remaining,
+    });
+    if (remaining === 0) {
+      this.desktopCode = null;
+      this.finish(
+        "aborted",
+        "Too many incorrect codes. Create a new pairing code and try again.",
+      );
+      return;
+    }
+    this.setSnapshot({ ...this.snapshotValue, attemptsRemaining: remaining });
   }
 
   private async handleSasConfirm(event: NostrEvent) {
@@ -521,7 +620,16 @@ export class BrowserPairingSession {
       return;
     }
     this.processedIds.add(event.id);
-    this.payload = message.payload;
+    try {
+      this.payload = decodeIdentityPayload(
+        message.payload_type,
+        message.payload,
+      ).nsec;
+    } catch {
+      this.send({ type: "abort", reason: "protocol_error" });
+      this.finish("aborted", "Pairing payload was invalid.");
+      return;
+    }
     this.setSnapshot({ ...this.snapshotValue, stage: "target-ready-import" });
   }
 
@@ -625,6 +733,7 @@ export class BrowserPairingSession {
     this.transport = null;
     this.pendingPayload = null;
     this.payload = null;
+    this.desktopCode = null;
     this.sasInput?.fill(0);
     this.sasInput = null;
     this.sessionSecret.fill(0);
@@ -636,6 +745,7 @@ export class BrowserPairingSession {
       error,
       pairingUri: null,
       code: null,
+      attemptsRemaining: null,
     });
   }
 

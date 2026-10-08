@@ -51,7 +51,7 @@ historical event.
 
 | Field | Canonical read |
 | --- | --- |
-| Hosted name/avatar | Authorized kind `30180` override, then kind `10100`, then kind `0`. Desktop projection: `getHostedAgentPresentation` / `overlayHostedAgentProfiles`. Web projection: `applyHostedAgentConfigs`. Only the namespaced `30177` `d=hosted-agent:<pubkey>` form is a compatibility read; `30179` is never read as hosted configuration. |
+| Hosted name/avatar | Authorized kind `30180` override, then kind `10100`, then kind `0`. Desktop projection: `getHostedAgentPresentation` / `overlayHostedAgentProfiles`. Web projection: `applyHostedAgentConfigs`; DM pickers overlay that resolved directory through `mergeDmRecipientProfiles`, using kind `0` only for missing name/avatar fields. Only the namespaced `30177` `d=hosted-agent:<pubkey>` form is a compatibility read; `30179` is never read as hosted configuration. |
 | Managed name/avatar | Managed record plus its persona definition; kind `0` is republished for compatibility. Cache invalidation must follow successful edits. |
 | Hosted model options | Signed canonical `model_families` from kind `10100`; never a frontend provider/model table. The flat `models` array is a one-row-per-family compatibility projection only. Exact ACP stable/unstable aliases and switch bindings stay private to the runtime controller. |
 | Hosted selected runtime | Self-authored kind `10100.runtime` for effective model, effort, runtime name, controller, revision, and catalog digest; pinned-controller kind `30181` for pending/applying/failed state. Kind `30180.model` is compatibility-only and never overlays effective runtime. |

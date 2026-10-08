@@ -115,14 +115,23 @@ function xhrUpload(
         resolve(request.response);
         return;
       }
-      const detail =
-        typeof request.response === "object" &&
-        request.response &&
-        "message" in request.response &&
-        typeof request.response.message === "string"
-          ? request.response.message
-          : "The media service rejected this attachment.";
-      reject(new Error(detail));
+      // The relay answers denials as {"error": "..."}; older builds used
+      // {"message": "..."}. Surface either so the user sees the real reason.
+      const body =
+        typeof request.response === "object" && request.response
+          ? (request.response as Record<string, unknown>)
+          : {};
+      const reason = [body.message, body.error].find(
+        (value): value is string =>
+          typeof value === "string" && value.trim().length > 0,
+      );
+      reject(
+        new Error(
+          reason
+            ? `The media service rejected this attachment: ${reason}.`
+            : `The media service rejected this attachment (HTTP ${request.status}).`,
+        ),
+      );
     };
     request.send(file);
   });

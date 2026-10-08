@@ -11,6 +11,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import * as React from "react";
 import { truncatePubkey } from "@/shared/lib/pubkey";
+import { mergeDmRecipientProfiles } from "../dm-recipient-profiles";
 import { WorkspaceStartup } from "./WorkspaceStartup";
 import { WorkspaceSidebar } from "./WorkspaceSidebar";
 import { WorkspaceInbox } from "./WorkspaceInbox";
@@ -176,6 +177,12 @@ export function WorkspacePage({
         (routeMode === "new-message" || addingDmMembers),
     ),
   });
+  // Hosted directory names take precedence over kind 0 fallback profiles.
+  const dmRecipientProfiles = React.useMemo(
+    () =>
+      mergeDmRecipientProfiles(recipientProfilesQuery.data, agentsQuery.data),
+    [recipientProfilesQuery.data, agentsQuery.data],
+  );
   React.useEffect(() => {
     // Only reconcile the active channel once the catalog has actually loaded.
     // Reconciling mid-boot would fall back to an arbitrary first channel and
@@ -765,7 +772,7 @@ export function WorkspacePage({
                 member.pubkey.toLowerCase() !== identity.pubkey.toLowerCase(),
             )}
             opening={openDmMutation.isPending}
-            profiles={recipientProfilesQuery.data}
+            profiles={dmRecipientProfiles}
             onBack={() => void navigate({ to: "/" })}
             onOpen={(recipients, content) =>
               openDmMutation.mutate({ recipients, content })
@@ -941,7 +948,7 @@ export function WorkspacePage({
           creatingChannel={createChannelMutation.isPending}
           dmMemberQuery={dmMemberQuery}
           editingMessage={editingMessage}
-          recipientProfiles={recipientProfilesQuery.data}
+          recipientProfiles={dmRecipientProfiles}
           onAddDmMember={(channelId, pubkey) =>
             addDmMemberMutation.mutate({ channelId, pubkey })
           }

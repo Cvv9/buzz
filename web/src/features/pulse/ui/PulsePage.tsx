@@ -1,4 +1,5 @@
 import { Bot, ChevronDown, MessagesSquare } from "lucide-react";
+import { BrowserSettingsBreadcrumb } from "@/features/settings/ui/BrowserSettingsBreadcrumb";
 import {
   useInfiniteQuery,
   useQuery,
@@ -198,6 +199,10 @@ export function PulsePage() {
 
   return (
     <main className="mx-auto w-full max-w-3xl p-4 sm:p-7">
+      <BrowserSettingsBreadcrumb
+        current="Pulse"
+        trail={[{ label: "Workspace", to: "/" }]}
+      />
       <header className="flex flex-wrap items-center gap-3">
         <MessagesSquare className="size-5 text-muted-foreground" />
         <div className="min-w-0 flex-1">

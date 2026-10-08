@@ -1,4 +1,10 @@
+import { Buffer } from "node:buffer";
 import { expect, test } from "@playwright/test";
+
+const PNG_FIXTURE = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADUlEQVR4nGP4z8AAAADAgL+nmzkAAAAASUVORK5CYII=",
+  "base64",
+);
 
 test.beforeEach(async ({ page }) => {
   // Every admin API call returns 200, so the probe resolves to disabled mode
@@ -294,18 +300,35 @@ test("feedback filters keep long community names usable", async ({ page }) => {
   }
 });
 
-test("feedback status is stored locally by feedback id", async ({ page }) => {
+test("disabled feedback status stays server-authoritative and read-only", async ({
+  page,
+}) => {
+  const patches: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "PATCH") patches.push(request.url());
+  });
   await page.route("**/api/admin/v1/feedback", (route) =>
     route.fulfill({
       contentType: "application/json",
       body: JSON.stringify([
         {
-          id: "feedback-one",
+          id: "feedback-reviewed",
           communityId: "one",
           communityHost: "design.buzz.xyz",
           submitterPubkey: "21".repeat(32),
           category: "bug",
           bodySummary: "Composer freezes after sleep",
+          status: "reviewed",
+          receivedAt: new Date().toISOString(),
+        },
+        {
+          id: "feedback-new",
+          communityId: "one",
+          communityHost: "design.buzz.xyz",
+          submitterPubkey: "31".repeat(32),
+          category: "bug",
+          bodySummary: "Upload button is hidden",
+          status: "new",
           receivedAt: new Date().toISOString(),
         },
       ]),
@@ -313,20 +336,34 @@ test("feedback status is stored locally by feedback id", async ({ page }) => {
   );
 
   await page.goto("/feedback");
-  await page.getByRole("checkbox", { name: "Acted on" }).check();
-  await page.reload();
-  await expect(page.getByRole("checkbox", { name: "Acted on" })).toBeChecked();
-  await page.getByLabel("Status").selectOption("acted-on");
+  await expect(page.locator(".status-reviewed")).toBeVisible();
+  await expect(page.locator(".status-new")).toBeVisible();
+  // In disabled mode the server-provided status is a badge, not a write
+  // control; the only selects are the three list filters.
+  await expect(page.getByRole("combobox")).toHaveCount(3);
+  const status = page.getByLabel("Status");
+  await status.selectOption("reviewed");
   await expect(page.getByText("Composer freezes after sleep")).toBeVisible();
-  await page.getByLabel("Status").selectOption("pending");
-  await expect(page.getByText("No matching feedback.")).toBeVisible();
+  await expect(page.getByText("Upload button is hidden")).toHaveCount(0);
+  await status.selectOption("new");
+  await expect(page.getByText("Upload button is hidden")).toBeVisible();
+  await expect(page.getByText("Composer freezes after sleep")).toHaveCount(0);
+  expect(patches).toEqual([]);
 });
 
 test("feedback attachments render from imeta without raw markdown", async ({
   page,
 }) => {
   const id = "feedback-with-attachments";
-  const imageUrl = `https://design.buzz.xyz/media/${"a".repeat(64)}.png`;
+  const imageHash = "a".repeat(64);
+  await page.route(`**/api/admin/v1/feedback/${id}/attachments/**`, (route) => {
+    const isImage = route.request().url().endsWith(`/${imageHash}`);
+    return route.fulfill({
+      contentType: isImage ? "image/png" : "application/octet-stream",
+      body: isImage ? PNG_FIXTURE : "bytes",
+    });
+  });
+  const imageUrl = `https://design.buzz.xyz/media/${imageHash}.png`;
   const fileUrl = `https://design.buzz.xyz/media/${"b".repeat(64)}.txt`;
   await page.route(`**/api/admin/v1/feedback/${id}`, (route) =>
     route.fulfill({

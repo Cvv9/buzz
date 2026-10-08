@@ -13,8 +13,9 @@ type WorkspaceThreadSummaryBarProps = {
 /**
  * Slack-style collapsed thread affordance shown under a root message: an
  * overlapping avatar cluster of up to three distinct repliers, the reply count,
- * and the last reply's relative time. Clicking opens the focused thread panel —
- * replies are never expanded inline in the timeline.
+ * and the last reply's relative time. Clicking opens the focused thread panel.
+ * Shown only for threads longer than the inline limit; shorter threads render
+ * their replies under the root message instead.
  */
 export function WorkspaceThreadSummaryBar({
   messageId,
