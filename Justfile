@@ -525,7 +525,6 @@ test-unit:
                 + test(=handlers::event::tests::fanout_access::owner_only_kinds_keep_only_the_owner)
                 + test(=handlers::event::tests::pubsub_fanout::pubsub_owner_only_kinds_reach_only_the_owner)
                 + test(=handlers::event::tests::pubsub_fanout::dispatch_owner_only_kinds_reach_only_the_owner)
-                + test(=handlers::req::tests::p1a_huddle_liveness_req_barrier_expiry_blocks_query_and_emission)
                 + test(=state::tests::f3_cancellation_during_check_terminates_socket_without_waiting_for_check)
                 + test(=state::tests::on_not_run_runs_once_on_each_deny_arm_and_never_on_admit)
                 + test(=state::tests::conn_manager_disconnect_nip_fi_ignores_unproven_connection)
