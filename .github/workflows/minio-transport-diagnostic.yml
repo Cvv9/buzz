@@ -34,8 +34,7 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           set -euo pipefail
-          mode=ordered
-          trace=true
+          mode=untraced-suite
           mapfile -t mode_markers < <(grep -Eo '<!-- minio-diagnostic: [^>]* -->' <<<"$PR_BODY" || true)
           if [ "${#mode_markers[@]}" -gt 1 ]; then echo "::error::Use at most one minio-diagnostic mode marker."; exit 1; fi
           if [ "${#mode_markers[@]}" -eq 1 ]; then
@@ -43,10 +42,11 @@ jobs:
               '<!-- minio-diagnostic: solo -->') mode=solo ;;
               '<!-- minio-diagnostic: ordered -->') mode=ordered ;;
               '<!-- minio-diagnostic: suite -->') mode=suite ;;
-              '<!-- minio-diagnostic: untraced-suite -->') mode=untraced-suite; trace=false ;;
+              '<!-- minio-diagnostic: untraced-suite -->') mode=untraced-suite ;;
               *) echo "::error::Unsupported minio-diagnostic mode marker."; exit 1 ;;
             esac
           fi
+          if [ "$mode" = untraced-suite ]; then trace=false; else trace=true; fi
           echo "mode=$mode" >> "$GITHUB_OUTPUT"
           echo "trace=$trace" >> "$GITHUB_OUTPUT"
           commit_json="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${PR_HEAD_SHA}")"
