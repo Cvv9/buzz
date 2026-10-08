@@ -10,8 +10,14 @@ export type PairingQrPayload = {
   version: 1;
 };
 
+export const DESKTOP_CODE_CONFIRMATION = "desktop-code-v1";
+export const DESKTOP_CODE_MAX_ATTEMPTS = 5;
+
 export type PairingMessage =
-  | { type: "offer"; session_id: string; version: 1 }
+  | { type: "offer"; session_id: string; version: 1; confirmation?: string }
+  | { type: "desktop-code" }
+  | { type: "code-submit"; code: string; request_id: string }
+  | { type: "code-rejected"; request_id: string; remaining_attempts: number }
   | { type: "sas-confirm"; transcript_hash: string }
   | { type: "payload"; payload_type: "nsec" | "custom"; payload: string }
   | { type: "complete"; success: boolean }
@@ -205,6 +211,30 @@ export function pairingConstantTimeEqual(left: Uint8Array, right: Uint8Array) {
   return mismatch === 0;
 }
 
+/**
+ * Code-entry confirmation: the source shows a separate random six-digit code
+ * that the phone user types in. It is never derived from the QR secret.
+ */
+export function generateDesktopCode() {
+  const sample = new Uint32Array(1);
+  // Rejection sampling below the largest multiple of 1e6 keeps codes uniform.
+  const limit = 4_294_000_000;
+  for (;;) {
+    crypto.getRandomValues(sample);
+    const value = sample[0] ?? 0;
+    if (value < limit) return String(value % 1_000_000).padStart(6, "0");
+  }
+}
+
+export function desktopCodeMatches(expected: string, submitted: string) {
+  const left = new TextEncoder().encode(expected);
+  const right = new TextEncoder().encode(submitted);
+  return (
+    left.byteLength === right.byteLength &&
+    pairingConstantTimeEqual(left, right)
+  );
+}
+
 export type PairingIdentityPayload = {
   nsec: string;
   relayUrl: string | null;
@@ -269,12 +299,58 @@ export function parsePairingMessage(value: unknown): PairingMessage | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const message = value as Record<string, unknown>;
   switch (message.type) {
-    case "offer":
-      return typeof message.session_id === "string" &&
-        isLowercaseHex(message.session_id, 64) &&
-        message.version === 1 &&
+    case "offer": {
+      // A target may advertise a confirmation style inside the encrypted
+      // offer (the phone app sends "desktop-code-v1"); nothing else is allowed.
+      const advertises = "confirmation" in message;
+      if (
+        typeof message.session_id !== "string" ||
+        !isLowercaseHex(message.session_id, 64) ||
+        message.version !== 1 ||
+        Object.keys(message).length !== (advertises ? 4 : 3) ||
+        (advertises && typeof message.confirmation !== "string")
+      ) {
+        return null;
+      }
+      return advertises
+        ? {
+            type: "offer",
+            session_id: message.session_id,
+            version: 1,
+            confirmation: message.confirmation as string,
+          }
+        : { type: "offer", session_id: message.session_id, version: 1 };
+    }
+    case "desktop-code":
+      return Object.keys(message).length === 1
+        ? { type: "desktop-code" }
+        : null;
+    case "code-submit":
+      return typeof message.code === "string" &&
+        message.code.length > 0 &&
+        message.code.length <= 16 &&
+        typeof message.request_id === "string" &&
+        message.request_id.length > 0 &&
+        message.request_id.length <= 64 &&
         Object.keys(message).length === 3
-        ? { type: "offer", session_id: message.session_id, version: 1 }
+        ? {
+            type: "code-submit",
+            code: message.code,
+            request_id: message.request_id,
+          }
+        : null;
+    case "code-rejected":
+      return typeof message.request_id === "string" &&
+        typeof message.remaining_attempts === "number" &&
+        Number.isInteger(message.remaining_attempts) &&
+        message.remaining_attempts >= 0 &&
+        message.remaining_attempts <= DESKTOP_CODE_MAX_ATTEMPTS &&
+        Object.keys(message).length === 3
+        ? {
+            type: "code-rejected",
+            request_id: message.request_id,
+            remaining_attempts: message.remaining_attempts,
+          }
         : null;
     case "sas-confirm":
       return typeof message.transcript_hash === "string" &&
