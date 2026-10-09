@@ -15,6 +15,10 @@ pub(super) fn agent_keyring_name(pubkey: &str) -> String {
 /// and therefore one in-memory cache and one mutex — preventing last-writer-wins
 /// races on concurrent blob writes.
 fn agent_secret_store() -> Option<&'static SecretStore> {
+    #[cfg(test)]
+    if super::NO_KEYCHAIN_FOR_TEST.load(std::sync::atomic::Ordering::SeqCst) {
+        return None;
+    }
     if cfg!(feature = "system-keyring") {
         Some(SecretStore::shared(keyring_service()))
     } else {

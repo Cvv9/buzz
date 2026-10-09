@@ -54,13 +54,10 @@ impl Db {
         {
             return Ok(denied("invalid_recovery_controller"));
         }
-        let mut tx = self.begin_event_write_transaction().await?;
-        self.deletion_store()
-            .guard_transaction(&mut tx, community)
-            .await?;
-        lock_admission(&mut tx, community).await?;
+        let mut tx = self.begin_event_write_transaction(community).await?;
+        lock_admission(tx.conn(), community).await?;
         let now: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
-            .fetch_one(&mut *tx)
+            .fetch_one(tx.conn())
             .await?;
         if control.validate(now.timestamp()).is_err()
             || event.created_at.as_secs() > (now.timestamp() + 5) as u64
@@ -69,9 +66,9 @@ impl Db {
             return Ok(denied("invalid_recovery_evidence"));
         }
         if let Some(value) = sqlx::query_scalar::<_, serde_json::Value>("SELECT response FROM workflow_recovery_receipts WHERE community_id=$1 AND event_id=$2 AND controller_pubkey=$3")
-            .bind(community.as_uuid()).bind(event.id.as_bytes().as_slice()).bind(event.pubkey.to_bytes().as_slice()).fetch_optional(&mut *tx).await? { return Ok(serde_json::from_value(value)?); }
+            .bind(community.as_uuid()).bind(event.id.as_bytes().as_slice()).bind(event.pubkey.to_bytes().as_slice()).fetch_optional(tx.conn()).await? { return Ok(serde_json::from_value(value)?); }
         let evidence = hex::decode(&control.evidence_id).map_err(invalid)?;
-        if sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM workflow_recovery_receipts WHERE community_id=$1 AND evidence_id=$2)").bind(community.as_uuid()).bind(&evidence).fetch_one(&mut *tx).await? { return Ok(denied("recovery_evidence_replayed")); }
+        if sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM workflow_recovery_receipts WHERE community_id=$1 AND evidence_id=$2)").bind(community.as_uuid()).bind(&evidence).fetch_one(tx.conn()).await? { return Ok(denied("recovery_evidence_replayed")); }
         let agent = hex::decode(&control.target_agent).map_err(invalid)?;
         let receipt = match &control.operation {
             RecoveryOperation::VerifiedAttemptStopped {
@@ -83,7 +80,7 @@ impl Db {
                 ordinal,
             } => {
                 let claimed: Option<DateTime<Utc>> = sqlx::query_scalar("SELECT a.claimed_at FROM workflow_run_attempts a JOIN workflow_run_tasks t ON t.community_id=a.community_id AND t.run_id=a.run_id AND t.task_id=a.task_id WHERE a.community_id=$1 AND a.run_id=$2 AND a.task_id=$3 AND a.grant_id=$4 AND a.instance_id=$5 AND a.ordinal=$6 AND t.channel_id=$7 AND t.agent_pubkey=$8 AND a.stopped_at IS NULL FOR UPDATE OF a,t")
-                    .bind(community.as_uuid()).bind(run_id).bind(task_id).bind(grant_id).bind(instance_id).bind(ordinal).bind(channel_id).bind(&agent).fetch_optional(&mut *tx).await?;
+                    .bind(community.as_uuid()).bind(run_id).bind(task_id).bind(grant_id).bind(instance_id).bind(ordinal).bind(channel_id).bind(&agent).fetch_optional(tx.conn()).await?;
                 if claimed.is_none_or(|at| {
                     at.timestamp() < control.container_started_at
                         || at.timestamp() > control.container_finished_at
@@ -130,7 +127,7 @@ impl Db {
                     for task in tasks {
                         let event_id = hex::decode(&task.task_event_id).map_err(invalid)?;
                         let row=sqlx::query("SELECT r.origin,r.dispatch_complete,r.status::text AS status,r.execution_state,e.pubkey,e.kind,e.tags,e.created_at FROM workflow_run_tasks t JOIN workflow_runs r ON r.community_id=t.community_id AND r.id=t.run_id JOIN events e ON e.community_id=t.community_id AND e.id=t.task_event_id WHERE t.community_id=$1 AND t.run_id=$2 AND t.task_id=$3 AND t.channel_id=$4 AND t.agent_pubkey=$5 AND t.task_event_id=$6 AND t.state='stalled' AND NOT EXISTS(SELECT 1 FROM workflow_run_attempts a WHERE a.community_id=t.community_id AND a.run_id=t.run_id AND a.task_id=t.task_id) FOR UPDATE OF t,r")
-                            .bind(community.as_uuid()).bind(task.run_id).bind(task.task_id).bind(task.channel_id).bind(&agent).bind(event_id).fetch_optional(&mut *tx).await?;
+                            .bind(community.as_uuid()).bind(task.run_id).bind(task.task_id).bind(task.channel_id).bind(&agent).bind(event_id).fetch_optional(tx.conn()).await?;
                         let Some(row) = row else {
                             valid = false;
                             break;
@@ -170,16 +167,16 @@ impl Db {
                     } else {
                         let mut runs = std::collections::BTreeSet::new();
                         for task in tasks {
-                            sqlx::query("UPDATE workflow_run_tasks SET state='failed' WHERE community_id=$1 AND run_id=$2 AND task_id=$3").bind(community.as_uuid()).bind(task.run_id).bind(task.task_id).execute(&mut *tx).await?;
+                            sqlx::query("UPDATE workflow_run_tasks SET state='failed' WHERE community_id=$1 AND run_id=$2 AND task_id=$3").bind(community.as_uuid()).bind(task.run_id).bind(task.task_id).execute(tx.conn()).await?;
                             runs.insert(task.run_id);
                         }
                         for run in runs {
                             // Other unresolved legacy targets retain the overlap fence.
-                            let unresolved:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_run_tasks WHERE community_id=$1 AND run_id=$2 AND state NOT IN ('completed','failed')) OR EXISTS(SELECT 1 FROM workflow_run_attempts WHERE community_id=$1 AND run_id=$2 AND stopped_at IS NULL)").bind(community.as_uuid()).bind(run).fetch_one(&mut *tx).await?;
+                            let unresolved:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_run_tasks WHERE community_id=$1 AND run_id=$2 AND state NOT IN ('completed','failed')) OR EXISTS(SELECT 1 FROM workflow_run_attempts WHERE community_id=$1 AND run_id=$2 AND stopped_at IS NULL)").bind(community.as_uuid()).bind(run).fetch_one(tx.conn()).await?;
                             if !unresolved {
-                                sqlx::query("UPDATE workflow_runs SET execution_state='failed',safe_error_code='recovery_stopped' WHERE community_id=$1 AND id=$2").bind(community.as_uuid()).bind(run).execute(&mut *tx).await?;
+                                sqlx::query("UPDATE workflow_runs SET execution_state='failed',safe_error_code='recovery_stopped' WHERE community_id=$1 AND id=$2").bind(community.as_uuid()).bind(run).execute(tx.conn()).await?;
                             }
-                            sqlx::query("UPDATE workflow_runs SET revision=revision+1 WHERE community_id=$1 AND id=$2").bind(community.as_uuid()).bind(run).execute(&mut *tx).await?;
+                            sqlx::query("UPDATE workflow_runs SET revision=revision+1 WHERE community_id=$1 AND id=$2").bind(community.as_uuid()).bind(run).execute(tx.conn()).await?;
                             invalidate(&mut tx, community, run, keys).await?;
                         }
                         accepted()
@@ -188,7 +185,7 @@ impl Db {
             }
         };
         sqlx::query("INSERT INTO workflow_recovery_receipts(community_id,event_id,controller_pubkey,target_agent,evidence_id,container_id,control,response) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
-            .bind(community.as_uuid()).bind(event.id.as_bytes().as_slice()).bind(event.pubkey.to_bytes().as_slice()).bind(agent).bind(evidence).bind(&control.container_id).bind(serde_json::to_value(control)?).bind(serde_json::to_value(&receipt)?).execute(&mut *tx).await?;
+            .bind(community.as_uuid()).bind(event.id.as_bytes().as_slice()).bind(event.pubkey.to_bytes().as_slice()).bind(agent).bind(evidence).bind(&control.container_id).bind(serde_json::to_value(control)?).bind(serde_json::to_value(&receipt)?).execute(tx.conn()).await?;
         tx.commit().await?;
         Ok(receipt)
     }

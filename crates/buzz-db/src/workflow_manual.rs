@@ -1,10 +1,11 @@
 //! Durable, tenant-scoped workflow admission. All decisions use database time.
+use crate::AdmittedTx;
 use crate::{error::Result, Db, DbError};
 use buzz_core::{kind::KIND_WORKFLOW_AGENT_TASK, CommunityId};
 use chrono::{DateTime, Duration, Utc};
 use nostr::{Event, EventBuilder, JsonUtil, Keys, Kind, Tag};
 use serde::{Deserialize, Serialize};
-use sqlx::{Postgres, Row, Transaction};
+use sqlx::{PgConnection, Row};
 use uuid::Uuid;
 
 /// Static task extracted from the owner-signed workflow definition.
@@ -47,33 +48,30 @@ pub struct ManualDecision {
 }
 
 /// Serialize both scheduler claims and manual admission for one community.
-pub(crate) async fn lock_admission(
-    tx: &mut Transaction<'_, Postgres>,
-    community: CommunityId,
-) -> Result<()> {
+pub(crate) async fn lock_admission(tx: &mut PgConnection, community: CommunityId) -> Result<()> {
     sqlx::query(
         "INSERT INTO workflow_admission_mutex(community_id) VALUES($1) ON CONFLICT DO NOTHING",
     )
     .bind(community.as_uuid())
-    .execute(&mut **tx)
+    .execute(&mut *tx)
     .await?;
     sqlx::query(
         "SELECT community_id FROM workflow_admission_mutex WHERE community_id=$1 FOR UPDATE",
     )
     .bind(community.as_uuid())
-    .fetch_one(&mut **tx)
+    .fetch_one(&mut *tx)
     .await?;
     Ok(())
 }
 
 async fn limits(
-    tx: &mut Transaction<'_, Postgres>,
+    tx: &mut AdmittedTx,
     community: CommunityId,
     workflow: Uuid,
     now: DateTime<Utc>,
 ) -> Result<ManualLimits> {
     let times: Vec<(Uuid, DateTime<Utc>)> = sqlx::query_as("SELECT workflow_id,accepted_at FROM workflow_runs WHERE community_id=$1 AND origin='manual' AND accepted_at > $2 - interval '24 hours' AND accepted_at <= $2 ORDER BY accepted_at")
-        .bind(community.as_uuid()).bind(now).fetch_all(&mut **tx).await?;
+        .bind(community.as_uuid()).bind(now).fetch_all(tx.conn()).await?;
     let workflow_times: Vec<_> = times
         .iter()
         .filter(|(id, _)| *id == workflow)
@@ -104,24 +102,24 @@ async fn limits(
 
 /// Permission intersection, fetched inside admission/claim transaction without caches.
 pub async fn check_manual_authority(
-    tx: &mut Transaction<'_, Postgres>,
+    tx: &mut AdmittedTx,
     community: CommunityId,
     requester: &[u8],
     channel: Uuid,
     targets: &[ManualTaskSpec],
 ) -> Result<bool> {
     let owner: Option<String> = sqlx::query_scalar("SELECT pubkey FROM relay_members WHERE community_id=$1 AND pubkey=$2 AND role='owner' FOR SHARE")
-        .bind(community.as_uuid()).bind(hex::encode(requester)).fetch_optional(&mut **tx).await?;
+        .bind(community.as_uuid()).bind(hex::encode(requester)).fetch_optional(tx.conn()).await?;
     if owner.is_none() {
         return Ok(false);
     }
     let owner_member: Option<Vec<u8>> = sqlx::query_scalar("SELECT pubkey FROM channel_members WHERE community_id=$1 AND channel_id=$2 AND pubkey=$3 AND removed_at IS NULL FOR SHARE")
-        .bind(community.as_uuid()).bind(channel).bind(requester).fetch_optional(&mut **tx).await?;
+        .bind(community.as_uuid()).bind(channel).bind(requester).fetch_optional(tx.conn()).await?;
     if owner_member.is_none() {
         return Ok(false);
     }
     let channel_exists: Option<Uuid> = sqlx::query_scalar("SELECT id FROM channels WHERE community_id=$1 AND id=$2 AND archived_at IS NULL AND deleted_at IS NULL FOR SHARE")
-        .bind(community.as_uuid()).bind(channel).fetch_optional(&mut **tx).await?;
+        .bind(community.as_uuid()).bind(channel).fetch_optional(tx.conn()).await?;
     if channel_exists.is_none() {
         return Ok(false);
     }
@@ -132,9 +130,9 @@ pub async fn check_manual_authority(
         let key = hex::decode(&task.agent_pubkey)
             .map_err(|_| DbError::InvalidData("invalid target".into()))?;
         let agent: Option<Vec<u8>> = sqlx::query_scalar("SELECT pubkey FROM users WHERE community_id=$1 AND pubkey=$2 AND agent_owner_pubkey=$3 AND deactivated_at IS NULL FOR SHARE")
-            .bind(community.as_uuid()).bind(&key).bind(requester).fetch_optional(&mut **tx).await?;
+            .bind(community.as_uuid()).bind(&key).bind(requester).fetch_optional(tx.conn()).await?;
         let member: Option<Vec<u8>> = sqlx::query_scalar("SELECT pubkey FROM channel_members WHERE community_id=$1 AND channel_id=$2 AND pubkey=$3 AND removed_at IS NULL FOR SHARE")
-            .bind(community.as_uuid()).bind(channel).bind(&key).fetch_optional(&mut **tx).await?;
+            .bind(community.as_uuid()).bind(channel).bind(&key).fetch_optional(tx.conn()).await?;
         if agent.is_none() || member.is_none() {
             return Ok(false);
         }
@@ -144,7 +142,7 @@ pub async fn check_manual_authority(
 
 /// Shared admission/read evaluator. The caller owns current permission checks.
 pub(crate) async fn evaluate_manual_limits(
-    tx: &mut Transaction<'_, Postgres>,
+    tx: &mut AdmittedTx,
     community: CommunityId,
     workflow_id: Uuid,
     tasks: &[ManualTaskSpec],
@@ -153,16 +151,16 @@ pub(crate) async fn evaluate_manual_limits(
 ) -> Result<(Option<String>, ManualLimits)> {
     let mut allowance = limits(tx, community, workflow_id, now).await?;
     if reason.is_none() {
-        let dm:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflows w JOIN channels c ON c.community_id=w.community_id AND c.id=w.channel_id WHERE w.community_id=$1 AND w.id=$2 AND c.channel_type='dm')").bind(community.as_uuid()).bind(workflow_id).fetch_one(&mut **tx).await?;
+        let dm:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflows w JOIN channels c ON c.community_id=w.community_id AND c.id=w.channel_id WHERE w.community_id=$1 AND w.id=$2 AND c.channel_type='dm')").bind(community.as_uuid()).bind(workflow_id).fetch_one(tx.conn()).await?;
         if dm {
             reason = Some("unsupported_manual_destination");
         }
     }
     if reason.is_none() {
         let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_runs WHERE community_id=$1 AND workflow_id=$2 AND (execution_state IN ('queued','running','stalled') OR (execution_state IS NULL AND status IN ('pending','running','waiting_approval')))) OR EXISTS(SELECT 1 FROM scheduled_workflow_fires WHERE community_id=$1 AND workflow_id=$2 AND outcome='started' AND workflow_run_id IS NULL)")
-                .bind(community.as_uuid()).bind(workflow_id).fetch_one(&mut **tx).await?;
+                .bind(community.as_uuid()).bind(workflow_id).fetch_one(tx.conn()).await?;
         let manual_active: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM workflow_runs WHERE community_id=$1 AND origin='manual' AND execution_state IN ('queued','running','stalled')")
-                .bind(community.as_uuid()).fetch_one(&mut **tx).await?;
+                .bind(community.as_uuid()).fetch_one(tx.conn()).await?;
         if active {
             reason = Some("workflow_active");
         } else if manual_active >= 2 {
@@ -172,12 +170,12 @@ pub(crate) async fn evaluate_manual_limits(
             let target = hex::decode(&task.agent_pubkey)
                 .map_err(|_| DbError::InvalidData("target".into()))?;
             let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_run_tasks t JOIN workflow_runs r ON r.community_id=t.community_id AND r.id=t.run_id WHERE t.community_id=$1 AND t.agent_pubkey=$2 AND r.origin='manual' AND r.execution_state IN ('queued','running','stalled'))")
-                    .bind(community.as_uuid()).bind(&target).fetch_one(&mut **tx).await?;
+                    .bind(community.as_uuid()).bind(&target).fetch_one(tx.conn()).await?;
             if active && reason.is_none() {
                 reason = Some("agent_active_limit");
             }
             let ready: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_execution_capabilities WHERE community_id=$1 AND agent_pubkey=$2 AND protocol_version=1 AND expires_at>$3)")
-                    .bind(community.as_uuid()).bind(&target).bind(now).fetch_one(&mut **tx).await?;
+                    .bind(community.as_uuid()).bind(&target).bind(now).fetch_one(tx.conn()).await?;
             if !ready && reason.is_none() {
                 reason = Some("runner_unavailable");
             }
@@ -220,13 +218,10 @@ impl Db {
         profile_error: Option<&str>,
         relay: &Keys,
     ) -> Result<ManualDecision> {
-        let mut tx = self.begin_event_write_transaction().await?;
-        self.deletion_store()
-            .guard_transaction(&mut tx, community)
-            .await?;
-        lock_admission(&mut tx, community).await?;
+        let mut tx = self.begin_event_write_transaction(community).await?;
+        lock_admission(tx.conn(), community).await?;
         let row = sqlx::query("SELECT owner_pubkey,channel_id,enabled,status::text AS status,definition_hash,definition,name,manual_deleted_at FROM workflows WHERE community_id=$1 AND id=$2 FOR UPDATE")
-            .bind(community.as_uuid()).bind(workflow_id).fetch_optional(&mut *tx).await?
+            .bind(community.as_uuid()).bind(workflow_id).fetch_optional(tx.conn()).await?
             .ok_or_else(|| DbError::NotFound("workflow not found".into()))?;
         let requester = event.pubkey.to_bytes();
         let owner: Vec<u8> = row.try_get("owner_pubkey")?;
@@ -245,13 +240,13 @@ impl Db {
             return Err(DbError::AccessDenied("manual workflow requires current community and workflow owner with channel/target access".into()));
         }
         let receipt: Option<serde_json::Value> = sqlx::query_scalar("SELECT decision FROM workflow_manual_requests WHERE community_id=$1 AND request_event_id=$2 AND requester=$3")
-            .bind(community.as_uuid()).bind(event.id.as_bytes().as_slice()).bind(requester.as_slice()).fetch_optional(&mut *tx).await?;
+            .bind(community.as_uuid()).bind(event.id.as_bytes().as_slice()).bind(requester.as_slice()).fetch_optional(tx.conn()).await?;
         if let Some(receipt) = receipt {
             return serde_json::from_value(receipt)
                 .map_err(|e| DbError::InvalidData(e.to_string()));
         }
         let now: DateTime<Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
-            .fetch_one(&mut *tx)
+            .fetch_one(tx.conn())
             .await?;
         let hash: Vec<u8> = row.try_get("definition_hash")?;
         let mut reason = if !row.try_get::<bool, _>("enabled")?
@@ -282,12 +277,10 @@ impl Db {
             let definition: serde_json::Value = row.try_get("definition")?;
             let deadline = now + Duration::minutes(20);
             // The command and all charged execution intent share this transaction.
-            crate::event::insert_event_with_thread_metadata_tx(
-                &mut tx, community, event, channel, None,
-            )
-            .await?;
+            crate::event::insert_event_with_thread_metadata_tx(&mut tx, event, channel, None)
+                .await?;
             sqlx::query("INSERT INTO workflow_runs(community_id,id,workflow_id,trigger_event_id,origin,requester,accepted_at,deadline_at,definition_hash,definition_snapshot,execution_state,dispatch_complete,revision) VALUES($1,$2,$3,$4,'manual',$5,$6,$7,$8,$9,'queued',TRUE,1)")
-                .bind(community.as_uuid()).bind(run_id).bind(workflow_id).bind(event.id.as_bytes().as_slice()).bind(requester.as_slice()).bind(now).bind(deadline).bind(&hash).bind(definition).execute(&mut *tx).await?;
+                .bind(community.as_uuid()).bind(run_id).bind(workflow_id).bind(event.id.as_bytes().as_slice()).bind(requester.as_slice()).bind(now).bind(deadline).bind(&hash).bind(definition).execute(tx.conn()).await?;
             for task in tasks {
                 let task_id = Uuid::new_v4();
                 let target = hex::decode(&task.agent_pubkey)
@@ -319,9 +312,9 @@ impl Db {
                         .sign_with_keys(relay)
                         .map_err(|e| DbError::InvalidData(e.to_string()))?;
                 sqlx::query("INSERT INTO workflow_run_tasks(community_id,run_id,task_id,step_id,agent_pubkey,channel_id,task_event_id) VALUES($1,$2,$3,$4,$5,$6,$7)")
-                    .bind(community.as_uuid()).bind(run_id).bind(task_id).bind(&task.step_id).bind(&target).bind(task.channel_id).bind(signed.id.as_bytes().as_slice()).execute(&mut *tx).await?;
+                    .bind(community.as_uuid()).bind(run_id).bind(task_id).bind(&task.step_id).bind(&target).bind(task.channel_id).bind(signed.id.as_bytes().as_slice()).execute(tx.conn()).await?;
                 sqlx::query("INSERT INTO workflow_run_outbox(community_id,id,run_id,event_id,signed_event) VALUES($1,$2,$3,$4,$5)")
-                    .bind(community.as_uuid()).bind(Uuid::new_v4()).bind(run_id).bind(signed.id.as_bytes().as_slice()).bind(serde_json::from_str::<serde_json::Value>(&signed.as_json()).map_err(|e|DbError::InvalidData(e.to_string()))?).execute(&mut *tx).await?;
+                    .bind(community.as_uuid()).bind(Uuid::new_v4()).bind(run_id).bind(signed.id.as_bytes().as_slice()).bind(serde_json::from_str::<serde_json::Value>(&signed.as_json()).map_err(|e|DbError::InvalidData(e.to_string()))?).execute(tx.conn()).await?;
             }
             allowance = limits(&mut tx, community, workflow_id, now).await?;
         }
@@ -333,7 +326,7 @@ impl Db {
             limits: allowance,
         };
         sqlx::query("INSERT INTO workflow_manual_requests(community_id,request_event_id,workflow_id,requester,decision,run_id) VALUES($1,$2,$3,$4,$5,$6)")
-            .bind(community.as_uuid()).bind(event.id.as_bytes().as_slice()).bind(workflow_id).bind(requester.as_slice()).bind(serde_json::to_value(&decision).map_err(|e|DbError::InvalidData(e.to_string()))?).bind(run_id).execute(&mut *tx).await?;
+            .bind(community.as_uuid()).bind(event.id.as_bytes().as_slice()).bind(workflow_id).bind(requester.as_slice()).bind(serde_json::to_value(&decision).map_err(|e|DbError::InvalidData(e.to_string()))?).bind(run_id).execute(tx.conn()).await?;
         tx.commit().await?;
         Ok(decision)
     }
@@ -347,10 +340,10 @@ impl Db {
         tasks: &[ManualTaskSpec],
         profile_error: Option<&str>,
     ) -> Result<(Option<String>, ManualLimits)> {
-        let mut tx = self.begin_event_write_transaction().await?;
-        lock_admission(&mut tx, community).await?;
+        let mut tx = self.begin_event_write_transaction(community).await?;
+        lock_admission(tx.conn(), community).await?;
         let now = sqlx::query_scalar("SELECT clock_timestamp()")
-            .fetch_one(&mut *tx)
+            .fetch_one(tx.conn())
             .await?;
         evaluate_manual_limits(&mut tx, community, workflow, tasks, now, profile_error).await
     }
@@ -361,9 +354,9 @@ impl Db {
         community: CommunityId,
         workflow: Uuid,
     ) -> Result<ManualLimits> {
-        let mut tx = self.begin_event_write_transaction().await?;
+        let mut tx = self.begin_event_write_transaction(community).await?;
         let now = sqlx::query_scalar("SELECT clock_timestamp()")
-            .fetch_one(&mut *tx)
+            .fetch_one(tx.conn())
             .await?;
         limits(&mut tx, community, workflow, now).await
     }
@@ -395,13 +388,10 @@ impl Db {
         step: &str,
         targets: &[String],
     ) -> Result<(buzz_core::StoredEvent, bool)> {
-        let mut tx = self.begin_event_write_transaction().await?;
-        self.deletion_store()
-            .guard_transaction(&mut tx, community)
-            .await?;
-        lock_admission(&mut tx, community).await?;
+        let mut tx = self.begin_event_write_transaction(community).await?;
+        lock_admission(tx.conn(), community).await?;
         let row=sqlx::query("SELECT r.workflow_id,r.origin,r.definition_hash,w.definition_hash AS current_hash FROM workflow_runs r JOIN workflows w ON w.community_id=r.community_id AND w.id=r.workflow_id WHERE r.community_id=$1 AND r.id=$2 FOR UPDATE OF r,w")
-            .bind(community.as_uuid()).bind(run).fetch_optional(&mut *tx).await?.ok_or_else(||DbError::NotFound("workflow run".into()))?;
+            .bind(community.as_uuid()).bind(run).fetch_optional(tx.conn()).await?.ok_or_else(||DbError::NotFound("workflow run".into()))?;
         let original: Option<Vec<u8>> = row.try_get("definition_hash")?;
         let current: Vec<u8> = row.try_get("current_hash")?;
         if row.try_get::<String, _>("origin")? == "manual"
@@ -411,22 +401,17 @@ impl Db {
                 "workflow definition changed or incorrect manual dispatch path".into(),
             ));
         }
-        let stored = crate::event::insert_event_with_thread_metadata_tx(
-            &mut tx,
-            community,
-            event,
-            Some(channel),
-            None,
-        )
-        .await?;
+        let stored =
+            crate::event::insert_event_with_thread_metadata_tx(&mut tx, event, Some(channel), None)
+                .await?;
         if stored.1 {
             for target in targets {
                 let key = hex::decode(target).map_err(|_| DbError::InvalidData("target".into()))?;
                 sqlx::query("INSERT INTO workflow_run_tasks(community_id,run_id,task_id,step_id,agent_pubkey,channel_id,task_event_id,state) VALUES($1,$2,$3,$4,$5,$6,$7,'stalled') ON CONFLICT(community_id,run_id,step_id,agent_pubkey) DO NOTHING")
-                    .bind(community.as_uuid()).bind(run).bind(Uuid::new_v4()).bind(step).bind(&key).bind(channel).bind(event.id.as_bytes().as_slice()).execute(&mut *tx).await?;
+                    .bind(community.as_uuid()).bind(run).bind(Uuid::new_v4()).bind(step).bind(&key).bind(channel).bind(event.id.as_bytes().as_slice()).execute(tx.conn()).await?;
             }
             sqlx::query("UPDATE workflow_runs SET execution_state=CASE WHEN EXISTS(SELECT 1 FROM workflow_run_tasks t WHERE t.community_id=workflow_runs.community_id AND t.run_id=workflow_runs.id AND t.state IN ('queued','running')) THEN CASE WHEN execution_state='running' THEN 'running' ELSE 'queued' END ELSE 'stalled' END,safe_error_code='legacy_execution_unknown',revision=revision+1 WHERE community_id=$1 AND id=$2")
-                .bind(community.as_uuid()).bind(run).execute(&mut *tx).await?;
+                .bind(community.as_uuid()).bind(run).execute(tx.conn()).await?;
         }
         tx.commit().await?;
         Ok(stored)

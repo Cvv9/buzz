@@ -815,6 +815,17 @@ pub async fn delete_workflow_for_owner(
     delete_workflow_retaining_manual_ledger(pool, community_id, id, Some(owner_pubkey)).await
 }
 
+/// Whether deleting this projection would discard durable execution or quota evidence.
+pub(crate) async fn must_retain_manual_ledger(
+    tx: &mut sqlx::PgConnection,
+    community: CommunityId,
+    id: Uuid,
+) -> Result<bool> {
+    let must_retain: bool =sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_runs WHERE community_id=$1 AND workflow_id=$2 AND (origin='manual' OR execution_state IN ('queued','running','stalled') OR (execution_state IS NULL AND status IN ('pending','running','waiting_approval')))) OR EXISTS(SELECT 1 FROM scheduled_workflow_fires WHERE community_id=$1 AND workflow_id=$2 AND outcome='started' AND workflow_run_id IS NULL)")
+        .bind(community.as_uuid()).bind(id).fetch_one(&mut *tx).await?;
+    Ok(must_retain)
+}
+
 /// Deletion keeps manual charges and unresolved executions durable. A tombstoned
 /// workflow cannot be resurrected by a delayed owner-signed definition update.
 async fn delete_workflow_retaining_manual_ledger(
@@ -827,8 +838,7 @@ async fn delete_workflow_retaining_manual_ledger(
     crate::workflow_manual::lock_admission(&mut tx, community).await?;
     let row=sqlx::query("SELECT channel_id FROM workflows WHERE community_id=$1 AND id=$2 AND ($3::bytea IS NULL OR owner_pubkey=$3) FOR UPDATE")
         .bind(community.as_uuid()).bind(id).bind(owner).fetch_optional(&mut *tx).await?.ok_or_else(||DbError::NotFound("workflow".into()))?;
-    let must_retain:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_runs WHERE community_id=$1 AND workflow_id=$2 AND (origin='manual' OR execution_state IN ('queued','running','stalled') OR (execution_state IS NULL AND status IN ('pending','running','waiting_approval')))) OR EXISTS(SELECT 1 FROM scheduled_workflow_fires WHERE community_id=$1 AND workflow_id=$2 AND outcome='started' AND workflow_run_id IS NULL)")
-        .bind(community.as_uuid()).bind(id).fetch_one(&mut *tx).await?;
+    let must_retain = must_retain_manual_ledger(&mut tx, community, id).await?;
     if must_retain {
         sqlx::query("UPDATE workflows SET enabled=FALSE,status='archived',manual_deleted_at=COALESCE(manual_deleted_at,NOW()),updated_at=NOW() WHERE community_id=$1 AND id=$2")
             .bind(community.as_uuid()).bind(id).execute(&mut *tx).await?;

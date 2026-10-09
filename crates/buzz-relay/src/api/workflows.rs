@@ -331,7 +331,7 @@ pub async fn agent_scheduled_workflows(
         } else {
             let mut tx = state
                 .db
-                .begin_event_write_transaction()
+                .begin_event_write_transaction(tenant.community())
                 .await
                 .map_err(|e| internal_error(&e.to_string()))?;
             if !buzz_db::workflow_manual::check_manual_authority(

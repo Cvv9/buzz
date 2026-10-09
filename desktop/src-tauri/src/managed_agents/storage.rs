@@ -19,6 +19,11 @@ use keyring::{
 use keyring::{copy_agent_keys_between_stores, DEV_MIGRATION_MARKER};
 use keyring::{hydrate_keys, persist_agent_keys};
 
+/// A confined child-process test can avoid the real user's keychain.
+#[cfg(test)]
+pub(crate) static NO_KEYCHAIN_FOR_TEST: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 use crate::managed_agents::{
     ManagedAgentRecord, ManagedAgentRuntimeKey, ManagedAgentRuntimeReceipt,
 };
