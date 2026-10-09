@@ -1,13 +1,21 @@
 # Buzz contributor entrypoint
 
+## Product scope — hard rule
+
+- VarVik develops and ships the existing `web/` app. Default every task to that web app and only the backend, agent runtime, CLI or infrastructure it actually depends on.
+- Do not develop, build, test, launch, screenshot, package or release desktop/Tauri code unless the human explicitly requests desktop work. Importing upstream desktop changes is not permission to run native checks.
+- Mobile means linking to the existing store app. Do not rebuild, re-skin, fork or release a mobile app unless the human explicitly requests that work.
+- For web work and upstream synchronization, validate the web app and affected server paths only. Do not run `just ci`, `just setup`, blanket workspace checks or other aggregate commands that also build/test native apps; select the relevant web/server lanes instead. Keep `run_native_apps=false`.
+- This scope rule overrides broader native-app and cross-surface validation instructions below and in linked contributor guides. Do not spend time on unchanged packages or repeatedly rebuild an already-validated target without a new failure or relevant edit.
+
 For non-trivial planning/review, read [VISION.md](VISION.md), relevant `VISION_*.md`, [TESTING.md](TESTING.md), and affected package-local `TESTING.md`. Check product intent and call out intentional tensions. Scale validation to risk; exercise user-visible/integration workflows when practical. CI and runtime evidence are separate.
 
 ## Commands and gates
 
 - Before Git/hooks and development commands, activate Hermit: `. ./bin/activate-hermit` (Unix). In PowerShell use `./scripts/with-toolchain.ps1 <command...>`; never execute/dot-source the extensionless Unix activation file or rewrite hooks to compensate for PATH.
 - Setup: copy `.env.example` to `.env`, configure it, then `just setup`; `just relay` starts `ws://localhost:3000`.
-- Run `just ci` before every PR (format, lint, static checks, Rust/Tauri/desktop/mobile tests, desktop/web builds). Clippy does not replace fmt. `just test-unit` needs no infrastructure; relay/db/auth changes also require `just test` with Postgres + Redis.
-- Root Cargo excludes desktop: run `cargo test --manifest-path desktop/src-tauri/Cargo.toml` explicitly. Set the workdir on each command; shell CWD does not persist between tool calls.
+- Before a PR, run formatting, static checks, web tests/builds and the tests for affected server packages; use the web-only scope above instead of `just ci`. Clippy does not replace fmt. Relay/db/auth changes also require affected integration tests with isolated Postgres + Redis.
+- Root Cargo excludes desktop. Run Tauri checks only for explicitly requested desktop work. Set the workdir on each command; shell CWD does not persist between tool calls.
 - Hooks auto-fix/re-stage formatting; `just fix-all` fixes formatting, `just hooks` reinstalls hooks. Commit with `git commit -s`; rebase/cherry-pick need `--signoff`. History rewrites/force-push need explicit authorization. This workspace restricts buzz to local work; do not push.
 - No `unsafe`; no new production `unwrap()`/`expect()`; use `?` and proper errors. Document new public APIs.
 
