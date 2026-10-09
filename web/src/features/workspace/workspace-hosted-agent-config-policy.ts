@@ -156,7 +156,8 @@ export function applyHostedAgentPresentationConfig<
   return {
     ...profile,
     name: overlay.name.trim() || profile.name,
-    picture: overlay.avatarUrl?.trim() || undefined,
+      picture: overlay.avatarUrl === undefined ? profile.picture : overlay.avatarUrl?.trim() || undefined,
+      avatarConfigured: overlay.avatarUrl !== undefined,
     legacyHostedConfigModel: overlay.legacyModel,
   };
 }

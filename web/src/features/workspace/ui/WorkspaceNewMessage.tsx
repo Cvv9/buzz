@@ -106,7 +106,7 @@ export function WorkspaceNewMessage({
                 >
                   <button
                     className="flex min-w-0 flex-1 items-center gap-3 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                    disabled={opening}
+                    disabled={opening || profile.isIntegration}
                     type="button"
                     onClick={() =>
                       groupMode
@@ -120,7 +120,9 @@ export function WorkspaceNewMessage({
                         {profile.name}
                       </span>
                       <span className="block truncate text-xs text-muted-foreground">
-                        {profile.isAgent
+                        {profile.isIntegration
+                          ? "Integration service · available in channels"
+                          : profile.isAgent
                           ? "AI agent"
                           : member.role === "owner" || member.role === "admin"
                             ? "Workspace admin"
@@ -140,7 +142,7 @@ export function WorkspaceNewMessage({
                         ? "rounded-md bg-primary/15 p-1.5 text-primary"
                         : "rounded-md p-1.5 text-muted-foreground hover:bg-muted"
                     }
-                    disabled={opening}
+                    disabled={opening || profile.isIntegration}
                     title={selected ? "Remove from group" : "Add to group"}
                     type="button"
                     onClick={() => toggleRecipient(member.pubkey)}

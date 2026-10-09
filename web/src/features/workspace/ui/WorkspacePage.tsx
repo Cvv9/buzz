@@ -10,6 +10,7 @@ import { Menu } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import * as React from "react";
+import { toast } from "sonner";
 import { truncatePubkey } from "@/shared/lib/pubkey";
 import { mergeDmRecipientProfiles } from "../dm-recipient-profiles";
 import { WorkspaceStartup } from "./WorkspaceStartup";
@@ -570,11 +571,21 @@ export function WorkspacePage({
   });
   const hideDmMutation = useMutation({
     mutationFn: hideDirectMessage,
-    onSuccess: () => {
-      setActiveChannelId(null);
-      setThreadRootId(null);
-      void navigate({ to: "/" });
+    onSuccess: (_receipt, channelId) => {
+      if (activeChannelId === channelId || channelPermalink === channelId) {
+        setActiveChannelId(null);
+        setThreadRootId(null);
+        try {
+          if (localStorage.getItem("buzz.web.active-channel") === channelId)
+            localStorage.removeItem("buzz.web.active-channel");
+        } catch {
+          // The relay-owned archive remains available when storage is disabled.
+        }
+        void navigate({ to: "/" });
+      }
+      toast.success("Conversation archived for you.");
     },
+    onError: () => toast.error("Couldn't archive this conversation. Your chat is still available; try again."),
   });
   const addDmMemberMutation = useMutation({
     mutationFn: ({
@@ -727,6 +738,8 @@ export function WorkspacePage({
         onOpenInbox={() => openWorkspaceView("inbox")}
         onOpenAlerts={() => openWorkspaceView("alerts")}
         onNewMessage={() => void navigate({ to: "/messages/new" })}
+        onArchiveDirectMessage={(channel) => hideDmMutation.mutate(channel.id)}
+        archiveDirectMessagePending={hideDmMutation.isPending}
         onReopenDirectMessage={(channel) =>
           openDmMutation.mutate({
             recipients: channel.memberPubkeys.filter(

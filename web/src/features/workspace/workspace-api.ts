@@ -9,6 +9,7 @@ import { relayWsUrl } from "@/shared/lib/relay-url";
 import {
   GENERAL_PROFILE_KINDS,
   hostedDirectoryEvents,
+  isWorkspaceIntegrationProfile,
 } from "./workspace-agent-directory-policy";
 import { KIND_HOSTED_AGENT_RUNTIME_STATUS } from "./workspace-agent-runtime";
 import {
@@ -109,8 +110,10 @@ export type WorkspaceProfile = {
   name: string;
   aliases?: string[];
   picture?: string;
+  avatarConfigured?: boolean;
   about?: string;
   isAgent?: boolean;
+  isIntegration?: boolean;
   audience?: "community" | "owner";
   ownerPubkey?: string;
   accessTier?: "shared" | "personal" | "admin";
@@ -407,6 +410,7 @@ export async function listProfiles(
       about:
         typeof content.about === "string" ? content.about : existing?.about,
       isAgent: existing?.isAgent || event.kind === KIND_AGENT_PROFILE,
+        isIntegration: isWorkspaceIntegrationProfile(content),
     });
   }
   return profiles;
