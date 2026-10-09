@@ -1,4 +1,5 @@
 import { useWorkspaceProfileSync } from "../useWorkspaceProfileSync";
+import { clearArchivedChannelSelection } from "../dm-visibility-policy";
 import {
   WorkspaceAgents,
   WorkspaceGuide,
@@ -575,12 +576,7 @@ export function WorkspacePage({
       if (activeChannelId === channelId || channelPermalink === channelId) {
         setActiveChannelId(null);
         setThreadRootId(null);
-        try {
-          if (localStorage.getItem("buzz.web.active-channel") === channelId)
-            localStorage.removeItem("buzz.web.active-channel");
-        } catch {
-          // The relay-owned archive remains available when storage is disabled.
-        }
+        clearArchivedChannelSelection(channelId);
         void navigate({ to: "/" });
       }
       toast.success("Conversation archived for you.");

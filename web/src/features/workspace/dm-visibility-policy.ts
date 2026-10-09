@@ -59,3 +59,13 @@ export function parseDmVisibilitySnapshot(
   }
   return new Set(hidden.map((channelId) => channelId.toLowerCase()));
 }
+
+/** Clear only the archived conversation's local selection after relay acceptance. */
+export function clearArchivedChannelSelection(channelId: string): void {
+  try {
+    if (localStorage.getItem("buzz.web.active-channel") === channelId)
+      localStorage.removeItem("buzz.web.active-channel");
+  } catch {
+    // Relay-owned archive remains available when browser storage is disabled.
+  }
+}

@@ -1,3 +1,5 @@
+import type { WorkspaceProfile } from "./workspace-profile-types";
+export type { WorkspaceProfile } from "./workspace-profile-types";
 import {
   type NostrEvent,
   publishEvent,
@@ -105,28 +107,7 @@ export type WorkspaceCommunityMember = {
   role: "owner" | "admin" | "member";
 };
 
-export type WorkspaceProfile = {
-  pubkey: string;
-  name: string;
-  aliases?: string[];
-  picture?: string;
-  avatarConfigured?: boolean;
-  about?: string;
-  isAgent?: boolean;
-  isIntegration?: boolean;
-  audience?: "community" | "owner";
-  ownerPubkey?: string;
-  accessTier?: "shared" | "personal" | "admin";
-  model?: string;
-  models?: import("./workspace-agent-models").WorkspaceAgentModel[];
-  modelFamilies?: import("./workspace-agent-models").WorkspaceAgentModelFamily[];
-  runtime?: import("./workspace-agent-runtime").WorkspaceAgentRuntimeProjection;
-  runtimeCatalogDigest?: string;
-  runtimeControllerPubkey?: string;
-  runtimeStatusTrusted?: boolean;
-  legacyHostedConfigModel?: string | null;
-  resources?: string[];
-};
+
 
 export type WorkspaceMessage = NostrEvent & {
   channelId: string;
