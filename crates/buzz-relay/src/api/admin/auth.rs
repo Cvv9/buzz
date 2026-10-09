@@ -733,7 +733,10 @@ mod tests {
         let principal = super::authorize(&state, &headers, path, "GET", None)
             .await
             .expect("configured HTTPS origin authorizes the signed operator");
-        assert_eq!(principal.act().unwrap().pubkey, keys.public_key().to_bytes());
+        assert_eq!(
+            principal.act().unwrap().pubkey,
+            keys.public_key().to_bytes()
+        );
         for rejected in [
             "http://admin.localhost:8443",
             "https://attacker.localhost:8443",

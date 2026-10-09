@@ -812,14 +812,14 @@ function ChannelButton({
           </span>
         ) : null}
       </button>
-        {channel.type === "dm" && onArchive ? (
-          <ConversationActions
-            name={channel.name}
-            pending={archivePending}
-            onArchive={onArchive}
-          />
-        ) : null}
-        {channel.type !== "dm" ? (
+      {channel.type === "dm" && onArchive ? (
+        <ConversationActions
+          name={channel.name}
+          pending={archivePending}
+          onArchive={onArchive}
+        />
+      ) : null}
+      {channel.type !== "dm" ? (
         <button
           aria-label={`${starred ? "Remove" : "Add"} ${channel.name} ${starred ? "from" : "to"} favorites`}
           className={cn(

@@ -22,7 +22,9 @@ export function mergeDmRecipientProfiles(
       ...existing,
       ...agent,
       name: hasDirectoryName ? agent.name : (existing?.name ?? agent.name),
-      picture: agent.avatarConfigured ? agent.picture : agent.picture || existing?.picture,
+      picture: agent.avatarConfigured
+        ? agent.picture
+        : agent.picture || existing?.picture,
       isAgent: true,
     });
   }

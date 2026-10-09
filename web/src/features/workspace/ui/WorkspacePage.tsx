@@ -11,7 +11,7 @@ import { Menu } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import * as React from "react";
-import { toast } from "sonner";
+import { conversationArchiveFeedback } from "../workspace-archive-feedback";
 import { truncatePubkey } from "@/shared/lib/pubkey";
 import { mergeDmRecipientProfiles } from "../dm-recipient-profiles";
 import { WorkspaceStartup } from "./WorkspaceStartup";
@@ -579,9 +579,9 @@ export function WorkspacePage({
         clearArchivedChannelSelection(channelId);
         void navigate({ to: "/" });
       }
-      toast.success("Conversation archived for you.");
+      conversationArchiveFeedback.success();
     },
-    onError: () => toast.error("Couldn't archive this conversation. Your chat is still available; try again."),
+    onError: conversationArchiveFeedback.error,
   });
   const addDmMemberMutation = useMutation({
     mutationFn: ({

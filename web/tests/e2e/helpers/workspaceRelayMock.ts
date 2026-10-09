@@ -792,12 +792,28 @@ export async function installWorkspaceRelayMock(
                   candidate.created_at <= filter.until),
             );
           }
-          const extra = workspaceEvents.map((entry) => event(entry.kind, entry.pubkey, entry.tags, entry.content, entry.suffix, entry.createdAt ?? 2));
-          events.push(...extra.filter((candidate) =>
-            (!kinds.length || kinds.includes(candidate.kind)) &&
-            (!filter.authors?.length || filter.authors.includes(candidate.pubkey)) &&
-            (!filter["#p"]?.length || candidate.tags.some((tag) => tag[0] === "p" && filter["#p"]?.includes(tag[1])))
-          ));
+          const extra = workspaceEvents.map((entry) =>
+            event(
+              entry.kind,
+              entry.pubkey,
+              entry.tags,
+              entry.content,
+              entry.suffix,
+              entry.createdAt ?? 2,
+            ),
+          );
+          events.push(
+            ...extra.filter(
+              (candidate) =>
+                (!kinds.length || kinds.includes(candidate.kind)) &&
+                (!filter.authors?.length ||
+                  filter.authors.includes(candidate.pubkey)) &&
+                (!filter["#p"]?.length ||
+                  candidate.tags.some(
+                    (tag) => tag[0] === "p" && filter["#p"]?.includes(tag[1]),
+                  )),
+            ),
+          );
           window.setTimeout(() => {
             for (const relayEvent of events) {
               this.emit(

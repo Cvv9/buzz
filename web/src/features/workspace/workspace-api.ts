@@ -107,8 +107,6 @@ export type WorkspaceCommunityMember = {
   role: "owner" | "admin" | "member";
 };
 
-
-
 export type WorkspaceMessage = NostrEvent & {
   channelId: string;
   rootEventId: string | null;
@@ -391,7 +389,7 @@ export async function listProfiles(
       about:
         typeof content.about === "string" ? content.about : existing?.about,
       isAgent: existing?.isAgent || event.kind === KIND_AGENT_PROFILE,
-        isIntegration: isWorkspaceIntegrationProfile(content),
+      isIntegration: isWorkspaceIntegrationProfile(content),
     });
   }
   return profiles;

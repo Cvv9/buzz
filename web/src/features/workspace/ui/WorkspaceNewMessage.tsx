@@ -123,10 +123,10 @@ export function WorkspaceNewMessage({
                         {profile.isIntegration
                           ? "Integration service · available in channels"
                           : profile.isAgent
-                          ? "AI agent"
-                          : member.role === "owner" || member.role === "admin"
-                            ? "Workspace admin"
-                            : "Teammate"}
+                            ? "AI agent"
+                            : member.role === "owner" || member.role === "admin"
+                              ? "Workspace admin"
+                              : "Teammate"}
                       </span>
                     </span>
                   </button>

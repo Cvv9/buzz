@@ -14,7 +14,9 @@ type DirectoryEvent = {
 export const GENERAL_PROFILE_KINDS: readonly number[] = [0];
 
 /** Self-declared presentation only; this marker grants no role or tool access. */
-export function isWorkspaceIntegrationProfile(content: Record<string, unknown>) {
+export function isWorkspaceIntegrationProfile(
+  content: Record<string, unknown>,
+) {
   return content.bot === true && content.service_type === "integration";
 }
 
