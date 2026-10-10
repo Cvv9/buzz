@@ -51,3 +51,17 @@ Helm dependency repository metadata changes to the mirror while preserving
 Postgres 0.19.5 and Redis 0.30.3; their manifests and archive hashes were checked
 against the original registry. Dependency build, lint and all four render
 fixtures passed. These transport changes do not waive build or runtime gates.
+
+The broader GitHub run on `6ac1ec71e` passed Rust unit tests, web/admin-web,
+Linux container builds, Helm, mesh lifecycle, relay E2E and manual-workflow
+integration on PostgreSQL 17. The PostgreSQL lane passed 966 of 967 tests,
+exposing a retained-ledger deletion reporting defect: concurrent retries both
+reported a change because an archived workflow row remained present.
+
+Workflow deletion now reports actual affected rows and does not rewrite an
+existing tombstone on retry. The physical-deletion fixture completes its
+non-manual run; separate retention coverage preserves pending runs and schedule
+claims, verifies a single concurrent winner, and checks stable retry timestamps.
+All six deletion tests passed on isolated PostgreSQL 16. Independent review
+found no blocker. These results do not qualify the revised head: fresh server,
+PostgreSQL and relay CI remain required before merge.

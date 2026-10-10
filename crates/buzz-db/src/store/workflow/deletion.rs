@@ -129,17 +129,33 @@ async fn delete_workflow_in_transaction(
     .bind(d_tag)
     .fetch_optional(tx.conn())
     .await?;
+    let mut workflow_changed = false;
     if let Some(row) = &row {
         let id: Uuid = row.try_get("id")?;
         if super::must_retain_manual_ledger(tx.conn(), community_id, id).await? {
-            sqlx::query("UPDATE workflows SET enabled=FALSE,status='archived',manual_deleted_at=COALESCE(manual_deleted_at,NOW()),updated_at=NOW() WHERE community_id=$1 AND id=$2")
-                .bind(community_id.as_uuid()).bind(id).execute(tx.conn()).await?;
+            // A retained ledger remains queryable after deletion. Its existence
+            // is not a fresh mutation: retries must preserve the tombstone and
+            // report no new dispatch ownership.
+            workflow_changed = sqlx::query(
+                "UPDATE workflows SET enabled=FALSE,status='archived',\
+                 manual_deleted_at=COALESCE(manual_deleted_at,NOW()),updated_at=NOW() \
+                 WHERE community_id=$1 AND id=$2 \
+                 AND (enabled OR status<>'archived' OR manual_deleted_at IS NULL)",
+            )
+            .bind(community_id.as_uuid())
+            .bind(id)
+            .execute(tx.conn())
+            .await?
+            .rows_affected()
+                > 0;
         } else {
-            sqlx::query("DELETE FROM workflows WHERE community_id=$1 AND id=$2")
+            workflow_changed = sqlx::query("DELETE FROM workflows WHERE community_id=$1 AND id=$2")
                 .bind(community_id.as_uuid())
                 .bind(id)
                 .execute(tx.conn())
-                .await?;
+                .await?
+                .rows_affected()
+                > 0;
         }
     }
     let definitions = sqlx::query(
@@ -153,8 +169,9 @@ async fn delete_workflow_in_transaction(
     .bind(cutoff)
     .execute(tx.conn())
     .await?;
-    let changed = row.is_some() || definitions.rows_affected() > 0;
+    let changed = workflow_changed || definitions.rows_affected() > 0;
     let channel_id = row
+        .filter(|_| changed)
         .map(|row| row.try_get("channel_id"))
         .transpose()?
         .flatten();
