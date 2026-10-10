@@ -33,10 +33,10 @@ annotations:
 dependencies:
   - name: postgres
     version: "0.19.x"
-    repository: oci://registry-1.docker.io/cloudpirates
+    repository: oci://mirror.gcr.io/cloudpirates
     condition: postgresql.enabled
     alias: postgresql
   - name: redis
     version: "0.30.x"
-    repository: oci://registry-1.docker.io/cloudpirates
+    repository: oci://mirror.gcr.io/cloudpirates
     condition: redis.enabled

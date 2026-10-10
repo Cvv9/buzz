@@ -86,10 +86,10 @@ start_forwarder() {
   return 1
 }
 # Pull dependencies before attaching services to an egress-isolated network.
-docker pull postgres:17-bookworm
-docker pull redis:7-alpine
-postgres_image=$(docker image inspect --format '{{.Id}}' postgres:17-bookworm)
-redis_image=$(docker image inspect --format '{{.Id}}' redis:7-alpine)
+docker pull mirror.gcr.io/library/postgres:17-bookworm
+docker pull mirror.gcr.io/library/redis:7-alpine
+postgres_image=$(docker image inspect --format '{{.Id}}' mirror.gcr.io/library/postgres:17-bookworm)
+redis_image=$(docker image inspect --format '{{.Id}}' mirror.gcr.io/library/redis:7-alpine)
 printf 'relay=%s\nagent=%s\npostgres=%s\nredis=%s\n' "$relay_image" "$agent_image" "$postgres_image" "$redis_image" > "$artifacts/images.txt"
 test -z "$(docker network ls --format '{{.Name}}' --filter "name=^$name$")"
 test -z "$(docker ps -aq --filter "label=buzz.manual-harness=$name")"

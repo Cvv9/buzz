@@ -29,10 +29,25 @@ onto fork `25f71566a0201c4465a20476a331a5ed8601155e` on the local branch
 
 ## Qualification boundary
 
-Source compilation, TypeScript, formatting and unit evidence are recorded in
-the accompanying local assessment. They do not establish database upgrade,
-relay integration, native UI, mobile device or production recovery success.
-The full `just ci` gate is unavailable in this Windows environment because
-`just` is not installed; infrastructure-backed tests also need isolated
-Postgres and Redis. Those gates and human workflow confirmation remain before
-merging into main or publishing. No push or deployment is part of this change.
+PR [#91](https://github.com/Cvv9/buzz/pull/91) now tracks this candidate. The
+VarVik validation scope is the existing web app and affected server services;
+native desktop/mobile checks remain disabled. Browser and server evidence do
+not establish native UI or mobile device behavior.
+
+### CI repairs — 10 October 2026
+
+The message-edit indexing method now validates timestamps before writes and
+uses one community-admitted transaction for both derived content and mentions.
+The desired-state schema includes the nullable edit columns and generated
+search expression already supplied by migration 0032; existing migrations are
+unchanged. Nine targeted PostgreSQL 16 tests passed against an isolated local
+database, including injected mention failures, search rollback, empty mentions,
+invalid timestamps and community quiescing. PostgreSQL 17 and relay integration
+qualification remain separate GitHub CI gates.
+
+CI service and BuildKit pulls use Google's Docker Hub mirror. A CI-only Compose
+overlay retains the existing service versions and pinned Silo image digests.
+Helm dependency repository metadata changes to the mirror while preserving
+Postgres 0.19.5 and Redis 0.30.3; their manifests and archive hashes were checked
+against the original registry. Dependency build, lint and all four render
+fixtures passed. These transport changes do not waive build or runtime gates.
