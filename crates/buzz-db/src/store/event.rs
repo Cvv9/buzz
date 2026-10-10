@@ -5119,7 +5119,7 @@ mod postgres_tests {
             &target,
             "edited message",
             200,
-            &[mention.clone()],
+            std::slice::from_ref(&mention),
         )
         .await
         .expect("commit message edit");
