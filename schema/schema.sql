@@ -209,6 +209,8 @@ CREATE TABLE events (
     kind        INT NOT NULL,
     tags        JSONB NOT NULL,
     content     TEXT NOT NULL,
+    edited_content TEXT,
+    edited_at   BIGINT,
     -- Full-text search vector (Typesense → Postgres FTS). Generated/STORED so
     -- it is a single source of truth — no sidecar indexer to keep coherent
     -- (Quinn option A, Lane-0 call). 'simple' config = no stemming/stopwords,
@@ -220,10 +222,10 @@ CREATE TABLE events (
     -- Privacy: encrypted/private routing wrappers and p-gated membership notices
     -- must never be discoverable through NIP-50 full-text search. NULL tsvector
     -- never matches `@@`.
-    -- Keep in sync with migrations (final state: 0001 + 0005 + 0014 + 0033).
+    -- Keep in sync with migrations (final state: 0001 + 0005 + 0014 + 0032 + 0033).
     search_tsv  TSVECTOR GENERATED ALWAYS AS (
         CASE WHEN kind IN (1059, 30179, 30300, 30350, 30622, 44100, 44101, 44200) THEN NULL::tsvector
-             ELSE to_tsvector('simple', content)
+             ELSE to_tsvector('simple', COALESCE(edited_content, content))
         END
     ) STORED,
     sig         BYTEA NOT NULL,

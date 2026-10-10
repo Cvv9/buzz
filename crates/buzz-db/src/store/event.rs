@@ -5037,11 +5037,214 @@ mod postgres_tests {
             "mention row must be committed atomically alongside the thread event"
         );
     }
+    async fn message_edit_fixture(pool: &PgPool) -> (Db, CommunityId, StoredEvent) {
+        let db = Db::from_pool(pool.clone());
+        let community = CommunityId::from_uuid(make_test_community(pool).await);
+        let event = EventBuilder::new(Kind::Custom(9), "original message")
+            .sign_with_keys(&Keys::generate())
+            .expect("sign original message");
+        let (stored, inserted) = db
+            .insert_event(community, &event, None)
+            .await
+            .expect("insert original message");
+        assert!(inserted);
+        (db, community, stored)
+    }
+
+    async fn message_edit_state(
+        pool: &PgPool,
+        community: CommunityId,
+        target: &StoredEvent,
+    ) -> (Option<String>, Option<i64>, i64) {
+        sqlx::query_as(
+            "SELECT edited_content, edited_at, \
+                    (SELECT count(*) FROM event_mentions \
+                     WHERE community_id = $1 AND event_id = $2) \
+             FROM events WHERE community_id = $1 AND id = $2",
+        )
+        .bind(community.as_uuid())
+        .bind(target.event.id.as_bytes().as_slice())
+        .fetch_one(pool)
+        .await
+        .expect("read edit and mention indexes")
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn apply_message_edit_index_mention_failure_rolls_back_edit() {
+        let admin = PgPool::connect(&crate::test_support::database_url())
+            .await
+            .expect("connect admin database");
+        let (pool, name) = create_scratch_db(&admin, "message_edit_rollback").await;
+        let (db, community, target) = message_edit_fixture(&pool).await;
+        db.apply_message_edit_index(community, &target, "previous edit", 100, &[])
+            .await
+            .expect("persist previous edit");
+        install_mention_failure_injection(&pool).await;
+        let mention = Keys::generate().public_key().to_hex();
+        let error = db
+            .apply_message_edit_index(community, &target, "failed edit", 200, &[mention])
+            .await
+            .expect_err("mention failure must reject the entire edit");
+        assert!(error.to_string().contains("injected mention failure"));
+        assert_eq!(
+            message_edit_state(&pool, community, &target).await,
+            (Some("previous edit".to_owned()), Some(100), 0),
+            "failed mention insertion must preserve the previous edit"
+        );
+        let searchable: (bool, bool) = sqlx::query_as(
+            "SELECT search_tsv @@ plainto_tsquery('simple', 'previous'), \
+                    search_tsv @@ plainto_tsquery('simple', 'failed') \
+             FROM events WHERE community_id = $1 AND id = $2",
+        )
+        .bind(community.as_uuid())
+        .bind(target.event.id.as_bytes().as_slice())
+        .fetch_one(&pool)
+        .await
+        .expect("read search index after rolled-back edit");
+        assert_eq!(searchable, (true, false));
+        drop_scratch_db(&admin, pool, &name).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn apply_message_edit_index_commits_edit_and_mentions() {
+        let pool = PgPool::connect(&crate::test_support::database_url())
+            .await
+            .expect("connect test database");
+        let (db, community, target) = message_edit_fixture(&pool).await;
+        let mention = Keys::generate().public_key().to_hex();
+        db.apply_message_edit_index(
+            community,
+            &target,
+            "edited message",
+            200,
+            &[mention.clone()],
+        )
+        .await
+        .expect("commit message edit");
+        assert_eq!(
+            message_edit_state(&pool, community, &target).await,
+            (Some("edited message".to_owned()), Some(200), 1)
+        );
+        let indexed: (String, DateTime<Utc>, Option<Uuid>, i32) = sqlx::query_as(
+            "SELECT pubkey_hex, event_created_at, channel_id, event_kind \
+             FROM event_mentions WHERE community_id = $1 AND event_id = $2",
+        )
+        .bind(community.as_uuid())
+        .bind(target.event.id.as_bytes().as_slice())
+        .fetch_one(&pool)
+        .await
+        .expect("read persisted mention");
+        assert_eq!(
+            indexed,
+            (
+                mention,
+                DateTime::from_timestamp(200, 0).expect("valid time"),
+                None,
+                9
+            )
+        );
+        let signed_content: String =
+            sqlx::query_scalar("SELECT content FROM events WHERE community_id = $1 AND id = $2")
+                .bind(community.as_uuid())
+                .bind(target.event.id.as_bytes().as_slice())
+                .fetch_one(&pool)
+                .await
+                .expect("read signed source content");
+        assert_eq!(signed_content, target.event.content);
+        let searchable: (bool, bool) = sqlx::query_as(
+            "SELECT search_tsv @@ plainto_tsquery('simple', 'edited'), \
+                    search_tsv @@ plainto_tsquery('simple', 'original') \
+             FROM events WHERE community_id = $1 AND id = $2",
+        )
+        .bind(community.as_uuid())
+        .bind(target.event.id.as_bytes().as_slice())
+        .fetch_one(&pool)
+        .await
+        .expect("read generated search index");
+        assert_eq!(searchable, (true, false));
+
+        // Existing behavior indexes mentions from an accepted stale edit,
+        // but never overwrites newer derived content.
+        let stale_mention = Keys::generate().public_key().to_hex();
+        db.apply_message_edit_index(community, &target, "stale message", 100, &[stale_mention])
+            .await
+            .expect("apply accepted stale edit");
+        assert_eq!(
+            message_edit_state(&pool, community, &target).await,
+            (Some("edited message".to_owned()), Some(200), 2)
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn apply_message_edit_index_empty_mentions_commits_edit() {
+        let pool = PgPool::connect(&crate::test_support::database_url())
+            .await
+            .expect("connect test database");
+        let (db, community, target) = message_edit_fixture(&pool).await;
+        db.apply_message_edit_index(community, &target, "no mentions", 100, &[])
+            .await
+            .expect("commit edit without mentions");
+        assert_eq!(
+            message_edit_state(&pool, community, &target).await,
+            (Some("no mentions".to_owned()), Some(100), 0)
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn apply_message_edit_index_invalid_timestamp_leaves_indexes_unchanged() {
+        let pool = PgPool::connect(&crate::test_support::database_url())
+            .await
+            .expect("connect test database");
+        let (db, community, target) = message_edit_fixture(&pool).await;
+        db.apply_message_edit_index(community, &target, "previous edit", 100, &[])
+            .await
+            .expect("persist previous edit");
+        let mention = Keys::generate().public_key().to_hex();
+        for mentions in [vec![], vec![mention]] {
+            let error = db
+                .apply_message_edit_index(community, &target, "invalid edit", i64::MAX, &mentions)
+                .await
+                .expect_err("invalid timestamp must fail before either index changes");
+            assert!(matches!(error, DbError::InvalidTimestamp(i64::MAX)));
+            assert_eq!(
+                message_edit_state(&pool, community, &target).await,
+                (Some("previous edit".to_owned()), Some(100), 0)
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres"]
+    async fn apply_message_edit_index_quiescing_rejects_at_admission() {
+        let pool = PgPool::connect(&crate::test_support::database_url())
+            .await
+            .expect("connect test database");
+        let (db, community, target) = message_edit_fixture(&pool).await;
+        crate::test_support::quiesce_community_for_tests(&pool, community).await;
+        let mention = Keys::generate().public_key().to_hex();
+        for mentions in [vec![], vec![mention]] {
+            let error = db
+                .apply_message_edit_index(community, &target, "fenced edit", 100, &mentions)
+                .await
+                .expect_err("quiescing community must reject new edit writes");
+            assert!(crate::test_support::is_admission_rejection(&error));
+            assert_eq!(
+                message_edit_state(&pool, community, &target).await,
+                (None, None, 0)
+            );
+        }
+    }
 }
 
 impl Db {
     /// Applies the derived search and mention indexes for an accepted message
     /// edit. The signed source event remains immutable.
+    /// Validates the timestamp before writing and commits both indexes atomically
+    /// in a community-admitted transaction.
     pub async fn apply_message_edit_index(
         &self,
         community_id: CommunityId,
@@ -5050,6 +5253,14 @@ impl Db {
         edit_created_at: i64,
         new_mention_pubkeys: &[String],
     ) -> Result<()> {
+        let created_at = DateTime::from_timestamp(edit_created_at, 0)
+            .ok_or(crate::error::DbError::InvalidTimestamp(edit_created_at))?;
+        let mut tx = crate::begin_community_event_write_transaction(
+            &self.pool,
+            community_id,
+            crate::observability::WriterOperation::EventWrite,
+        )
+        .await?;
         let target_id = target.event.id.as_bytes();
         sqlx::query(
             "UPDATE events SET edited_content = $1, edited_at = $2 \
@@ -5060,15 +5271,13 @@ impl Db {
         .bind(edit_created_at)
         .bind(community_id.as_uuid())
         .bind(target_id.as_slice())
-        .execute(&self.pool)
+        .execute(tx.conn())
         .await?;
 
         if new_mention_pubkeys.is_empty() {
-            return Ok(());
+            return tx.commit().await;
         }
 
-        let created_at = DateTime::from_timestamp(edit_created_at, 0)
-            .ok_or(crate::error::DbError::InvalidTimestamp(edit_created_at))?;
         let target_kind = target.event.kind.as_u16() as i32;
         let mut qb: QueryBuilder<sqlx::Postgres> = QueryBuilder::new(
             "INSERT INTO event_mentions \
@@ -5084,7 +5293,7 @@ impl Db {
                 .push_bind(target_kind);
         });
         qb.push(" ON CONFLICT DO NOTHING");
-        qb.build().execute(&self.pool).await?;
-        Ok(())
+        qb.build().execute(tx.conn()).await?;
+        tx.commit().await
     }
 }
