@@ -297,6 +297,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 
     let git_policy_router = api::git::git_policy_router(state.clone());
 
+    // The private read-state API retains the public relay host boundary.
+    let accessory_router = state
+        .config
+        .buzz_v1_enabled
+        .then(|| Router::new().nest(api::buzz_v1::BASE_PATH, api::buzz_v1::router(state.clone())));
     let api_router = Router::new()
         // WebSocket + NIP-11
         .route("/", get(nip11_or_ws_handler))
@@ -403,6 +408,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .merge(media_router)
         .merge(git_router)
         .merge(git_policy_router);
+    if let Some(accessory) = accessory_router {
+        merged = merged.merge(accessory);
+    }
 
     // Serve the public bundle only. The deployment-admin API and SPA live on
     // the dedicated admin listener built by `build_admin_router`.

@@ -1,3 +1,5 @@
+import type { WorkspaceProfile } from "./workspace-profile-types";
+export type { WorkspaceProfile } from "./workspace-profile-types";
 import {
   type NostrEvent,
   publishEvent,
@@ -9,6 +11,7 @@ import { relayWsUrl } from "@/shared/lib/relay-url";
 import {
   GENERAL_PROFILE_KINDS,
   hostedDirectoryEvents,
+  isWorkspaceIntegrationProfile,
 } from "./workspace-agent-directory-policy";
 import { KIND_HOSTED_AGENT_RUNTIME_STATUS } from "./workspace-agent-runtime";
 import {
@@ -102,27 +105,6 @@ export type WorkspaceChannelMember = {
 export type WorkspaceCommunityMember = {
   pubkey: string;
   role: "owner" | "admin" | "member";
-};
-
-export type WorkspaceProfile = {
-  pubkey: string;
-  name: string;
-  aliases?: string[];
-  picture?: string;
-  about?: string;
-  isAgent?: boolean;
-  audience?: "community" | "owner";
-  ownerPubkey?: string;
-  accessTier?: "shared" | "personal" | "admin";
-  model?: string;
-  models?: import("./workspace-agent-models").WorkspaceAgentModel[];
-  modelFamilies?: import("./workspace-agent-models").WorkspaceAgentModelFamily[];
-  runtime?: import("./workspace-agent-runtime").WorkspaceAgentRuntimeProjection;
-  runtimeCatalogDigest?: string;
-  runtimeControllerPubkey?: string;
-  runtimeStatusTrusted?: boolean;
-  legacyHostedConfigModel?: string | null;
-  resources?: string[];
 };
 
 export type WorkspaceMessage = NostrEvent & {
@@ -407,6 +389,7 @@ export async function listProfiles(
       about:
         typeof content.about === "string" ? content.about : existing?.about,
       isAgent: existing?.isAgent || event.kind === KIND_AGENT_PROFILE,
+      isIntegration: isWorkspaceIntegrationProfile(content),
     });
   }
   return profiles;

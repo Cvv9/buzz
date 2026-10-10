@@ -24,6 +24,7 @@ on:
       - '.github/workflows/mesh-lifecycle.yml'
       - 'docker-compose.yml'
       - 'docker-compose.ci.yml'
+      - 'docker-compose.registry-ci.yml'
   pull_request:
     paths:
       - 'crates/buzz-mesh-smoke/**'
@@ -38,6 +39,7 @@ on:
       - '.github/workflows/mesh-lifecycle.yml'
       - 'docker-compose.yml'
       - 'docker-compose.ci.yml'
+      - 'docker-compose.registry-ci.yml'
   workflow_dispatch:
 
 concurrency:
@@ -45,12 +47,11 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
+  COMPOSE_FILE: docker-compose.yml:docker-compose.registry-ci.yml
   CARGO_TERM_COLOR: always
 
 jobs:
   lifecycle-smoke:
-    env:
-      COMPOSE_FILE: docker-compose.yml:docker-compose.ci.yml
     name: Relay-Driven Mesh Lifecycle Smoke
     runs-on: ubuntu-24.04
     timeout-minutes: 45

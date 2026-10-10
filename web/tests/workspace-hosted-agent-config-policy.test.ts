@@ -177,6 +177,7 @@ test("presentation overlays never replace the agent-signed effective runtime", (
     {
       name: "Owner name",
       picture: "https://example.test/owner.png",
+      avatarConfigured: true,
       model: "gpt-5.6-sol",
       legacyHostedConfigModel: "gpt-3.5-turbo-16k",
     },

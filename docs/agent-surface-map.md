@@ -683,3 +683,9 @@ and `desktop/tests/e2e/agent-scheduled-workflows.spec.ts`. Release acceptance al
 requires `scripts/test-manual-workflow-ci.sh` against the exact Linux relay/agent
 images and PostgreSQL17; UI fixtures cannot establish runtime isolation,
 completion, fallback or stop-proof guarantees.
+
+### Web recipient identity and personal conversation archive (2026-10-09)
+
+The web recipient picker overlays owner-authorized hosted presentation by immutable agent pubkey. An explicit configured avatar clear is retained (`avatarConfigured`) instead of resurrecting cached kind-0 photos; an omitted override preserves the signed profile fallback. The picker labels hosted identities as AI agents. Kind-0 profiles with both `bot: true` and `service_type: integration` are named integration services and direct-message/group actions are disabled; this marker affects presentation only and grants no permission.
+
+Personal conversation archive uses the existing signed 41012 operation and 30622 visibility projection; reopen uses 41010. `ConversationActions` exposes a visible keyboard-accessible “Archive for me” action. The sidebar excludes archived IDs from its active list even when a deep link selects one, and lists them under Archived conversations with Reopen. Archiving affects the current user's sidebar, preserving shared message history. A failed operation is reported and remains retryable.

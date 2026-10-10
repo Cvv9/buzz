@@ -2,10 +2,54 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { mergeDmRecipientProfiles } from "../src/features/workspace/dm-recipient-profiles.ts";
 import { truncatePubkey } from "../src/shared/lib/pubkey.ts";
+import { activeDirectMessages } from "../src/features/workspace/dm-visibility-policy.ts";
+import { isWorkspaceIntegrationProfile } from "../src/features/workspace/workspace-agent-directory-policy.ts";
 
 const HUMAN = "a".repeat(64);
 const AGENT = "b".repeat(64);
 const NAMED_AGENT = "c".repeat(64);
+
+test("an archived deep-linked conversation never duplicates the active sidebar", () => {
+  const archived = {
+    id: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+    type: "dm",
+    name: "Vikram, Lina",
+  };
+  const other = {
+    id: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+    type: "dm",
+    name: "Vikram, Lina",
+  };
+  assert.deepEqual(
+    activeDirectMessages([archived, other], new Set([archived.id])),
+    [other],
+  );
+  assert.deepEqual(
+    activeDirectMessages(
+      [{ ...archived, id: archived.id.toUpperCase() }],
+      new Set([archived.id]),
+    ),
+    [],
+  );
+});
+test("integration labels are explicit presentation, never inferred from names", () => {
+  assert.equal(isWorkspaceIntegrationProfile({ name: "Sylars" }), false);
+  assert.equal(
+    isWorkspaceIntegrationProfile({ bot: true, service_type: "integration" }),
+    true,
+  );
+  assert.equal(
+    isWorkspaceIntegrationProfile({ bot: "true", service_type: "integration" }),
+    false,
+  );
+});
+test("an explicit owner avatar clear cannot resurrect a cached compatibility photo", () => {
+  const merged = mergeDmRecipientProfiles(
+    new Map([[AGENT, { pubkey: AGENT, name: "Old", picture: "old.png" }]]),
+    [{ pubkey: AGENT, name: "Oracle", isAgent: true, avatarConfigured: true }],
+  );
+  assert.equal(merged.get(AGENT)?.picture, undefined);
+});
 
 test("direct-message picker names hosted agents from the agent directory", () => {
   const profiles = new Map([

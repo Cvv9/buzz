@@ -1,4 +1,6 @@
 import { useMobileNavigation } from "@/shared/ui/use-mobile-navigation";
+import { activeDirectMessages } from "../dm-visibility-policy";
+import { ConversationActions } from "./ConversationActions";
 import {
   Bell,
   Bot,
@@ -141,6 +143,8 @@ export function WorkspaceSidebar({
   onOpenAlerts,
   onNewMessage,
   onReopenDirectMessage,
+  onArchiveDirectMessage,
+  archiveDirectMessagePending,
   hiddenDirectMessages,
   onAddAgent,
   onOpenAgents,
@@ -165,6 +169,8 @@ export function WorkspaceSidebar({
   onOpenAlerts: () => void;
   onNewMessage: () => void;
   onReopenDirectMessage: (channel: WorkspaceChannel) => void;
+  onArchiveDirectMessage: (channel: WorkspaceChannel) => void;
+  archiveDirectMessagePending: boolean;
   hiddenDirectMessages: WorkspaceChannel[];
   onAddAgent: (agent: WorkspaceProfile) => void;
   onOpenAgents: () => void;
@@ -172,7 +178,10 @@ export function WorkspaceSidebar({
   onToggleStar: (channelId: string) => void;
 }) {
   const streams = channels.filter((channel) => channel.type !== "dm");
-  const directMessages = channels.filter((channel) => channel.type === "dm");
+  const directMessages = activeDirectMessages(
+    channels,
+    new Set(hiddenDirectMessages.map((channel) => channel.id.toLowerCase())),
+  );
   const favoriteChannels = streams.filter((channel) =>
     starredChannelIds.has(channel.id),
   );
@@ -423,6 +432,8 @@ export function WorkspaceSidebar({
                     key={channel.id}
                     unreadCount={unreadChannelCounts.get(channel.id) ?? 0}
                     starred={starredChannelIds.has(channel.id)}
+                    onArchive={() => onArchiveDirectMessage(channel)}
+                    archivePending={archiveDirectMessagePending}
                     onToggleStar={() => onToggleStar(channel.id)}
                     onSelect={() => {
                       onSelectChannel(channel.id);
@@ -441,7 +452,7 @@ export function WorkspaceSidebar({
           {hiddenDirectMessages.length ? (
             <div className="mb-6">
               <p className="mb-2 px-2 text-xs font-semibold text-muted-foreground">
-                Hidden conversations
+                Archived conversations
               </p>
               <div className="space-y-0.5">
                 {hiddenDirectMessages.map((channel) => (
@@ -760,6 +771,8 @@ function ChannelButton({
   unreadCount = 0,
   starred = false,
   onToggleStar,
+  onArchive,
+  archivePending = false,
 }: {
   channel: WorkspaceChannel;
   active: boolean;
@@ -767,6 +780,8 @@ function ChannelButton({
   unreadCount?: number;
   starred?: boolean;
   onToggleStar: () => void;
+  onArchive?: () => void;
+  archivePending?: boolean;
 }) {
   return (
     <div
@@ -797,6 +812,13 @@ function ChannelButton({
           </span>
         ) : null}
       </button>
+      {channel.type === "dm" && onArchive ? (
+        <ConversationActions
+          name={channel.name}
+          pending={archivePending}
+          onArchive={onArchive}
+        />
+      ) : null}
       {channel.type !== "dm" ? (
         <button
           aria-label={`${starred ? "Remove" : "Add"} ${channel.name} ${starred ? "from" : "to"} favorites`}

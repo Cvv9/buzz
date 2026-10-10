@@ -18,6 +18,18 @@ export function isWorkspaceChannelId(value: string) {
   );
 }
 
+/** Archived conversations remain reachable, but never duplicate the active list. */
+export function activeDirectMessages<T extends { id: string; type: string }>(
+  channels: readonly T[],
+  archivedChannelIds: ReadonlySet<string>,
+): T[] {
+  return channels.filter(
+    (channel) =>
+      channel.type === "dm" &&
+      !archivedChannelIds.has(channel.id.toLowerCase()),
+  );
+}
+
 function tagValues(event: DmVisibilityEvent, name: string) {
   return event.tags
     .filter((tag) => tag[0] === name && typeof tag[1] === "string")
@@ -46,4 +58,14 @@ export function parseDmVisibilitySnapshot(
     return null;
   }
   return new Set(hidden.map((channelId) => channelId.toLowerCase()));
+}
+
+/** Clear only the archived conversation's local selection after relay acceptance. */
+export function clearArchivedChannelSelection(channelId: string): void {
+  try {
+    if (localStorage.getItem("buzz.web.active-channel") === channelId)
+      localStorage.removeItem("buzz.web.active-channel");
+  } catch {
+    // Relay-owned archive remains available when browser storage is disabled.
+  }
 }

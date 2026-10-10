@@ -1,13 +1,21 @@
 # Buzz contributor entrypoint
 
+## Product scope — hard rule
+
+- VarVik develops and ships the existing `web/` app. Default every task to that web app and only the backend, agent runtime, CLI or infrastructure it actually depends on.
+- Do not develop, build, test, launch, screenshot, package or release desktop/Tauri code unless the human explicitly requests desktop work. Importing upstream desktop changes is not permission to run native checks.
+- Mobile means linking to the existing store app. Do not rebuild, re-skin, fork or release a mobile app unless the human explicitly requests that work.
+- For web work and upstream synchronization, validate the web app and affected server paths only. Do not run `just ci`, `just setup`, blanket workspace checks or other aggregate commands that also build/test native apps; select the relevant web/server lanes instead. Keep `run_native_apps=false`.
+- This scope rule overrides broader native-app and cross-surface validation instructions below and in linked contributor guides. Do not spend time on unchanged packages or repeatedly rebuild an already-validated target without a new failure or relevant edit.
+
 For non-trivial planning/review, read [VISION.md](VISION.md), relevant `VISION_*.md`, [TESTING.md](TESTING.md), and affected package-local `TESTING.md`. Check product intent and call out intentional tensions. Scale validation to risk; exercise user-visible/integration workflows when practical. CI and runtime evidence are separate.
 
 ## Commands and gates
 
 - Before Git/hooks and development commands, activate Hermit: `. ./bin/activate-hermit` (Unix). In PowerShell use `./scripts/with-toolchain.ps1 <command...>`; never execute/dot-source the extensionless Unix activation file or rewrite hooks to compensate for PATH.
 - Setup: copy `.env.example` to `.env`, configure it, then `just setup`; `just relay` starts `ws://localhost:3000`.
-- Run `just ci` before every PR (format, lint, static checks, Rust/Tauri/desktop/mobile tests, desktop/web builds). Clippy does not replace fmt. `just test-unit` needs no infrastructure; relay/db/auth changes also require `just test` with Postgres + Redis.
-- Root Cargo excludes desktop: run `cargo test --manifest-path desktop/src-tauri/Cargo.toml` explicitly. Set the workdir on each command; shell CWD does not persist between tool calls.
+- Before a PR, run formatting, static checks, web tests/builds and the tests for affected server packages; use the web-only scope above instead of `just ci`. Clippy does not replace fmt. Relay/db/auth changes also require affected integration tests with isolated Postgres + Redis.
+- Root Cargo excludes desktop. Run Tauri checks only for explicitly requested desktop work. Set the workdir on each command; shell CWD does not persist between tool calls.
 - Hooks auto-fix/re-stage formatting; `just fix-all` fixes formatting, `just hooks` reinstalls hooks. Commit with `git commit -s`; rebase/cherry-pick need `--signoff`. History rewrites/force-push need explicit authorization. This workspace restricts buzz to local work; do not push.
 - No `unsafe`; no new production `unwrap()`/`expect()`; use `?` and proper errors. Document new public APIs.
 
@@ -604,7 +612,7 @@ description. See [PR #803](https://github.com/block/buzz/pull/803).
 4. **Worktrees: `cd` in the same command** — shell CWD doesn't persist between tool calls. Use `cd /path && cargo build` as one command.
 5. **Desktop crate excluded from root workspace** — `cargo test` at repo root does NOT run desktop tests. Use `cargo test --manifest-path desktop/src-tauri/Cargo.toml` explicitly.
 6. **React render perf: `React.memo` is all-or-nothing** — it only skips a re-render when *every* prop is reference-stable; one unstable prop (inline arrow/JSX, or a hook returning a fresh `{}`/`[]`/`Map` each render) defeats it. Two repeat offenders: (a) React Query results (`useMutation`/`useQuery`) are a **new object each render** — depend on the stable method (`mutation.mutateAsync`), not the object; (b) derived `Map`/array state that recomputes on a version bump — wrap in a content-equality ref cache (`shared/hooks/useStableReference.ts`). When chasing interaction lag, **measure with DevTools closed and no perf probes** (an open Web Inspector + per-keystroke `console.log` inflate the numbers), and isolate by removing one suspect at a time rather than guessing.
-7. **`pgschema` omits seed DML and some storage parameters** — Fresh desired-state bootstraps use `./bin/pgschema apply`, which does not execute `INSERT` statements or preserve every table storage parameter from `schema/schema.sql`. Put each unsupported invariant in `scripts/reconcile-schema-after-pgschema.sql` as an idempotent convergence statement plus a live catalog or data assertion. Every `pgschema apply` caller must run that script. A string assertion against `schema.sql` alone does not prove the pgschema-created database has the intended state.
+7. **`pgschema` omits seed DML and some storage parameters** — `schema/schema.sql` is an ordered `\i` manifest: `schema/tables/public/<table>.sql` holds only that table's `CREATE TABLE` and `CREATE INDEX` statements (one table per file, the shape SchemaBot reads), and types, functions, partitions, triggers, and seed rows live in the sibling `schema/` directories. Fresh desired-state bootstraps use `./bin/pgschema apply`, which does not execute `INSERT` statements or preserve every table storage parameter from `schema/schema.sql`. Put each unsupported invariant in `scripts/reconcile-schema-after-pgschema.sql` as an idempotent convergence statement plus a live catalog or data assertion. Every `pgschema apply` caller must run that script. A string assertion against `schema.sql` alone does not prove the pgschema-created database has the intended state.
 
 ---
 

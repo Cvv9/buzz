@@ -1855,7 +1855,7 @@ mod postgres_tests {
         assert!(!rejected.accepted);
         assert!(rejected.message.contains("runner_unavailable"));
         // Test-only readiness fixture: production control ingress still fails closed.
-        let mut tx = state.db.begin_event_write_transaction().await.unwrap();
+        let mut tx = state.db.pool().begin().await.unwrap();
         sqlx::query("INSERT INTO workflow_execution_capabilities(community_id,agent_pubkey,instance_id,protocol_version,expires_at) VALUES($1,$2,$3,1,NOW()+interval '90 seconds')").bind(community.as_uuid()).bind(agent.public_key().to_bytes().as_slice()).bind(Uuid::new_v4()).execute(&mut *tx).await.unwrap();
         tx.commit().await.unwrap();
         let still_rejected = ingest_event(&state, &tenant, rejected_event, auth.clone())

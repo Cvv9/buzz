@@ -209,6 +209,8 @@ CREATE TABLE events (
     kind        INT NOT NULL,
     tags        JSONB NOT NULL,
     content     TEXT NOT NULL,
+    edited_content TEXT,
+    edited_at   BIGINT,
     -- Full-text search vector (Typesense → Postgres FTS). Generated/STORED so
     -- it is a single source of truth — no sidecar indexer to keep coherent
     -- (Quinn option A, Lane-0 call). 'simple' config = no stemming/stopwords,
@@ -220,10 +222,10 @@ CREATE TABLE events (
     -- Privacy: encrypted/private routing wrappers and p-gated membership notices
     -- must never be discoverable through NIP-50 full-text search. NULL tsvector
     -- never matches `@@`.
-    -- Keep in sync with migrations (final state: 0001 + 0005 + 0014 + 0033).
+    -- Keep in sync with migrations (final state: 0001 + 0005 + 0014 + 0032 + 0033).
     search_tsv  TSVECTOR GENERATED ALWAYS AS (
         CASE WHEN kind IN (1059, 30179, 30300, 30350, 30622, 44100, 44101, 44200) THEN NULL::tsvector
-             ELSE to_tsvector('simple', content)
+             ELSE to_tsvector('simple', COALESCE(edited_content, content))
         END
     ) STORED,
     sig         BYTEA NOT NULL,
@@ -2217,3 +2219,38 @@ SELECT attach_community_write_fence('artifact_revisions');
 -- The relay does not expire events. Any future row retention or partition
 -- retirement must skip payloads referenced by `artifact_heads.event_id`
 -- (NIP-AR: expiring earlier revisions MUST NOT remove the current revision).
+
+-- Private accessory read progress. Never included in Nostr event queries.
+-- A frontier is the relay arrival time (events.received_at) of the message a
+-- context was read through, never signed event time, which the sender chooses.
+-- An empty root_id covers only the channel timeline; a root-specific frontier
+-- covers that thread, without inheritance.
+-- threads_through_timestamp is the only cross-context cut: an explicit
+-- whole-channel read that also covers every thread in that channel.
+CREATE TABLE personal_read_accounts (
+    community_id UUID NOT NULL REFERENCES communities(id),
+    started_at TIMESTAMPTZ,
+    actor BYTEA NOT NULL CHECK (octet_length(actor) = 32),
+    PRIMARY KEY (community_id, actor)
+);
+
+CREATE TABLE personal_read_frontiers (
+    community_id UUID NOT NULL,
+    actor BYTEA NOT NULL,
+    channel_id UUID NOT NULL,
+    root_id BYTEA NOT NULL DEFAULT ''::bytea CHECK (octet_length(root_id) IN (0, 32)),
+    through_timestamp TIMESTAMPTZ NOT NULL,
+    -- Whole-channel cut covering every thread; channel rows only.
+    threads_through_timestamp TIMESTAMPTZ
+        CHECK (threads_through_timestamp IS NULL OR root_id = ''::bytea),
+    PRIMARY KEY (community_id, actor, channel_id, root_id),
+    FOREIGN KEY (community_id, actor)
+        REFERENCES personal_read_accounts (community_id, actor) ON DELETE CASCADE,
+    FOREIGN KEY (community_id, channel_id)
+        REFERENCES channels (community_id, id) ON DELETE CASCADE
+);
+
+
+
+SELECT attach_community_write_fence('personal_read_accounts');
+SELECT attach_community_write_fence('personal_read_frontiers');

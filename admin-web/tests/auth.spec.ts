@@ -242,6 +242,7 @@ test("an attachment that arrives after the view is left is revoked immediately",
 }) => {
   await instrumentObjectUrls(page);
   await routeFeedbackDetail(page);
+  let pendingAttachments = 0;
   let release = () => {};
   const held = new Promise<void>((resolve) => {
     release = resolve;
@@ -249,6 +250,7 @@ test("an attachment that arrives after the view is left is revoked immediately",
   await page.route(
     `**/api/admin/v1/feedback/${FEEDBACK_ID}/attachments/**`,
     async (route) => {
+      pendingAttachments += 1;
       await held;
       await route.fulfill({
         contentType: "application/octet-stream",
@@ -259,7 +261,7 @@ test("an attachment that arrives after the view is left is revoked immediately",
 
   await page.goto(`/feedback/${FEEDBACK_ID}`);
   // Both fetches are held, so no blob exists yet.
-  await expect(page.getByText("Loading…")).toBeVisible();
+  await expect.poll(() => pendingAttachments).toBe(2);
   expect(await page.evaluate(() => window.objectUrlLog.created)).toEqual([]);
 
   // Leave before either fetch resolves, then let both complete.

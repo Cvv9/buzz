@@ -72,6 +72,7 @@ jobs:
               - 'docker-compose.harness.yml'
               - 'Dockerfile'
               - 'docker-compose.ci.yml'
+              - 'docker-compose.registry-ci.yml'
               - 'scripts/run-tests.sh'
               - 'scripts/model-capabilities.json'
               - 'scripts/normative-corpus.json'
@@ -393,7 +394,7 @@ jobs:
     # open many DB/Redis connections before starting the relay listeners.
     services:
       postgres:
-        image: postgres:17-alpine
+        image: mirror.gcr.io/library/postgres:17-alpine
         env:
           POSTGRES_USER: buzz
           POSTGRES_PASSWORD: buzz_test_only
@@ -404,7 +405,7 @@ jobs:
           --health-cmd "pg_isready -h 127.0.0.1 -U buzz -d buzz_manual_tests_v1"
           --health-interval 2s --health-timeout 5s --health-retries 30
       redis:
-        image: redis:7-alpine
+        image: mirror.gcr.io/library/redis:7-alpine
         ports:
           - 16441:6379
         options: >-

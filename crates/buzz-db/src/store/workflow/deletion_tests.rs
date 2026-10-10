@@ -115,6 +115,17 @@ async fn workflow_deletion_removes_both_projections_and_is_scoped_and_retryable(
     let run_id = create_workflow_run(&db.pool, community, id, None, None)
         .await
         .expect("run");
+    // A completed event run does not require a retained execution ledger.
+    db.update_workflow_run(
+        community,
+        run_id,
+        crate::workflow::RunStatus::Completed,
+        0,
+        &serde_json::json!([]),
+        None,
+    )
+    .await
+    .expect("complete event run");
     // A fired schedule links both the workflow and a cascading run. Deletion
     // must also remove the claim despite its NO ACTION run foreign key.
     sqlx::query(
@@ -290,5 +301,173 @@ async fn legacy_stored_deletion_repair_has_one_committed_dispatch_owner() {
             .await
             .expect("completed duplicate")
             .1
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires Postgres"]
+async fn quiescing_community_rejects_workflow_deletion_at_admission_before_replacement_lock() {
+    let (db, community) = setup().await;
+    let keys = Keys::generate();
+    let owner = keys.public_key().to_bytes();
+    let id = Uuid::new_v4();
+    let d_tag = id.to_string();
+    let now = Timestamp::now().as_secs();
+    let query = seed(&db, community, &keys, id, &d_tag, now).await;
+    let deletion = EventBuilder::new(Kind::EventDeletion, "")
+        .tags([Tag::parse([
+            "a",
+            &format!("30620:{}:{d_tag}", keys.public_key().to_hex()),
+        ])
+        .expect("coordinate")])
+        .custom_created_at(Timestamp::from(now))
+        .sign_with_keys(&keys)
+        .expect("sign deletion");
+    crate::test_support::quiesce_community_for_tests(&db.pool, community).await;
+
+    // Hold the workflow coordinate's replacement lock. Admission must reject
+    // both entry points before they reach it, so neither queues behind it.
+    let mut holder = db.pool.begin().await.expect("begin lock holder");
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(crate::store::replaceable::event_replacement_lock_key(
+            community,
+            KIND_WORKFLOW_DEF as i32,
+            &owner,
+            Some(d_tag.as_bytes()),
+        ))
+        .execute(&mut *holder)
+        .await
+        .expect("hold replacement lock");
+    let bounded = std::time::Duration::from_secs(5);
+    let by_coordinate = tokio::time::timeout(
+        bounded,
+        db.delete_workflow_by_coordinate(community, &owner, &d_tag, now as i64),
+    )
+    .await
+    .expect("admission must reject before waiting on the replacement lock")
+    .expect_err("a quiescing community must reject coordinate deletion");
+    let with_request = tokio::time::timeout(
+        bounded,
+        db.insert_workflow_deletion(community, &deletion, &owner, &d_tag),
+    )
+    .await
+    .expect("admission must reject before any deletion write")
+    .expect_err("a quiescing community must reject a deletion request");
+    holder.rollback().await.expect("release replacement lock");
+
+    for error in [&by_coordinate, &with_request] {
+        assert!(
+            crate::test_support::is_admission_rejection(error),
+            "expected entry admission rejection, got: {error:#}"
+        );
+    }
+    assert_present(&db, &query, id).await;
+    let stored: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM events WHERE community_id = $1 AND id = $2")
+            .bind(community.as_uuid())
+            .bind(deletion.id.as_bytes().as_slice())
+            .fetch_one(&db.pool)
+            .await
+            .expect("count deletion request");
+    assert_eq!(stored, 0, "a rejected deletion request must not be stored");
+}
+
+#[tokio::test]
+#[ignore = "requires Postgres"]
+async fn workflow_deletion_retained_ledger_has_one_change_and_preserves_retry_state() {
+    let (db, community) = setup().await;
+    let keys = Keys::generate();
+    let owner = keys.public_key().to_bytes();
+    let id = Uuid::new_v4();
+    let d_tag = id.to_string();
+    let now = Timestamp::now().as_secs();
+    let query = seed(&db, community, &keys, id, &d_tag, now).await;
+    let channel = Uuid::new_v4();
+    sqlx::query("INSERT INTO channels (id, community_id, name, created_by) VALUES ($1,$2,$3,$4)")
+        .bind(channel)
+        .bind(community.as_uuid())
+        .bind("retained-workflow")
+        .bind(owner.as_slice())
+        .execute(&db.pool)
+        .await
+        .expect("workflow channel");
+    sqlx::query("UPDATE workflows SET channel_id=$1 WHERE community_id=$2 AND id=$3")
+        .bind(channel)
+        .bind(community.as_uuid())
+        .bind(id)
+        .execute(&db.pool)
+        .await
+        .expect("associate workflow channel");
+    let run_id = create_workflow_run(&db.pool, community, id, None, None)
+        .await
+        .expect("pending execution ledger");
+    sqlx::query(
+        "INSERT INTO scheduled_workflow_fires \
+         (community_id, workflow_id, scheduled_for, workflow_run_id) VALUES ($1, $2, NOW(), $3)",
+    )
+    .bind(community.as_uuid())
+    .bind(id)
+    .bind(run_id)
+    .execute(&db.pool)
+    .await
+    .expect("scheduled execution claim");
+    let (first, second) = tokio::join!(
+        db.delete_workflow_by_coordinate(community, &owner, &d_tag, now as i64),
+        db.delete_workflow_by_coordinate(community, &owner, &d_tag, now as i64),
+    );
+    let first = first.expect("first retained deletion");
+    let second = second.expect("concurrent retained deletion");
+    assert_ne!(
+        first.changed, second.changed,
+        "only one retained deletion changes state"
+    );
+    assert_eq!(first.channel_id, first.changed.then_some(channel));
+    assert_eq!(second.channel_id, second.changed.then_some(channel));
+    assert!(db
+        .query_events(&query)
+        .await
+        .expect("definition query")
+        .is_empty());
+    let state: (bool, String, DateTime<Utc>, DateTime<Utc>) = sqlx::query_as(
+        "SELECT enabled, status::text, manual_deleted_at, updated_at \
+         FROM workflows WHERE community_id=$1 AND id=$2",
+    )
+    .bind(community.as_uuid())
+    .bind(id)
+    .fetch_one(&db.pool)
+    .await
+    .expect("retained workflow tombstone");
+    assert!(!state.0);
+    assert_eq!(state.1, "archived");
+    assert!(db.get_workflow_run(community, run_id).await.is_ok());
+    let claims: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM scheduled_workflow_fires \
+         WHERE community_id=$1 AND workflow_id=$2 AND workflow_run_id=$3",
+    )
+    .bind(community.as_uuid())
+    .bind(id)
+    .bind(run_id)
+    .fetch_one(&db.pool)
+    .await
+    .expect("retained schedule claim");
+    assert_eq!(claims, 1);
+    let retry = db
+        .delete_workflow_by_coordinate(community, &owner, &d_tag, now as i64)
+        .await
+        .expect("retained deletion retry");
+    assert!(!retry.changed);
+    assert_eq!(retry.channel_id, None);
+    let after: (bool, String, DateTime<Utc>, DateTime<Utc>) = sqlx::query_as(
+        "SELECT enabled, status::text, manual_deleted_at, updated_at \
+         FROM workflows WHERE community_id=$1 AND id=$2",
+    )
+    .bind(community.as_uuid())
+    .bind(id)
+    .fetch_one(&db.pool)
+    .await
+    .expect("unchanged retained workflow");
+    assert_eq!(
+        after, state,
+        "retries preserve tombstone and update timestamps"
     );
 }

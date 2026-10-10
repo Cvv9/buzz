@@ -508,7 +508,10 @@ async fn workflow_manual_exact_rolling_boundary_and_cooldown_projection() {
     assert!(accepted.accepted);
     let now = Utc::now();
     sqlx::query("UPDATE workflow_runs SET accepted_at=$1,execution_state='failed',status='failed' WHERE community_id=$2").bind(now-Duration::hours(24)).bind(f.community.as_uuid()).execute(&f.db.pool).await.unwrap();
-    let mut tx = f.db.begin_event_write_transaction().await.unwrap();
+    let mut tx =
+        f.db.begin_event_write_transaction(f.community)
+            .await
+            .unwrap();
     let boundary = limits(&mut tx, f.community, f.workflow, now).await.unwrap();
     assert_eq!(boundary.remaining_workflow, 3);
     assert_eq!(boundary.remaining_community, 10);
@@ -516,7 +519,7 @@ async fn workflow_manual_exact_rolling_boundary_and_cooldown_projection() {
     sqlx::query("UPDATE workflow_runs SET accepted_at=$1 WHERE community_id=$2")
         .bind(now - Duration::minutes(14))
         .bind(f.community.as_uuid())
-        .execute(&mut *tx)
+        .execute(tx.conn())
         .await
         .unwrap();
     let cooldown = limits(&mut tx, f.community, f.workflow, now).await.unwrap();
@@ -542,9 +545,14 @@ async fn workflow_manual_delete_keeps_active_evidence_and_charged_allowance() {
             .unwrap()
             .definition
             .to_string();
-    f.db.delete_workflow_for_owner(f.community, f.workflow, &f.owner.public_key().to_bytes())
-        .await
-        .unwrap();
+    f.db.delete_workflow_by_coordinate(
+        f.community,
+        &f.owner.public_key().to_bytes(),
+        &f.workflow.to_string(),
+        Utc::now().timestamp(),
+    )
+    .await
+    .unwrap();
     let retained = f.db.get_workflow(f.community, f.workflow).await.unwrap();
     assert!(!retained.enabled);
     assert_eq!(

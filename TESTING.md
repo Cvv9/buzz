@@ -1,5 +1,7 @@
 # Testing
 
+For VarVik work, [AGENTS.md](AGENTS.md#product-scope--hard-rule) sets a web-only default. Run the existing web app's checks and the affected backend/agent tests. Do not build or test desktop/Tauri or mobile, or enable `run_native_apps`, unless the human explicitly requests native work. Mobile integration otherwise means linking to the existing store app.
+
 ## Automated Tests
 
 ### GitHub Actions CI profiles

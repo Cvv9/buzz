@@ -1,4 +1,5 @@
 import { useWorkspaceProfileSync } from "../useWorkspaceProfileSync";
+import { clearArchivedChannelSelection } from "../dm-visibility-policy";
 import {
   WorkspaceAgents,
   WorkspaceGuide,
@@ -10,6 +11,7 @@ import { Menu } from "lucide-react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import * as React from "react";
+import { conversationArchiveFeedback } from "../workspace-archive-feedback";
 import { truncatePubkey } from "@/shared/lib/pubkey";
 import { mergeDmRecipientProfiles } from "../dm-recipient-profiles";
 import { WorkspaceStartup } from "./WorkspaceStartup";
@@ -570,11 +572,16 @@ export function WorkspacePage({
   });
   const hideDmMutation = useMutation({
     mutationFn: hideDirectMessage,
-    onSuccess: () => {
-      setActiveChannelId(null);
-      setThreadRootId(null);
-      void navigate({ to: "/" });
+    onSuccess: (_receipt, channelId) => {
+      if (activeChannelId === channelId || channelPermalink === channelId) {
+        setActiveChannelId(null);
+        setThreadRootId(null);
+        clearArchivedChannelSelection(channelId);
+        void navigate({ to: "/" });
+      }
+      conversationArchiveFeedback.success();
     },
+    onError: conversationArchiveFeedback.error,
   });
   const addDmMemberMutation = useMutation({
     mutationFn: ({
@@ -727,6 +734,8 @@ export function WorkspacePage({
         onOpenInbox={() => openWorkspaceView("inbox")}
         onOpenAlerts={() => openWorkspaceView("alerts")}
         onNewMessage={() => void navigate({ to: "/messages/new" })}
+        onArchiveDirectMessage={(channel) => hideDmMutation.mutate(channel.id)}
+        archiveDirectMessagePending={hideDmMutation.isPending}
         onReopenDirectMessage={(channel) =>
           openDmMutation.mutate({
             recipients: channel.memberPubkeys.filter(

@@ -16,6 +16,10 @@
 //! | 8 | native websocket send loop (all webview relay WS) | `native_websocket.rs` |
 //! | 9 | scoped manual workflow publisher | `commands/workflows.rs` |
 //! | 10 | `send_admin_mutation` (all admin API JSON bodies) | `commands/admin/helpers.rs` |
+//! | 11 | `build_admin_mutation_request` (URL of admin community reads and every mutation) | `commands/admin/helpers.rs` |
+//! | 12 | `fetch_admin_json` (URL of every legacy admin GET) | `commands/admin/helpers.rs` |
+//! | 13 | `admin_probe_inner` (probe URL, before the unsigned request) | `commands/admin/mod.rs` |
+//! | 14 | `fetch_feedback_attachment` (attachment URL, before signing) | `commands/admin/attachment.rs` |
 //!
 //! The inventory-completeness test in `egress_guard_tests.rs` asserts that
 //! every `/events` URL-construction site in the tree calls this guard, so a

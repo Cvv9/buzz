@@ -2,6 +2,8 @@
 
 Read only for the task routed here by [AGENTS.md](../../AGENTS.md). Commands and code paths below are relative to the repository root unless a command changes directory.
 
+VarVik's default product is the existing web app. Follow the hard product-scope rule in [AGENTS.md](../../AGENTS.md#product-scope--hard-rule): select web and affected server checks; do not run desktop/Tauri/mobile checks or broad `just ci`/`just setup` commands unless native work was explicitly requested. Native procedures below are conditional reference material, not default steps.
+
 ## Getting Started
 
 ```bash
@@ -9,7 +11,7 @@ Read only for the task routed here by [AGENTS.md](../../AGENTS.md). Commands and
 cp .env.example .env      # configure local environment
 just setup                # install deps, run migrations
 just relay                # start relay at ws://localhost:3000
-just ci                   # run before any PR
+# Select web + affected server checks; see the product-scope rule above.
 ```
 
 On Windows, the default agent shell is PowerShell. Do **not** dot-source or
@@ -19,7 +21,7 @@ PowerShell wrapper instead:
 
 ```powershell
 ./scripts/with-toolchain.ps1 cargo test
-./scripts/with-toolchain.ps1 pnpm --dir desktop test
+./scripts/with-toolchain.ps1 pnpm --dir web test:unit
 ```
 
 The wrapper uses the installed native Rust/Node tools and keeps all activation
