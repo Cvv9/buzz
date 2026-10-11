@@ -236,3 +236,37 @@ $EDITOR .env
 curl -fsS "http://127.0.0.1:$(grep -E '^BUZZ_HTTP_PORT=' .env | cut -d= -f2-)/_liveness"
 ./run.sh status
 ```
+
+## Qualified runtime binary updates
+
+Build Rust runtime updates in hosted CI rather than on the production host.
+The Docker workflow exports `qualified-workflow-runtime-linux-amd64` only after
+its integrated Linux workflow harness and runtime smoke tests pass. This
+short-lived artifact contains the stripped `buzz-acp` and `buzz-relay` binaries,
+`SHA256SUMS`, and `provenance.json`; it does not contain runtime credentials.
+
+Before importing an artifact, verify its Actions artifact digest, every file
+hash, the reviewed source head and exact checkout, and the Cargo.lock hash.
+The checkout may be the PR merge commit; the manifest records both identities.
+Use the exact reviewed destination base image and preserve its native adapter,
+authentication, mounts, and service configuration. Actions ZIP extraction can
+lose executable bits: install binaries with mode `0755`, verify their checksums,
+and check libc compatibility and `--help` in the destination image before a
+canary. `Dockerfile.hosted-workflow-compat` imports only the qualified ACP binary
+and the reviewed entrypoint with a required binary checksum. Relay activation
+also requires the actual ignored PostgreSQL retry/recovery tests to pass.
+Preserve the prior immutable image and its rollback evidence through acceptance.
+
+A medium reasoning setting requires an advertised reasoning option or an exact
+advertised effort-bearing model binding. Catalogs prefer the latter over a bare
+option that only implies a default. A changed private binding changes the catalog
+digest; refresh the signed controller selection against the new catalog rather
+than rewriting a previously signed method.
+
+On 2026-10-11, a task-owned isolated DB compilation bounded to 3 GB coincided with
+host load around 80 and unresponsive SSH and application health. OOM was not
+proved. Stopping only the verified task compiler restored health without a VM
+or application restart; the interrupted DB baseline supplied no test result.
+The temporary test containers and network were removed, and existing reusable
+caches and the qualified rollback binary were retained. Subsequent qualification
+uses hosted CI artifacts and excludes compilation on the production host.
