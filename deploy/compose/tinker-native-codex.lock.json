@@ -19,5 +19,5 @@
   "intendedPrimaryModel": "gpt-6.1-sol",
   "intendedEffort": "medium",
   "adapterSelectionId": "gpt-6.1-sol[medium]",
-  "scope": "Tinker only; no vendor adapter or Rust binary changes"
+  "scope": "Tinker-only native upgrade layer; this layer preserves the vendor adapter and Rust binaries. The separate qualified hosted-workflow-compat layer updates buzz-acp and the subscription-only entrypoint."
 }
