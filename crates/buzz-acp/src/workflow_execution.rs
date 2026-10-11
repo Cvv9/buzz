@@ -764,9 +764,15 @@ impl Runtime {
                 return Ok(());
             }
             let (count, fallback) = {
-                let journal = self.journal.lock().await;
-                let record = journal.tasks.get(&task.id).context("missing task")?;
+                let mut journal = self.journal.lock().await;
+                let record = journal.tasks.get_mut(&task.id).context("missing task")?;
                 if !record.can_claim(task.origin == "manual") {
+                    return Ok(());
+                }
+                if fence_disabled_fallback(record, &self.policy) {
+                    journal.save()?;
+                    tracing::warn!(task_id = %task.id,
+                        "automatic retry stopped: historical fallback task cannot resume with fallback disabled");
                     return Ok(());
                 }
                 (record.attempts.len(), record.fallback)
@@ -1254,9 +1260,118 @@ fn stop_operation(grant: &ExecutionDecision, reason: StopReason) -> ExecutionOpe
     }
 }
 fn qualifies_for_fallback(error: Option<&AcpError>, policy: &FailoverPolicy) -> bool {
-    // Only protocol errors carry machine failure evidence. Never classify prose
-    // emitted as agent_message_chunk, even if it resembles a provider error.
-    matches!(error,Some(AcpError::AgentError{message,..}) if policy.enabled() && policy.triggers.iter().any(|trigger|message.to_ascii_lowercase().contains(trigger)))
+    // Only machine application errors from the prompt can carry quota evidence.
+    // Never classify message chunks or setup/protocol failures as paid failover.
+    let Some(AcpError::AgentError { message, .. }) = error else {
+        return false;
+    };
+    let message = message.to_ascii_lowercase();
+    // "Internal error" alone is not evidence of exhausted subscription quota.
+    // Setup failures are separately classified before the prompt is submitted.
+    let quota_evidence = [
+        "usage_limit",
+        "usage limit",
+        "rate_limit",
+        "rate limit",
+        "quota",
+        "too many requests",
+        "429",
+    ]
+    .iter()
+    .any(|marker| message.contains(marker));
+    policy.enabled()
+        && quota_evidence
+        && policy
+            .triggers
+            .iter()
+            .any(|trigger| message.contains(trigger))
+}
+
+fn fence_disabled_fallback(record: &mut TaskRecord, policy: &FailoverPolicy) -> bool {
+    if record.fallback
+        && !policy.enabled()
+        && record
+            .attempts
+            .iter()
+            .all(|attempt| attempt.phase == Phase::Done)
+    {
+        // Do not rewrite historical routing or remove acknowledged stop proof.
+        // A new primary task needs a new grant; it is not a silent continuation
+        // of a task that previously activated a now-disabled paid route.
+        record.terminal = true;
+        true
+    } else {
+        false
+    }
+}
+
+fn workflow_model_switch_method(
+    session: &serde_json::Value,
+    desired: &str,
+) -> Result<crate::acp::ModelSwitchMethod, AcpError> {
+    if let Some(method) = crate::acp::resolve_model_switch_method(session, desired) {
+        return Ok(method);
+    }
+    // Public model families can differ from the adapter's private selection IDs.
+    // Resolve from its fresh catalog, including its advertised default effort;
+    // never manufacture an adapter-specific modelId[effort] string.
+    let normalized = crate::acp::normalize_session_runtime_catalog(session)
+        .map_err(|error| AcpError::Protocol(format!("workflow model catalog: {error}")))?;
+    let family = normalized
+        .catalog
+        .model_families
+        .iter()
+        .find(|family| family.id.as_str() == desired)
+        .ok_or_else(|| {
+            AcpError::Protocol(format!("workflow model is not advertised: {desired}"))
+        })?;
+    let binding = normalized
+        .catalog
+        .bindings
+        .iter()
+        .find(|binding| binding.model == family.id && binding.effort == family.default_effort)
+        .ok_or_else(|| AcpError::Protocol("workflow model has no default-effort binding".into()))?;
+    Ok(match &binding.method {
+        buzz_core::hosted_agent_runtime::RuntimeSelectionMethod::ConfigOption {
+            config_id,
+            option_value,
+        } => crate::acp::ModelSwitchMethod::ConfigOption {
+            config_id: config_id.clone(),
+            option_value: option_value.clone(),
+        },
+        buzz_core::hosted_agent_runtime::RuntimeSelectionMethod::SetModel { model_id } => {
+            crate::acp::ModelSwitchMethod::SetModel {
+                model_id: model_id.clone(),
+            }
+        }
+    })
+}
+
+fn workflow_setup_error(stage: &str, error: AcpError) -> AcpError {
+    AcpError::Protocol(format!("workflow setup failed during {stage}: {error}"))
+}
+
+async fn apply_workflow_model(
+    child: &mut AcpClient,
+    session_id: &str,
+    session: &serde_json::Value,
+    desired: &str,
+) -> Result<(), AcpError> {
+    match workflow_model_switch_method(session, desired)? {
+        crate::acp::ModelSwitchMethod::ConfigOption {
+            config_id,
+            option_value,
+        } => {
+            child
+                .session_set_config_option(session_id, &config_id, &option_value)
+                .await
+        }
+        crate::acp::ModelSwitchMethod::SetModel { model_id } => {
+            child.session_set_model(session_id, &model_id).await
+        }
+    }
+    .map_err(|error| workflow_setup_error("model selection", error))?;
+    Ok(())
 }
 fn reject_full_credentials(value: &str, keys: &Keys) -> Result<()> {
     use nostr::ToBech32;
@@ -1355,20 +1470,24 @@ async fn execute_turn(
         idle,
         deadline,
     } = settings;
-    child.initialize().await?;
+    child
+        .initialize()
+        .await
+        .map_err(|error| workflow_setup_error("initialize", error))?;
     let cwd = if task.origin == "manual" {
         &isolation.manual_workspace
     } else {
         &isolation.ordinary_home
     };
     let session = child
-        .session_new(
+        .session_new_full(
             &cwd.to_string_lossy(),
             mcp,
             system_prompt.map(crate::acp::SystemPromptTransport::Field),
             Some("Workflow execution"),
         )
-        .await?;
+        .await
+        .map_err(|error| workflow_setup_error("session/new", error))?;
     if !plan.failover {
         if let Some(revision) = revision {
             match &revision.method {
@@ -1377,18 +1496,22 @@ async fn execute_turn(
                     option_value,
                 } => {
                     child
-                        .session_set_config_option(&session, config_id, option_value)
-                        .await?;
+                        .session_set_config_option(&session.session_id, config_id, option_value)
+                        .await
+                        .map_err(|error| workflow_setup_error("runtime selection", error))?;
                 }
                 buzz_core::hosted_agent_runtime::RuntimeSelectionMethod::SetModel { model_id } => {
-                    child.session_set_model(&session, model_id).await?;
+                    child
+                        .session_set_model(&session.session_id, model_id)
+                        .await
+                        .map_err(|error| workflow_setup_error("runtime selection", error))?;
                 }
             }
         } else if let Some(model) = &plan.model {
-            child.session_set_model(&session, model).await?;
+            apply_workflow_model(child, &session.session_id, &session.raw, model).await?;
         }
     } else if let Some(model) = &plan.model {
-        child.session_set_model(&session, model).await?;
+        apply_workflow_model(child, &session.session_id, &session.raw, model).await?;
     }
     let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
     if remaining.is_zero() {
@@ -1398,7 +1521,7 @@ async fn execute_turn(
     }
     child
         .session_prompt_with_idle_timeout(
-            &session,
+            &session.session_id,
             &task.event.content,
             idle.min(remaining),
             remaining,

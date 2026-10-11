@@ -1,5 +1,218 @@
 use super::*;
 
+#[test]
+fn workflow_generic_internal_error_does_not_select_paid_fallback() {
+    let error = AcpError::AgentError {
+        code: -32603,
+        message: "Internal error".into(),
+    };
+    assert!(!qualifies_for_fallback(Some(&error), &policy()));
+    let quota = AcpError::AgentError {
+        code: -32603,
+        message: "usage_limit internal error".into(),
+    };
+    assert!(qualifies_for_fallback(Some(&quota), &policy()));
+}
+
+async fn advertised_model_probe(mode: &str) -> AcpClient {
+    let script = r#"import json,sys,os
+mode=os.environ['WORKFLOW_MODEL_PROBE']
+selection='gpt-6.1-sol[medium]' if mode=='combined' else 'gpt-6.1-sol'
+selected=False
+for line in sys.stdin:
+ request=json.loads(line); method=request.get('method'); rid=request.get('id')
+ if rid is None: continue
+ result={}; error=None
+ if method=='initialize':
+  if mode=='init_error': error={'code':-32603,'message':'usage_limit internal error'}
+  else: result={'protocolVersion':1,'agentCapabilities':{}}
+ elif method=='session/new':
+  result={'sessionId':'model-probe','configOptions':[{'id':'model','category':'model','currentValue':selection,'options':[{'value':selection,'name':'GPT-6.1-Sol (medium)'}]},{'id':'effort','category':'thought_level','currentValue':'medium','options':[{'value':'medium','name':'Medium'}]}],'models':{'currentModelId':'gpt-6.1-sol[medium]','availableModels':[{'modelId':'gpt-6.1-sol[medium]','name':'GPT-6.1-Sol (medium)'}]}}
+ elif method=='session/set_config_option':
+  params=request['params']
+  if mode=='model_error': error={'code':-32603,'message':'Internal error'}
+  elif params.get('configId')=='model' and params.get('value')==selection: selected=True
+  else: error={'code':-32602,'message':'unexpected selection'}
+ elif method=='session/set_model':
+  error={'code':-32603,'message':'Internal error','data':{'details':'Unsupported format for modelId. Expected modelId[effort]'}}
+ elif method=='session/prompt':
+  if not selected: error={'code':-32603,'message':'model selection was skipped'}
+  else:
+   print(json.dumps({'jsonrpc':'2.0','method':'session/update','params':{'sessionId':'model-probe','update':{'sessionUpdate':'agent_message_chunk','content':{'type':'text','text':'primary stable gpt-6.1-sol medium'}}}}),flush=True)
+   result={'stopReason':'end_turn'}
+ response={'jsonrpc':'2.0','id':rid}
+ response['error' if error else 'result']=error if error else result
+ print(json.dumps(response),flush=True)
+"#;
+    AcpClient::spawn(
+        if cfg!(windows) { "python" } else { "python3" },
+        &["-u".into(), "-c".into(), script.into()],
+        &[("WORKFLOW_MODEL_PROBE".into(), mode.into())],
+        false,
+    )
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+async fn workflow_bare_primary_model_uses_advertised_stable_selection_and_medium() {
+    let (_, _, _, task, _) = fixture();
+    for mode in ["stable", "combined"] {
+        let mut child = advertised_model_probe(mode).await;
+        let mut primary = plan(false);
+        primary.model = Some("gpt-6.1-sol".into());
+        let result = execute_turn(
+            &mut child,
+            &task,
+            &isolation(),
+            TurnSettings {
+                mcp: vec![],
+                plan: &primary,
+                revision: None,
+                system_prompt: None,
+                idle: Duration::from_secs(2),
+                deadline: tokio::time::Instant::now() + Duration::from_secs(5),
+            },
+        )
+        .await;
+        assert!(
+            matches!(result, Ok(crate::acp::StopReason::EndTurn)),
+            "{mode}: {result:?}"
+        );
+        assert!(child
+            .take_captured_agent_message()
+            .contains("primary stable gpt-6.1-sol medium"));
+        assert!(!qualifies_for_fallback(result.as_ref().err(), &policy()));
+        child.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn workflow_setup_failures_cannot_select_paid_fallback() {
+    let (_, _, _, task, _) = fixture();
+    for mode in ["init_error", "model_error"] {
+        let mut child = advertised_model_probe(mode).await;
+        let mut primary = plan(false);
+        primary.model = Some("gpt-6.1-sol".into());
+        let error = execute_turn(
+            &mut child,
+            &task,
+            &isolation(),
+            TurnSettings {
+                mcp: vec![],
+                plan: &primary,
+                revision: None,
+                system_prompt: None,
+                idle: Duration::from_secs(2),
+                deadline: tokio::time::Instant::now() + Duration::from_secs(5),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, AcpError::Protocol(_)), "{mode}: {error:?}");
+        assert!(!qualifies_for_fallback(Some(&error), &policy()));
+        child.shutdown().await;
+    }
+}
+
+#[tokio::test]
+async fn workflow_pending_controller_revision_overrides_the_primary_default_unchanged() {
+    use buzz_core::hosted_agent_runtime::{
+        ReasoningEffort, RuntimeSelection, RuntimeSelectionMethod,
+    };
+    let (_, _, _, task, _) = fixture();
+    let mut child = advertised_model_probe("stable").await;
+    let mut primary = plan(false);
+    primary.model = Some("unadvertised-old-default".into());
+    let revision = PendingRuntimeRevision {
+        revision: 22,
+        selection: RuntimeSelection {
+            model: serde_json::from_value(serde_json::json!("gpt-6.1-sol")).unwrap(),
+            effort: ReasoningEffort::Medium,
+            runtime_name: serde_json::from_value(serde_json::json!("Tinker")).unwrap(),
+        },
+        method: RuntimeSelectionMethod::ConfigOption {
+            config_id: "model".into(),
+            option_value: "gpt-6.1-sol".into(),
+        },
+        catalog_digest: serde_json::from_value(serde_json::json!("ab".repeat(32))).unwrap(),
+    };
+    let result = execute_turn(
+        &mut child,
+        &task,
+        &isolation(),
+        TurnSettings {
+            mcp: vec![],
+            plan: &primary,
+            revision: Some(&revision),
+            system_prompt: None,
+            idle: Duration::from_secs(2),
+            deadline: tokio::time::Instant::now() + Duration::from_secs(5),
+        },
+    )
+    .await;
+    assert!(
+        matches!(result, Ok(crate::acp::StopReason::EndTurn)),
+        "{result:?}"
+    );
+    assert!(child
+        .take_captured_agent_message()
+        .contains("gpt-6.1-sol medium"));
+    child.shutdown().await;
+}
+
+#[test]
+fn workflow_disabled_fallback_fences_durable_tasks_without_losing_stop_history() {
+    let (_, agent, _, task, grant) = fixture();
+    let stopped = EventBuilder::new(Kind::from(46047), "previously verified stopped")
+        .sign_with_keys(&agent)
+        .unwrap();
+    let mut record = TaskRecord {
+        event: task.event.clone(),
+        terminal: false,
+        fallback: true,
+        attempts: vec![Attempt {
+            claim: task.event,
+            grant: Some(grant),
+            phase: Phase::Done,
+            process: None,
+            result: None,
+            pending_receipt: Some(stopped),
+        }],
+    };
+    let history = serde_json::to_value(&record.attempts).unwrap();
+    assert!(record.can_claim(true));
+    assert!(fence_disabled_fallback(
+        &mut record,
+        &FailoverPolicy::default()
+    ));
+    assert!(record.terminal);
+    assert!(
+        record.fallback,
+        "historical provider attribution must not be rewritten"
+    );
+    assert!(!record.can_claim(true));
+    assert_eq!(serde_json::to_value(&record.attempts).unwrap(), history);
+
+    let mut enabled = record.clone();
+    enabled.terminal = false;
+    assert!(!fence_disabled_fallback(&mut enabled, &policy()));
+    assert!(enabled.can_claim(true));
+
+    let mut unsettled = record;
+    unsettled.terminal = false;
+    unsettled.attempts[0].phase = Phase::Stopped;
+    assert!(!fence_disabled_fallback(
+        &mut unsettled,
+        &FailoverPolicy::default()
+    ));
+    assert!(
+        !unsettled.terminal,
+        "existing stop proof must be reconciled first"
+    );
+    assert!(!unsettled.can_claim(true));
+}
+
 fn fixture() -> (Keys, Keys, Uuid, Task, ExecutionDecision) {
     let relay = Keys::generate();
     let agent = Keys::generate();
