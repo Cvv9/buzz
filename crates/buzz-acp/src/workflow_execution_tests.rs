@@ -12,13 +12,21 @@ fn workflow_generic_internal_error_does_not_select_paid_fallback() {
         message: "usage_limit internal error".into(),
     };
     assert!(qualifies_for_fallback(Some(&quota), &policy()));
+    let structured = AcpError::AgentError {
+        code: -32603,
+        message: "Internal error [codexErrorInfo=usageLimitExceeded; usage_limit]".into(),
+    };
+    assert!(qualifies_for_fallback(Some(&structured), &policy()));
+    let disabled = FailoverPolicy::default();
+    assert!(!qualifies_for_fallback(Some(&structured), &disabled));
 }
 
 async fn advertised_model_probe(mode: &str) -> AcpClient {
     let script = r#"import json,sys,os
 mode=os.environ['WORKFLOW_MODEL_PROBE']
-selection='gpt-6.1-sol[medium]' if mode=='combined' else 'gpt-6.1-sol'
+selection='gpt-6.1-sol[medium]' if mode in ['combined','combined_only'] else 'gpt-6.1-sol'
 selected=False
+effort='low'
 for line in sys.stdin:
  request=json.loads(line); method=request.get('method'); rid=request.get('id')
  if rid is None: continue
@@ -28,15 +36,20 @@ for line in sys.stdin:
   else: result={'protocolVersion':1,'agentCapabilities':{}}
  elif method=='session/new':
   result={'sessionId':'model-probe','configOptions':[{'id':'model','category':'model','currentValue':selection,'options':[{'value':selection,'name':'GPT-6.1-Sol (medium)'}]},{'id':'effort','category':'thought_level','currentValue':'medium','options':[{'value':'medium','name':'Medium'}]}],'models':{'currentModelId':'gpt-6.1-sol[medium]','availableModels':[{'modelId':'gpt-6.1-sol[medium]','name':'GPT-6.1-Sol (medium)'}]}}
+  if mode in ['canonical','no_effort','combined_only']: result['configOptions']=result['configOptions'][:1]
+  if mode in ['no_effort','combined_only']: result['models']['availableModels']=[]
  elif method=='session/set_config_option':
   params=request['params']
   if mode=='model_error': error={'code':-32603,'message':'Internal error'}
-  elif params.get('configId')=='model' and params.get('value')==selection: selected=True
+  elif params.get('configId')=='model' and params.get('value')==selection: selected=True; effort='medium' if '[' in selection else 'low'
+  elif params.get('configId')=='effort' and params.get('value')=='medium': effort='medium'
   else: error={'code':-32602,'message':'unexpected selection'}
  elif method=='session/set_model':
-  error={'code':-32603,'message':'Internal error','data':{'details':'Unsupported format for modelId. Expected modelId[effort]'}}
+  if request['params'].get('modelId')=='gpt-6.1-sol[medium]': selected=True; effort='medium'
+  else: error={'code':-32603,'message':'Internal error','data':{'details':'Unsupported format for modelId. Expected modelId[effort]'}}
  elif method=='session/prompt':
-  if not selected: error={'code':-32603,'message':'model selection was skipped'}
+  if effort!='medium': error={'code':-32603,'message':'reasoning effort was reset to low'}
+  elif not selected: error={'code':-32603,'message':'model selection was skipped'}
   else:
    print(json.dumps({'jsonrpc':'2.0','method':'session/update','params':{'sessionId':'model-probe','update':{'sessionUpdate':'agent_message_chunk','content':{'type':'text','text':'primary stable gpt-6.1-sol medium'}}}}),flush=True)
    result={'stopReason':'end_turn'}
@@ -57,7 +70,7 @@ for line in sys.stdin:
 #[tokio::test]
 async fn workflow_bare_primary_model_uses_advertised_stable_selection_and_medium() {
     let (_, _, _, task, _) = fixture();
-    for mode in ["stable", "combined"] {
+    for mode in ["stable", "combined", "canonical", "combined_only"] {
         let mut child = advertised_model_probe(mode).await;
         let mut primary = plan(false);
         primary.model = Some("gpt-6.1-sol".into());
@@ -68,6 +81,7 @@ async fn workflow_bare_primary_model_uses_advertised_stable_selection_and_medium
             TurnSettings {
                 mcp: vec![],
                 plan: &primary,
+                effort: Some("medium"),
                 revision: None,
                 system_prompt: None,
                 idle: Duration::from_secs(2),
@@ -79,9 +93,11 @@ async fn workflow_bare_primary_model_uses_advertised_stable_selection_and_medium
             matches!(result, Ok(crate::acp::StopReason::EndTurn)),
             "{mode}: {result:?}"
         );
-        assert!(child
-            .take_captured_agent_message()
-            .contains("primary stable gpt-6.1-sol medium"));
+        assert!(
+            child
+                .take_captured_agent_message()
+                .contains("primary stable gpt-6.1-sol medium")
+        );
         assert!(!qualifies_for_fallback(result.as_ref().err(), &policy()));
         child.shutdown().await;
     }
@@ -90,7 +106,7 @@ async fn workflow_bare_primary_model_uses_advertised_stable_selection_and_medium
 #[tokio::test]
 async fn workflow_setup_failures_cannot_select_paid_fallback() {
     let (_, _, _, task, _) = fixture();
-    for mode in ["init_error", "model_error"] {
+    for mode in ["init_error", "model_error", "no_effort"] {
         let mut child = advertised_model_probe(mode).await;
         let mut primary = plan(false);
         primary.model = Some("gpt-6.1-sol".into());
@@ -101,6 +117,7 @@ async fn workflow_setup_failures_cannot_select_paid_fallback() {
             TurnSettings {
                 mcp: vec![],
                 plan: &primary,
+                effort: Some("medium"),
                 revision: None,
                 system_prompt: None,
                 idle: Duration::from_secs(2),
@@ -144,6 +161,7 @@ async fn workflow_pending_controller_revision_overrides_the_primary_default_unch
         TurnSettings {
             mcp: vec![],
             plan: &primary,
+            effort: Some("medium"),
             revision: Some(&revision),
             system_prompt: None,
             idle: Duration::from_secs(2),
@@ -155,9 +173,11 @@ async fn workflow_pending_controller_revision_overrides_the_primary_default_unch
         matches!(result, Ok(crate::acp::StopReason::EndTurn)),
         "{result:?}"
     );
-    assert!(child
-        .take_captured_agent_message()
-        .contains("gpt-6.1-sol medium"));
+    assert!(
+        child
+            .take_captured_agent_message()
+            .contains("gpt-6.1-sol medium")
+    );
     child.shutdown().await;
 }
 
@@ -288,40 +308,48 @@ fn policy() -> FailoverPolicy {
 #[test]
 fn task_signer_recipient_community_and_duplicate_tags_are_rejected() {
     let (relay, agent, community, task, _) = fixture();
-    assert!(Task::parse(
-        task.event.clone(),
-        &Keys::generate().public_key(),
-        &agent.public_key(),
-        community
-    )
-    .is_err());
-    assert!(Task::parse(
-        task.event.clone(),
-        &relay.public_key(),
-        &Keys::generate().public_key(),
-        community
-    )
-    .is_err());
-    assert!(Task::parse(
-        task.event.clone(),
-        &relay.public_key(),
-        &agent.public_key(),
-        Uuid::new_v4()
-    )
-    .is_err());
+    assert!(
+        Task::parse(
+            task.event.clone(),
+            &Keys::generate().public_key(),
+            &agent.public_key(),
+            community
+        )
+        .is_err()
+    );
+    assert!(
+        Task::parse(
+            task.event.clone(),
+            &relay.public_key(),
+            &Keys::generate().public_key(),
+            community
+        )
+        .is_err()
+    );
+    assert!(
+        Task::parse(
+            task.event.clone(),
+            &relay.public_key(),
+            &agent.public_key(),
+            Uuid::new_v4()
+        )
+        .is_err()
+    );
     let mut tags = task.event.tags.clone().to_vec();
     tags.push(Tag::parse(["workflow-origin", "scheduled"]).unwrap());
     let duplicate = EventBuilder::new(task.event.kind, &task.event.content)
         .tags(tags)
         .sign_with_keys(&relay)
         .unwrap();
-    assert!(Task::parse(
-        duplicate,
-        &relay.public_key(),
-        &agent.public_key(),
-        community
-    )
-    .is_err());
+    assert!(
+        Task::parse(
+            duplicate,
+            &relay.public_key(),
+            &agent.public_key(),
+            community
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -333,22 +361,26 @@ fn signed_grant_rejects_copy_instance_third_attempt_wrong_task_and_deadline() {
         .unwrap();
     let verified =
         verified_decision(&event, &relay.public_key(), community, agent.public_key()).unwrap();
-    assert!(validate_grant(
-        &verified,
-        &task,
-        community,
-        grant.instance_id,
-        agent.public_key()
-    )
-    .is_ok());
-    assert!(validate_grant(
-        &verified,
-        &task,
-        community,
-        Uuid::new_v4(),
-        agent.public_key()
-    )
-    .is_err());
+    assert!(
+        validate_grant(
+            &verified,
+            &task,
+            community,
+            grant.instance_id,
+            agent.public_key()
+        )
+        .is_ok()
+    );
+    assert!(
+        validate_grant(
+            &verified,
+            &task,
+            community,
+            Uuid::new_v4(),
+            agent.public_key()
+        )
+        .is_err()
+    );
     for changed in [
         ExecutionDecision {
             ordinal: 3,
@@ -363,14 +395,16 @@ fn signed_grant_rejects_copy_instance_third_attempt_wrong_task_and_deadline() {
             ..grant.clone()
         },
     ] {
-        assert!(validate_grant(
-            &changed,
-            &task,
-            community,
-            grant.instance_id,
-            agent.public_key()
-        )
-        .is_err());
+        assert!(
+            validate_grant(
+                &changed,
+                &task,
+                community,
+                grant.instance_id,
+                agent.public_key()
+            )
+            .is_err()
+        );
     }
     let forged = EventBuilder::new(event.kind, &event.content)
         .tags(event.tags.to_vec())
@@ -453,11 +487,13 @@ fn scoped_mcp_and_nested_config_remove_full_buzz_credentials() {
         serde_json::json!({"SAFE":"yes"})
     );
     assert_eq!(config["model_provider"], "azure-foundry");
-    assert!(reject_full_credentials(
-        &format!("token={}", full.secret_key().to_secret_hex()),
-        &full
-    )
-    .is_err());
+    assert!(
+        reject_full_credentials(
+            &format!("token={}", full.secret_key().to_secret_hex()),
+            &full
+        )
+        .is_err()
+    );
 }
 
 #[tokio::test(start_paused = true)]
@@ -508,6 +544,7 @@ async fn fake_acp_failure_selects_foundry_but_successful_prose_does_not() {
         TurnSettings {
             mcp: vec![],
             plan: &plan(false),
+            effort: None,
             revision: None,
             system_prompt: None,
             idle: Duration::from_secs(2),
@@ -527,6 +564,7 @@ async fn fake_acp_failure_selects_foundry_but_successful_prose_does_not() {
         TurnSettings {
             mcp: vec![],
             plan: &plan(true),
+            effort: None,
             revision: None,
             system_prompt: None,
             idle: Duration::from_secs(2),
@@ -535,9 +573,11 @@ async fn fake_acp_failure_selects_foundry_but_successful_prose_does_not() {
     )
     .await;
     assert!(matches!(result, Ok(crate::acp::StopReason::EndTurn)));
-    assert!(fallback
-        .take_captured_agent_message()
-        .contains("usage_limit"));
+    assert!(
+        fallback
+            .take_captured_agent_message()
+            .contains("usage_limit")
+    );
     assert!(!qualifies_for_fallback(result.as_ref().err(), &policy()));
     assert!(fallback.shutdown_verified().await);
 }
@@ -556,6 +596,7 @@ async fn fake_acp_stalled_turn_is_deadlined_and_group_reaped() {
             TurnSettings {
                 mcp: vec![],
                 plan: &plan(false),
+                effort: None,
                 revision: None,
                 system_prompt: None,
                 idle: Duration::from_secs(10),
@@ -738,7 +779,10 @@ async fn receipt_peer(
                 serde_json::from_slice::<Event>(&data[header_end..header_end + length]).unwrap(),
             );
             let body = response.to_string();
-            let wire=format!("HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len());
+            let wire = format!(
+                "HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
             stream.write_all(wire.as_bytes()).await.unwrap();
         }
         events
@@ -809,6 +853,7 @@ fn receipt_runtime(url: String, successful_result: bool) -> (Runtime, Uuid, std:
             instance: grant.instance_id,
             command: "unused".into(),
             primary: plan(false),
+            effort: None,
             fallback: plan(true),
             policy: policy(),
             mcp: vec![],
@@ -914,14 +959,16 @@ fn fresh_event_and_scheduled_envelopes_keep_ordinary_duration_and_retry_budget()
             deadline: chrono::Utc::now().timestamp() + 7800,
             ..grant.clone()
         };
-        assert!(validate_grant(
-            &third,
-            &ordinary,
-            community,
-            third.instance_id,
-            agent.public_key()
-        )
-        .is_ok());
+        assert!(
+            validate_grant(
+                &third,
+                &ordinary,
+                community,
+                third.instance_id,
+                agent.public_key()
+            )
+            .is_ok()
+        );
     }
 }
 

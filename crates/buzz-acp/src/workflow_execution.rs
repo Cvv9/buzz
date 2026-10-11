@@ -8,10 +8,10 @@ use crate::{
     workflow_isolation::Isolation,
     workflow_journal::{Attempt, Journal, Phase, ProcessIdentity, TaskRecord},
 };
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use buzz_core::workflow_execution::{
-    DecisionKind, ExecutionControl, ExecutionDecision, ExecutionOperation, StopReason,
-    PROTOCOL_VERSION,
+    DecisionKind, ExecutionControl, ExecutionDecision, ExecutionOperation, PROTOCOL_VERSION,
+    StopReason,
 };
 use nostr::{Event, EventBuilder, Keys, Kind, PublicKey, Tag};
 use serde::{Deserialize, Serialize};
@@ -20,12 +20,12 @@ use std::{
     collections::HashMap,
     path::Path,
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::Duration,
 };
-use tokio::sync::{mpsc, watch, Mutex, Semaphore};
+use tokio::sync::{Mutex, Semaphore, mpsc, watch};
 use uuid::Uuid;
 
 const PATCH_HASH: &str = "eadb92f996c2bca4b1cd7c09a79fa80e817329d7ac0d79d39ce4aeaf752d842d";
@@ -131,6 +131,7 @@ struct Runtime {
     instance: Uuid,
     command: String,
     primary: SpawnPlan,
+    effort: Option<String>,
     fallback: SpawnPlan,
     policy: FailoverPolicy,
     mcp: Vec<McpServer>,
@@ -190,6 +191,7 @@ impl WorkflowRuntime {
             instance: Uuid::new_v4(),
             command: config.agent_command.clone(),
             primary: crate::failover::spawn_plan(config, false),
+            effort: config.effort_level.clone(),
             fallback: crate::failover::spawn_plan(config, true),
             policy: config.failover.clone(),
             mcp: crate::build_mcp_servers(config),
@@ -966,7 +968,7 @@ impl Runtime {
                 _=tokio::time::sleep_until(deadline)=>Err(AcpError::HardTimeout{silence:Duration::ZERO}),
                 result=async {
                     self.receipt(&started).await.map_err(|_|AcpError::Protocol("start not acknowledged".into()))?;
-                    execute_turn(&mut child,&task,&self.isolation,TurnSettings{mcp,plan,revision:revision.as_ref(),system_prompt:self.system_prompt.as_deref(),idle:self.idle,deadline}).await
+                    execute_turn(&mut child,&task,&self.isolation,TurnSettings{mcp,plan,effort:self.effort.as_deref(),revision:revision.as_ref(),system_prompt:self.system_prompt.as_deref(),idle:self.idle,deadline}).await
                 }=>result,
             };
             let output = child.take_captured_agent_message();
@@ -1356,8 +1358,76 @@ async fn apply_workflow_model(
     session_id: &str,
     session: &serde_json::Value,
     desired: &str,
+    effort: Option<&str>,
 ) -> Result<(), AcpError> {
-    match workflow_model_switch_method(session, desired)? {
+    let mut catalog = session.clone();
+    let thought = effort.and_then(|value| workflow_thought_option(session, value));
+    if let Some(value) = effort {
+        let _: buzz_core::hosted_agent_runtime::ReasoningEffort =
+            serde_json::from_value(serde_json::json!(value))
+                .map_err(|_| AcpError::Protocol("invalid workflow reasoning effort".into()))?;
+        if thought.is_none() {
+            // A bare model option cannot prove effort: this adapter resets it to its default.
+            if let Some(options) = catalog
+                .get_mut("configOptions")
+                .and_then(|v| v.as_array_mut())
+            {
+                for option in options {
+                    if option.get("category").and_then(|v| v.as_str()) == Some("model") {
+                        if let Some(values) =
+                            option.get_mut("options").and_then(|v| v.as_array_mut())
+                        {
+                            values.retain(|item| {
+                                item.get("value")
+                                    .and_then(|v| v.as_str())
+                                    .is_some_and(|id| id.ends_with(&format!("[{value}]")))
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let method = if let Some(value) = effort.filter(|_| thought.is_none()) {
+        let normalized = crate::acp::normalize_session_runtime_catalog(&catalog)
+            .map_err(|error| AcpError::Protocol(error.to_string()))?;
+        normalized
+            .catalog
+            .bindings
+            .iter()
+            .find_map(|binding| {
+                if binding.model.as_str() != desired
+                    || serde_json::to_value(binding.effort).ok()?.as_str()? != value
+                {
+                    return None;
+                }
+                match &binding.method {
+                    buzz_core::hosted_agent_runtime::RuntimeSelectionMethod::SetModel {
+                        model_id,
+                    } if model_id.ends_with(&format!("[{value}]")) => {
+                        Some(crate::acp::ModelSwitchMethod::SetModel {
+                            model_id: model_id.clone(),
+                        })
+                    }
+                    buzz_core::hosted_agent_runtime::RuntimeSelectionMethod::ConfigOption {
+                        config_id,
+                        option_value,
+                    } if option_value.ends_with(&format!("[{value}]")) => {
+                        Some(crate::acp::ModelSwitchMethod::ConfigOption {
+                            config_id: config_id.clone(),
+                            option_value: option_value.clone(),
+                        })
+                    }
+                    _ => None,
+                }
+            })
+            .ok_or_else(|| {
+                AcpError::Protocol("workflow reasoning effort has no advertised binding".into())
+            })?
+    } else {
+        workflow_model_switch_method(session, desired)?
+    };
+    match method {
         crate::acp::ModelSwitchMethod::ConfigOption {
             config_id,
             option_value,
@@ -1371,7 +1441,35 @@ async fn apply_workflow_model(
         }
     }
     .map_err(|error| workflow_setup_error("model selection", error))?;
+    if let Some((config_id, value)) = thought {
+        child
+            .session_set_config_option(session_id, &config_id, &value)
+            .await
+            .map_err(|error| workflow_setup_error("reasoning effort selection", error))?;
+    }
     Ok(())
+}
+
+fn workflow_thought_option(session: &serde_json::Value, effort: &str) -> Option<(String, String)> {
+    session
+        .get("configOptions")?
+        .as_array()?
+        .iter()
+        .find_map(|option| {
+            if option.get("category")?.as_str()? != "thought_level" {
+                return None;
+            }
+            let id = option
+                .get("configId")
+                .or_else(|| option.get("id"))?
+                .as_str()?;
+            option
+                .get("options")?
+                .as_array()?
+                .iter()
+                .find(|value| value.get("value").and_then(|v| v.as_str()) == Some(effort))?;
+            Some((id.to_owned(), effort.to_owned()))
+        })
 }
 fn reject_full_credentials(value: &str, keys: &Keys) -> Result<()> {
     use nostr::ToBech32;
@@ -1451,6 +1549,7 @@ fn scoped_mcp(
 struct TurnSettings<'a> {
     mcp: Vec<McpServer>,
     plan: &'a SpawnPlan,
+    effort: Option<&'a str>,
     revision: Option<&'a PendingRuntimeRevision>,
     system_prompt: Option<&'a str>,
     idle: Duration,
@@ -1465,6 +1564,7 @@ async fn execute_turn(
     let TurnSettings {
         mcp,
         plan,
+        effort,
         revision,
         system_prompt,
         idle,
@@ -1507,11 +1607,37 @@ async fn execute_turn(
                         .map_err(|error| workflow_setup_error("runtime selection", error))?;
                 }
             }
+            let value = serde_json::to_value(revision.selection.effort)
+                .map_err(|error| AcpError::Protocol(error.to_string()))?;
+            let value = value
+                .as_str()
+                .ok_or_else(|| AcpError::Protocol("invalid controller effort".into()))?;
+            if let Some((id, value)) = workflow_thought_option(&session.raw, value) {
+                child
+                    .session_set_config_option(&session.session_id, &id, &value)
+                    .await
+                    .map_err(|error| workflow_setup_error("controller reasoning effort", error))?;
+            } else {
+                let encoded = match &revision.method {
+                    buzz_core::hosted_agent_runtime::RuntimeSelectionMethod::ConfigOption {
+                        option_value,
+                        ..
+                    } => option_value,
+                    buzz_core::hosted_agent_runtime::RuntimeSelectionMethod::SetModel {
+                        model_id,
+                    } => model_id,
+                };
+                if !encoded.ends_with(&format!("[{value}]")) {
+                    return Err(AcpError::Protocol(
+                        "controller binding cannot prove reasoning effort".into(),
+                    ));
+                }
+            }
         } else if let Some(model) = &plan.model {
-            apply_workflow_model(child, &session.session_id, &session.raw, model).await?;
+            apply_workflow_model(child, &session.session_id, &session.raw, model, effort).await?;
         }
     } else if let Some(model) = &plan.model {
-        apply_workflow_model(child, &session.session_id, &session.raw, model).await?;
+        apply_workflow_model(child, &session.session_id, &session.raw, model, None).await?;
     }
     let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
     if remaining.is_zero() {

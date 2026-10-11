@@ -10,6 +10,6 @@ COPY agent-entrypoint.sh /usr/local/bin/agent-entrypoint
 RUN chmod 0755 /usr/local/bin/buzz-acp /usr/local/bin/agent-entrypoint \
     && test -n "${EXPECTED_ACP_SHA256}" \
     && printf '%s  %s\n' "${EXPECTED_ACP_SHA256}" /usr/local/bin/buzz-acp | sha256sum --check --status \
-    && /usr/local/bin/buzz-acp --version
+    && /usr/local/bin/buzz-acp --help >/dev/null
 # All identities, mounts, broker credentials, native provider catalog, and
 # container configuration remain supplied by the preserved runtime contract.
