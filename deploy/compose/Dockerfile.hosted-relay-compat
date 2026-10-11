@@ -8,6 +8,8 @@ COPY buzz-relay /usr/local/bin/buzz-relay
 RUN chmod 0755 /usr/local/bin/buzz-relay \
     && test -n "${EXPECTED_RELAY_SHA256}" \
     && printf '%s  %s\n' "${EXPECTED_RELAY_SHA256}" /usr/local/bin/buzz-relay | sha256sum --check --status \
-    && /usr/local/bin/buzz-relay --help >/dev/null
+    && ldd /usr/local/bin/buzz-relay > /tmp/buzz-relay-ldd.txt \
+    && if grep -F 'not found' /tmp/buzz-relay-ldd.txt; then exit 1; else grep_status=$?; test "$grep_status" -eq 1; fi \
+    && rm /tmp/buzz-relay-ldd.txt
 USER buzz:buzz
 # Keep the deployed frontend, command, environment, mounts and runtime identity.

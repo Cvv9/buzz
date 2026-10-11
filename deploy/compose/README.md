@@ -251,10 +251,13 @@ The checkout may be the PR merge commit; the manifest records both identities.
 Use the exact reviewed destination base image and preserve its native adapter,
 authentication, mounts, and service configuration. Actions ZIP extraction can
 lose executable bits: install binaries with mode `0755`, verify their checksums,
-and check libc compatibility and `--help` in the destination image before a
-canary. `Dockerfile.hosted-workflow-compat` imports only the qualified ACP binary
-and the reviewed entrypoint with a required binary checksum. Relay activation
-also requires the actual ignored PostgreSQL retry/recovery tests to pass.
+and check libc compatibility before a canary. Use `--help` for ACP only;
+relay has no help flag, so its startup qualification comes from the hosted
+integration tests. `Dockerfile.hosted-workflow-compat` imports only the qualified ACP binary
+and the reviewed entrypoint with a required binary checksum.
+`Dockerfile.hosted-relay-compat` checks the relay hash and shared libraries and
+restores `USER buzz:buzz`; verify that exact user on its reviewed base first.
+Relay activation also requires the actual ignored PostgreSQL retry/recovery tests to pass.
 Preserve the prior immutable image and its rollback evidence through acceptance.
 
 A medium reasoning setting requires an advertised reasoning option or an exact
