@@ -1,0 +1,15 @@
+# Offline, bounded derivative: BASE_IMAGE must be the exact reviewed local
+# immutable agent image ID. Use the old native base for the eight unchanged
+# personas and the qualified native-0.162 base for Tinker.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+USER root
+ARG EXPECTED_ACP_SHA256
+COPY buzz-acp /usr/local/bin/buzz-acp
+COPY agent-entrypoint.sh /usr/local/bin/agent-entrypoint
+RUN chmod 0755 /usr/local/bin/buzz-acp /usr/local/bin/agent-entrypoint \
+    && test -n "${EXPECTED_ACP_SHA256}" \
+    && printf '%s  %s\n' "${EXPECTED_ACP_SHA256}" /usr/local/bin/buzz-acp | sha256sum --check --status \
+    && /usr/local/bin/buzz-acp --version
+# All identities, mounts, broker credentials, native provider catalog, and
+# container configuration remain supplied by the preserved runtime contract.

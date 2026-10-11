@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "baseImageId": "sha256:c206067f72c86185bf2e18d42c676c6c880a90759fd6e04b6e7977e417577426",
+  "nativeVersion": "0.162.0",
+  "adapterVersion": "1.1.14",
+  "adapterBundleSha256": "eadb92f996c2bca4b1cd7c09a79fa80e817329d7ac0d79d39ce4aeaf752d842d",
+  "packages": [
+    {
+      "directory": "codex",
+      "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.162.0.tgz",
+      "integrity": "sha512-qWWckMfknyVym1lD5y2rTwPJA2sgHkzePF2l/Uevss4hVpqbt23rMIHKNTrqECdnv82denylHWEzrAmDnCYNIw=="
+    },
+    {
+      "directory": "codex-linux-x64",
+      "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.162.0-linux-x64.tgz",
+      "integrity": "sha512-qHWp6oKpf456PqjberGN8avs8zChv2oS+UuDiqVFYAuDOhq6vBc1drh8jEsnR7dBX+zcw03PN5VLtePGlMcC3w=="
+    }
+  ],
+  "intendedPrimaryModel": "gpt-6.1-sol",
+  "intendedEffort": "medium",
+  "adapterSelectionId": "gpt-6.1-sol[medium]",
+  "scope": "Tinker only; no vendor adapter or Rust binary changes"
+}
