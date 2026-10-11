@@ -1,4 +1,7 @@
 //! Canonicalize adapter-emitted model catalogs for hosted-agent runtime control.
+//! When an explicit effort binding replaces a bare implied default, the catalog
+//! digest changes. Existing signed revisions must be refreshed against that
+//! catalog; their private methods are never rewritten silently.
 
 use buzz_core::hosted_agent_runtime::{
     normalized_catalog_digest, CatalogDigest, ReasoningEffort, RuntimeBinding, RuntimeCatalog,
@@ -84,7 +87,18 @@ pub fn normalize_runtime_catalog(
     let mut selected_candidates = Vec::with_capacity(by_selection.len());
     for ((model, effort), group) in &mut by_selection {
         group.sort_by(|left, right| {
-            (left.source_priority, &left.method).cmp(&(right.source_priority, &right.method))
+            // An exact advertised effort ID proves more than a bare option's
+            // implied default. Keep stable precedence when both are equally explicit.
+            (
+                !method_encodes_effort(&left.method, *effort),
+                left.source_priority,
+                &left.method,
+            )
+                .cmp(&(
+                    !method_encodes_effort(&right.method, *effort),
+                    right.source_priority,
+                    &right.method,
+                ))
         });
         group.dedup_by(|left, right| left.method == right.method);
         let selected = group.first().expect("catalog group is nonempty");
@@ -272,6 +286,14 @@ fn unstable_candidates(state: Option<&Value>) -> Result<Vec<Candidate>, RuntimeC
     Ok(candidates)
 }
 
+fn method_encodes_effort(method: &RuntimeSelectionMethod, effort: ReasoningEffort) -> bool {
+    let value = match method {
+        RuntimeSelectionMethod::ConfigOption { option_value, .. } => option_value,
+        RuntimeSelectionMethod::SetModel { model_id } => model_id,
+    };
+    split_suffix(value, '[', ']').and_then(|(_, token)| parse_effort(token)) == Some(effort)
+}
+
 fn parse_selection(
     exact_id: &str,
     label: &str,
@@ -383,6 +405,41 @@ fn slug_model_id(value: &str) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn explicit_effort_binding_outranks_a_bare_implied_duplicate() {
+        let stable = vec![
+            json!({"category":"model", "configId":"model", "currentValue":"gpt-6.1-sol",
+            "options":[{"value":"gpt-6.1-sol", "displayName":"GPT-6.1-Sol"}]}),
+        ];
+        let unstable = json!({"currentModelId":"gpt-6.1-sol[medium]", "availableModels":[
+            {"modelId":"gpt-6.1-sol[medium]", "name":"GPT-6.1-Sol (medium)"}]});
+        let normalized = normalize_runtime_catalog(&stable, Some(&unstable)).unwrap();
+        assert_eq!(
+            normalized.catalog.bindings[0].method,
+            RuntimeSelectionMethod::SetModel {
+                model_id: "gpt-6.1-sol[medium]".into()
+            }
+        );
+        assert_eq!(
+            normalized.default_selection.as_ref().unwrap().effort,
+            ReasoningEffort::Medium
+        );
+        assert_eq!(
+            normalized.catalog.model_families[0].id.as_str(),
+            "gpt-6.1-sol"
+        );
+        let bare = normalize_runtime_catalog(&stable, None).unwrap();
+        assert_eq!(
+            bare.catalog.bindings[0].method,
+            RuntimeSelectionMethod::ConfigOption {
+                config_id: "model".into(),
+                option_value: "gpt-6.1-sol".into()
+            }
+        );
+        assert_eq!(bare.default_selection, normalized.default_selection);
+        assert_ne!(bare.digest, normalized.digest);
+    }
 
     fn fixture() -> (Vec<Value>, Value) {
         let stable = vec![json!({
