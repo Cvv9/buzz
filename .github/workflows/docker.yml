@@ -185,6 +185,61 @@ jobs:
             -v "$PWD/deploy/compose:/compose:ro" --entrypoint node buzz-agent-ci:pr \
             --test /compose/tests/codex-acp-terminal-errors.test.mjs
 
+      - name: Export qualified Linux runtime binaries
+        env:
+          REVIEWED_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/qualified-workflow-runtime"
+          mkdir -p "$output"
+          agent_container=''
+          relay_container=''
+          cleanup() {
+            if [[ -n "$agent_container" ]]; then docker rm "$agent_container" >/dev/null; fi
+            if [[ -n "$relay_container" ]]; then docker rm "$relay_container" >/dev/null; fi
+          }
+          trap cleanup EXIT
+          agent_container="$(docker create buzz-agent-ci:pr)"
+          relay_container="$(docker create buzz-relay-ci:integration)"
+          docker cp "$agent_container:/usr/local/bin/buzz-acp" "$output/buzz-acp"
+          docker cp "$relay_container:/usr/local/bin/buzz-relay" "$output/buzz-relay"
+          export QUALIFIED_OUTPUT="$output"
+          export QUALIFIED_AGENT_IMAGE="$(docker image inspect --format '{{.Id}}' buzz-agent-ci:pr)"
+          export QUALIFIED_RELAY_IMAGE="$(docker image inspect --format '{{.Id}}' buzz-relay-ci:integration)"
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          output = pathlib.Path(os.environ['QUALIFIED_OUTPUT'])
+          checkout = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
+          reviewed = os.environ['REVIEWED_HEAD']
+          if checkout != os.environ['GITHUB_SHA']:
+              raise SystemExit('checkout does not match workflow source identity')
+          subprocess.run(['git', 'diff', '--exit-code', 'HEAD', '--', 'Cargo.lock', 'Cargo.toml', 'crates'], check=True)
+          subprocess.run(['git', 'merge-base', '--is-ancestor', reviewed, checkout], check=True)
+          digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+          manifest = {
+              'schema': 1,
+              'sourceCheckout': checkout,
+              'reviewedHead': reviewed,
+              'cargoLockSha256': digest(pathlib.Path('Cargo.lock')),
+              'workflowRun': os.environ['GITHUB_RUN_ID'],
+              'workflowAttempt': os.environ['GITHUB_RUN_ATTEMPT'],
+              'agentImage': os.environ['QUALIFIED_AGENT_IMAGE'],
+              'relayImage': os.environ['QUALIFIED_RELAY_IMAGE'],
+              'binaries': {name: {'sha256': digest(output / name), 'bytes': (output / name).stat().st_size}
+                           for name in ['buzz-acp', 'buzz-relay']},
+              'qualification': 'integrated workflow harness and runtime smoke passed',
+          }
+          (output / 'provenance.json').write_text(json.dumps(manifest, indent=2) + '\n')
+          PY
+          (cd "$output" && sha256sum buzz-acp buzz-relay provenance.json > SHA256SUMS)
+      - name: Upload qualified Linux runtime binaries
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: qualified-workflow-runtime-linux-amd64
+          path: ${{ runner.temp }}/qualified-workflow-runtime
+          if-no-files-found: error
+          retention-days: 1
+
   build:
     name: Build (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
