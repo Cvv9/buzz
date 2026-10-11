@@ -93,11 +93,9 @@ async fn workflow_bare_primary_model_uses_advertised_stable_selection_and_medium
             matches!(result, Ok(crate::acp::StopReason::EndTurn)),
             "{mode}: {result:?}"
         );
-        assert!(
-            child
-                .take_captured_agent_message()
-                .contains("primary stable gpt-6.1-sol medium")
-        );
+        assert!(child
+            .take_captured_agent_message()
+            .contains("primary stable gpt-6.1-sol medium"));
         assert!(!qualifies_for_fallback(result.as_ref().err(), &policy()));
         child.shutdown().await;
     }
@@ -173,11 +171,9 @@ async fn workflow_pending_controller_revision_overrides_the_primary_default_unch
         matches!(result, Ok(crate::acp::StopReason::EndTurn)),
         "{result:?}"
     );
-    assert!(
-        child
-            .take_captured_agent_message()
-            .contains("gpt-6.1-sol medium")
-    );
+    assert!(child
+        .take_captured_agent_message()
+        .contains("gpt-6.1-sol medium"));
     child.shutdown().await;
 }
 
@@ -308,48 +304,40 @@ fn policy() -> FailoverPolicy {
 #[test]
 fn task_signer_recipient_community_and_duplicate_tags_are_rejected() {
     let (relay, agent, community, task, _) = fixture();
-    assert!(
-        Task::parse(
-            task.event.clone(),
-            &Keys::generate().public_key(),
-            &agent.public_key(),
-            community
-        )
-        .is_err()
-    );
-    assert!(
-        Task::parse(
-            task.event.clone(),
-            &relay.public_key(),
-            &Keys::generate().public_key(),
-            community
-        )
-        .is_err()
-    );
-    assert!(
-        Task::parse(
-            task.event.clone(),
-            &relay.public_key(),
-            &agent.public_key(),
-            Uuid::new_v4()
-        )
-        .is_err()
-    );
+    assert!(Task::parse(
+        task.event.clone(),
+        &Keys::generate().public_key(),
+        &agent.public_key(),
+        community
+    )
+    .is_err());
+    assert!(Task::parse(
+        task.event.clone(),
+        &relay.public_key(),
+        &Keys::generate().public_key(),
+        community
+    )
+    .is_err());
+    assert!(Task::parse(
+        task.event.clone(),
+        &relay.public_key(),
+        &agent.public_key(),
+        Uuid::new_v4()
+    )
+    .is_err());
     let mut tags = task.event.tags.clone().to_vec();
     tags.push(Tag::parse(["workflow-origin", "scheduled"]).unwrap());
     let duplicate = EventBuilder::new(task.event.kind, &task.event.content)
         .tags(tags)
         .sign_with_keys(&relay)
         .unwrap();
-    assert!(
-        Task::parse(
-            duplicate,
-            &relay.public_key(),
-            &agent.public_key(),
-            community
-        )
-        .is_err()
-    );
+    assert!(Task::parse(
+        duplicate,
+        &relay.public_key(),
+        &agent.public_key(),
+        community
+    )
+    .is_err());
 }
 
 #[test]
@@ -361,26 +349,22 @@ fn signed_grant_rejects_copy_instance_third_attempt_wrong_task_and_deadline() {
         .unwrap();
     let verified =
         verified_decision(&event, &relay.public_key(), community, agent.public_key()).unwrap();
-    assert!(
-        validate_grant(
-            &verified,
-            &task,
-            community,
-            grant.instance_id,
-            agent.public_key()
-        )
-        .is_ok()
-    );
-    assert!(
-        validate_grant(
-            &verified,
-            &task,
-            community,
-            Uuid::new_v4(),
-            agent.public_key()
-        )
-        .is_err()
-    );
+    assert!(validate_grant(
+        &verified,
+        &task,
+        community,
+        grant.instance_id,
+        agent.public_key()
+    )
+    .is_ok());
+    assert!(validate_grant(
+        &verified,
+        &task,
+        community,
+        Uuid::new_v4(),
+        agent.public_key()
+    )
+    .is_err());
     for changed in [
         ExecutionDecision {
             ordinal: 3,
@@ -395,16 +379,14 @@ fn signed_grant_rejects_copy_instance_third_attempt_wrong_task_and_deadline() {
             ..grant.clone()
         },
     ] {
-        assert!(
-            validate_grant(
-                &changed,
-                &task,
-                community,
-                grant.instance_id,
-                agent.public_key()
-            )
-            .is_err()
-        );
+        assert!(validate_grant(
+            &changed,
+            &task,
+            community,
+            grant.instance_id,
+            agent.public_key()
+        )
+        .is_err());
     }
     let forged = EventBuilder::new(event.kind, &event.content)
         .tags(event.tags.to_vec())
@@ -487,13 +469,11 @@ fn scoped_mcp_and_nested_config_remove_full_buzz_credentials() {
         serde_json::json!({"SAFE":"yes"})
     );
     assert_eq!(config["model_provider"], "azure-foundry");
-    assert!(
-        reject_full_credentials(
-            &format!("token={}", full.secret_key().to_secret_hex()),
-            &full
-        )
-        .is_err()
-    );
+    assert!(reject_full_credentials(
+        &format!("token={}", full.secret_key().to_secret_hex()),
+        &full
+    )
+    .is_err());
 }
 
 #[tokio::test(start_paused = true)]
@@ -573,11 +553,9 @@ async fn fake_acp_failure_selects_foundry_but_successful_prose_does_not() {
     )
     .await;
     assert!(matches!(result, Ok(crate::acp::StopReason::EndTurn)));
-    assert!(
-        fallback
-            .take_captured_agent_message()
-            .contains("usage_limit")
-    );
+    assert!(fallback
+        .take_captured_agent_message()
+        .contains("usage_limit"));
     assert!(!qualifies_for_fallback(result.as_ref().err(), &policy()));
     assert!(fallback.shutdown_verified().await);
 }
@@ -959,16 +937,14 @@ fn fresh_event_and_scheduled_envelopes_keep_ordinary_duration_and_retry_budget()
             deadline: chrono::Utc::now().timestamp() + 7800,
             ..grant.clone()
         };
-        assert!(
-            validate_grant(
-                &third,
-                &ordinary,
-                community,
-                third.instance_id,
-                agent.public_key()
-            )
-            .is_ok()
-        );
+        assert!(validate_grant(
+            &third,
+            &ordinary,
+            community,
+            third.instance_id,
+            agent.public_key()
+        )
+        .is_ok());
     }
 }
 

@@ -8,10 +8,10 @@ use crate::{
     workflow_isolation::Isolation,
     workflow_journal::{Attempt, Journal, Phase, ProcessIdentity, TaskRecord},
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{bail, Context, Result};
 use buzz_core::workflow_execution::{
-    DecisionKind, ExecutionControl, ExecutionDecision, ExecutionOperation, PROTOCOL_VERSION,
-    StopReason,
+    DecisionKind, ExecutionControl, ExecutionDecision, ExecutionOperation, StopReason,
+    PROTOCOL_VERSION,
 };
 use nostr::{Event, EventBuilder, Keys, Kind, PublicKey, Tag};
 use serde::{Deserialize, Serialize};
@@ -20,12 +20,12 @@ use std::{
     collections::HashMap,
     path::Path,
     sync::{
-        Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
     },
     time::Duration,
 };
-use tokio::sync::{Mutex, Semaphore, mpsc, watch};
+use tokio::sync::{mpsc, watch, Mutex, Semaphore};
 use uuid::Uuid;
 
 const PATCH_HASH: &str = "eadb92f996c2bca4b1cd7c09a79fa80e817329d7ac0d79d39ce4aeaf752d842d";

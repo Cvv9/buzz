@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 use sqlx::Row;
 use uuid::Uuid;
 
+// Match the ordinary runner's per-task retry budget; manual admission keeps its
+// separate run-wide budget and first-attempt reservations.
+const ORDINARY_MAX_ATTEMPTS: i64 = 10;
+
 /// Durable response to one signed control event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControlReceipt {
@@ -552,6 +556,19 @@ async fn claim(
     if pending {
         return Ok(ControlReceipt::denied("stopped_pending"));
     }
+    if row.try_get::<String, _>("origin")? != "manual" {
+        let task_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM workflow_run_attempts WHERE community_id=$1 AND run_id=$2 AND task_id=$3",
+        )
+        .bind(community.as_uuid())
+        .bind(run)
+        .bind(task)
+        .fetch_one(tx.conn())
+        .await?;
+        if task_count >= ORDINARY_MAX_ATTEMPTS {
+            return Ok(ControlReceipt::denied("no_more_attempts"));
+        }
+    }
     let live:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM workflow_execution_capabilities WHERE community_id=$1 AND agent_pubkey=$2 AND instance_id=$3 AND expires_at>clock_timestamp())").bind(community.as_uuid()).bind(&agent).bind(control.instance_id).fetch_one(tx.conn()).await?;
     if !live {
         return Ok(ControlReceipt::denied("runner_unavailable"));
@@ -760,6 +777,28 @@ pub(crate) async fn reconcile(
         .try_get::<Option<DateTime<Utc>>, _>("deadline_at")?
         .is_some_and(|d| d <= now);
     let permission = !authorized(tx, community, run).await?;
+    if row.try_get::<String, _>("origin")? != "manual" {
+        // The admission lock and locked run row also fence claims/stop receipts.
+        // Repair only exhausted queued tasks whose actual grants all have
+        // accepted, settled failure stops. Never infer a stop from age, a cached
+        // count, dispatch completion, or a runner's local terminal state.
+        sqlx::query(
+            "UPDATE workflow_run_tasks t SET state='failed'
+             WHERE t.community_id=$1 AND t.run_id=$2 AND t.state='queued'
+               AND t.result_event_id IS NULL
+               AND (SELECT COUNT(*) FROM workflow_run_attempts a
+                    WHERE a.community_id=t.community_id AND a.run_id=t.run_id AND a.task_id=t.task_id) >= $3
+               AND NOT EXISTS (SELECT 1 FROM workflow_run_attempts a
+                    WHERE a.community_id=t.community_id AND a.run_id=t.run_id AND a.task_id=t.task_id
+                      AND (a.stopped_at IS NULL OR a.outcome IS NULL
+                           OR a.outcome NOT IN ('execution_failed','deadline_exceeded','permission_revoked','recovery_stopped')))",
+        )
+        .bind(community.as_uuid())
+        .bind(run)
+        .bind(ORDINARY_MAX_ATTEMPTS)
+        .execute(tx.conn())
+        .await?;
+    }
     let tasks = sqlx::query(
         "SELECT state,attempt_count FROM workflow_run_tasks WHERE community_id=$1 AND run_id=$2",
     )
