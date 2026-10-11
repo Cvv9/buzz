@@ -1,0 +1,13 @@
+# Bounded offline derivative of the reviewed immutable production relay image.
+# The caller must verify its Config.User is exactly buzz:buzz before building.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+USER root
+ARG EXPECTED_RELAY_SHA256
+COPY buzz-relay /usr/local/bin/buzz-relay
+RUN chmod 0755 /usr/local/bin/buzz-relay \
+    && test -n "${EXPECTED_RELAY_SHA256}" \
+    && printf '%s  %s\n' "${EXPECTED_RELAY_SHA256}" /usr/local/bin/buzz-relay | sha256sum --check --status \
+    && /usr/local/bin/buzz-relay --help >/dev/null
+USER buzz:buzz
+# Keep the deployed frontend, command, environment, mounts and runtime identity.
