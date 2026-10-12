@@ -131,6 +131,7 @@ struct Runtime {
     instance: Uuid,
     command: String,
     primary: SpawnPlan,
+    effort: Option<String>,
     fallback: SpawnPlan,
     policy: FailoverPolicy,
     mcp: Vec<McpServer>,
@@ -190,6 +191,7 @@ impl WorkflowRuntime {
             instance: Uuid::new_v4(),
             command: config.agent_command.clone(),
             primary: crate::failover::spawn_plan(config, false),
+            effort: config.effort_level.clone(),
             fallback: crate::failover::spawn_plan(config, true),
             policy: config.failover.clone(),
             mcp: crate::build_mcp_servers(config),
@@ -764,9 +766,15 @@ impl Runtime {
                 return Ok(());
             }
             let (count, fallback) = {
-                let journal = self.journal.lock().await;
-                let record = journal.tasks.get(&task.id).context("missing task")?;
+                let mut journal = self.journal.lock().await;
+                let record = journal.tasks.get_mut(&task.id).context("missing task")?;
                 if !record.can_claim(task.origin == "manual") {
+                    return Ok(());
+                }
+                if fence_disabled_fallback(record, &self.policy) {
+                    journal.save()?;
+                    tracing::warn!(task_id = %task.id,
+                        "automatic retry stopped: historical fallback task cannot resume with fallback disabled");
                     return Ok(());
                 }
                 (record.attempts.len(), record.fallback)
@@ -960,7 +968,7 @@ impl Runtime {
                 _=tokio::time::sleep_until(deadline)=>Err(AcpError::HardTimeout{silence:Duration::ZERO}),
                 result=async {
                     self.receipt(&started).await.map_err(|_|AcpError::Protocol("start not acknowledged".into()))?;
-                    execute_turn(&mut child,&task,&self.isolation,TurnSettings{mcp,plan,revision:revision.as_ref(),system_prompt:self.system_prompt.as_deref(),idle:self.idle,deadline}).await
+                    execute_turn(&mut child,&task,&self.isolation,TurnSettings{mcp,plan,effort:self.effort.as_deref(),revision:revision.as_ref(),system_prompt:self.system_prompt.as_deref(),idle:self.idle,deadline}).await
                 }=>result,
             };
             let output = child.take_captured_agent_message();
@@ -1254,9 +1262,214 @@ fn stop_operation(grant: &ExecutionDecision, reason: StopReason) -> ExecutionOpe
     }
 }
 fn qualifies_for_fallback(error: Option<&AcpError>, policy: &FailoverPolicy) -> bool {
-    // Only protocol errors carry machine failure evidence. Never classify prose
-    // emitted as agent_message_chunk, even if it resembles a provider error.
-    matches!(error,Some(AcpError::AgentError{message,..}) if policy.enabled() && policy.triggers.iter().any(|trigger|message.to_ascii_lowercase().contains(trigger)))
+    // Only machine application errors from the prompt can carry quota evidence.
+    // Never classify message chunks or setup/protocol failures as paid failover.
+    let Some(AcpError::AgentError { message, .. }) = error else {
+        return false;
+    };
+    let message = message.to_ascii_lowercase();
+    // "Internal error" alone is not evidence of exhausted subscription quota.
+    // Setup failures are separately classified before the prompt is submitted.
+    let quota_evidence = [
+        "usage_limit",
+        "usage limit",
+        "rate_limit",
+        "rate limit",
+        "quota",
+        "too many requests",
+        "429",
+    ]
+    .iter()
+    .any(|marker| message.contains(marker));
+    policy.enabled()
+        && quota_evidence
+        && policy
+            .triggers
+            .iter()
+            .any(|trigger| message.contains(trigger))
+}
+
+fn fence_disabled_fallback(record: &mut TaskRecord, policy: &FailoverPolicy) -> bool {
+    if record.fallback
+        && !policy.enabled()
+        && record
+            .attempts
+            .iter()
+            .all(|attempt| attempt.phase == Phase::Done)
+    {
+        // Do not rewrite historical routing or remove acknowledged stop proof.
+        // A new primary task needs a new grant; it is not a silent continuation
+        // of a task that previously activated a now-disabled paid route.
+        record.terminal = true;
+        true
+    } else {
+        false
+    }
+}
+
+fn workflow_model_switch_method(
+    session: &serde_json::Value,
+    desired: &str,
+) -> Result<crate::acp::ModelSwitchMethod, AcpError> {
+    if let Some(method) = crate::acp::resolve_model_switch_method(session, desired) {
+        return Ok(method);
+    }
+    // Public model families can differ from the adapter's private selection IDs.
+    // Resolve from its fresh catalog, including its advertised default effort;
+    // never manufacture an adapter-specific modelId[effort] string.
+    let normalized = crate::acp::normalize_session_runtime_catalog(session)
+        .map_err(|error| AcpError::Protocol(format!("workflow model catalog: {error}")))?;
+    let family = normalized
+        .catalog
+        .model_families
+        .iter()
+        .find(|family| family.id.as_str() == desired)
+        .ok_or_else(|| {
+            AcpError::Protocol(format!("workflow model is not advertised: {desired}"))
+        })?;
+    let binding = normalized
+        .catalog
+        .bindings
+        .iter()
+        .find(|binding| binding.model == family.id && binding.effort == family.default_effort)
+        .ok_or_else(|| AcpError::Protocol("workflow model has no default-effort binding".into()))?;
+    Ok(match &binding.method {
+        buzz_core::hosted_agent_runtime::RuntimeSelectionMethod::ConfigOption {
+            config_id,
+            option_value,
+        } => crate::acp::ModelSwitchMethod::ConfigOption {
+            config_id: config_id.clone(),
+            option_value: option_value.clone(),
+        },
+        buzz_core::hosted_agent_runtime::RuntimeSelectionMethod::SetModel { model_id } => {
+            crate::acp::ModelSwitchMethod::SetModel {
+                model_id: model_id.clone(),
+            }
+        }
+    })
+}
+
+fn workflow_setup_error(stage: &str, error: AcpError) -> AcpError {
+    AcpError::Protocol(format!("workflow setup failed during {stage}: {error}"))
+}
+
+async fn apply_workflow_model(
+    child: &mut AcpClient,
+    session_id: &str,
+    session: &serde_json::Value,
+    desired: &str,
+    effort: Option<&str>,
+) -> Result<(), AcpError> {
+    let mut catalog = session.clone();
+    let thought = effort.and_then(|value| workflow_thought_option(session, value));
+    if let Some(value) = effort {
+        let _: buzz_core::hosted_agent_runtime::ReasoningEffort =
+            serde_json::from_value(serde_json::json!(value))
+                .map_err(|_| AcpError::Protocol("invalid workflow reasoning effort".into()))?;
+        if thought.is_none() {
+            // A bare model option cannot prove effort: this adapter resets it to its default.
+            if let Some(options) = catalog
+                .get_mut("configOptions")
+                .and_then(|v| v.as_array_mut())
+            {
+                for option in options {
+                    if option.get("category").and_then(|v| v.as_str()) == Some("model") {
+                        if let Some(values) =
+                            option.get_mut("options").and_then(|v| v.as_array_mut())
+                        {
+                            values.retain(|item| {
+                                item.get("value")
+                                    .and_then(|v| v.as_str())
+                                    .is_some_and(|id| id.ends_with(&format!("[{value}]")))
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let method = if let Some(value) = effort.filter(|_| thought.is_none()) {
+        let normalized = crate::acp::normalize_session_runtime_catalog(&catalog)
+            .map_err(|error| AcpError::Protocol(error.to_string()))?;
+        normalized
+            .catalog
+            .bindings
+            .iter()
+            .find_map(|binding| {
+                if binding.model.as_str() != desired
+                    || serde_json::to_value(binding.effort).ok()?.as_str()? != value
+                {
+                    return None;
+                }
+                match &binding.method {
+                    buzz_core::hosted_agent_runtime::RuntimeSelectionMethod::SetModel {
+                        model_id,
+                    } if model_id.ends_with(&format!("[{value}]")) => {
+                        Some(crate::acp::ModelSwitchMethod::SetModel {
+                            model_id: model_id.clone(),
+                        })
+                    }
+                    buzz_core::hosted_agent_runtime::RuntimeSelectionMethod::ConfigOption {
+                        config_id,
+                        option_value,
+                    } if option_value.ends_with(&format!("[{value}]")) => {
+                        Some(crate::acp::ModelSwitchMethod::ConfigOption {
+                            config_id: config_id.clone(),
+                            option_value: option_value.clone(),
+                        })
+                    }
+                    _ => None,
+                }
+            })
+            .ok_or_else(|| {
+                AcpError::Protocol("workflow reasoning effort has no advertised binding".into())
+            })?
+    } else {
+        workflow_model_switch_method(session, desired)?
+    };
+    match method {
+        crate::acp::ModelSwitchMethod::ConfigOption {
+            config_id,
+            option_value,
+        } => {
+            child
+                .session_set_config_option(session_id, &config_id, &option_value)
+                .await
+        }
+        crate::acp::ModelSwitchMethod::SetModel { model_id } => {
+            child.session_set_model(session_id, &model_id).await
+        }
+    }
+    .map_err(|error| workflow_setup_error("model selection", error))?;
+    if let Some((config_id, value)) = thought {
+        child
+            .session_set_config_option(session_id, &config_id, &value)
+            .await
+            .map_err(|error| workflow_setup_error("reasoning effort selection", error))?;
+    }
+    Ok(())
+}
+
+fn workflow_thought_option(session: &serde_json::Value, effort: &str) -> Option<(String, String)> {
+    session
+        .get("configOptions")?
+        .as_array()?
+        .iter()
+        .find_map(|option| {
+            if option.get("category")?.as_str()? != "thought_level" {
+                return None;
+            }
+            let id = option
+                .get("configId")
+                .or_else(|| option.get("id"))?
+                .as_str()?;
+            option
+                .get("options")?
+                .as_array()?
+                .iter()
+                .find(|value| value.get("value").and_then(|v| v.as_str()) == Some(effort))?;
+            Some((id.to_owned(), effort.to_owned()))
+        })
 }
 fn reject_full_credentials(value: &str, keys: &Keys) -> Result<()> {
     use nostr::ToBech32;
@@ -1336,6 +1549,7 @@ fn scoped_mcp(
 struct TurnSettings<'a> {
     mcp: Vec<McpServer>,
     plan: &'a SpawnPlan,
+    effort: Option<&'a str>,
     revision: Option<&'a PendingRuntimeRevision>,
     system_prompt: Option<&'a str>,
     idle: Duration,
@@ -1350,25 +1564,30 @@ async fn execute_turn(
     let TurnSettings {
         mcp,
         plan,
+        effort,
         revision,
         system_prompt,
         idle,
         deadline,
     } = settings;
-    child.initialize().await?;
+    child
+        .initialize()
+        .await
+        .map_err(|error| workflow_setup_error("initialize", error))?;
     let cwd = if task.origin == "manual" {
         &isolation.manual_workspace
     } else {
         &isolation.ordinary_home
     };
     let session = child
-        .session_new(
+        .session_new_full(
             &cwd.to_string_lossy(),
             mcp,
             system_prompt.map(crate::acp::SystemPromptTransport::Field),
             Some("Workflow execution"),
         )
-        .await?;
+        .await
+        .map_err(|error| workflow_setup_error("session/new", error))?;
     if !plan.failover {
         if let Some(revision) = revision {
             match &revision.method {
@@ -1377,18 +1596,48 @@ async fn execute_turn(
                     option_value,
                 } => {
                     child
-                        .session_set_config_option(&session, config_id, option_value)
-                        .await?;
+                        .session_set_config_option(&session.session_id, config_id, option_value)
+                        .await
+                        .map_err(|error| workflow_setup_error("runtime selection", error))?;
                 }
                 buzz_core::hosted_agent_runtime::RuntimeSelectionMethod::SetModel { model_id } => {
-                    child.session_set_model(&session, model_id).await?;
+                    child
+                        .session_set_model(&session.session_id, model_id)
+                        .await
+                        .map_err(|error| workflow_setup_error("runtime selection", error))?;
+                }
+            }
+            let value = serde_json::to_value(revision.selection.effort)
+                .map_err(|error| AcpError::Protocol(error.to_string()))?;
+            let value = value
+                .as_str()
+                .ok_or_else(|| AcpError::Protocol("invalid controller effort".into()))?;
+            if let Some((id, value)) = workflow_thought_option(&session.raw, value) {
+                child
+                    .session_set_config_option(&session.session_id, &id, &value)
+                    .await
+                    .map_err(|error| workflow_setup_error("controller reasoning effort", error))?;
+            } else {
+                let encoded = match &revision.method {
+                    buzz_core::hosted_agent_runtime::RuntimeSelectionMethod::ConfigOption {
+                        option_value,
+                        ..
+                    } => option_value,
+                    buzz_core::hosted_agent_runtime::RuntimeSelectionMethod::SetModel {
+                        model_id,
+                    } => model_id,
+                };
+                if !encoded.ends_with(&format!("[{value}]")) {
+                    return Err(AcpError::Protocol(
+                        "controller binding cannot prove reasoning effort".into(),
+                    ));
                 }
             }
         } else if let Some(model) = &plan.model {
-            child.session_set_model(&session, model).await?;
+            apply_workflow_model(child, &session.session_id, &session.raw, model, effort).await?;
         }
     } else if let Some(model) = &plan.model {
-        child.session_set_model(&session, model).await?;
+        apply_workflow_model(child, &session.session_id, &session.raw, model, None).await?;
     }
     let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
     if remaining.is_zero() {
@@ -1398,7 +1647,7 @@ async fn execute_turn(
     }
     child
         .session_prompt_with_idle_timeout(
-            &session,
+            &session.session_id,
             &task.event.content,
             idle.min(remaining),
             remaining,

@@ -1,0 +1,16 @@
+# Exact-base one-shot migrator for the same qualified source as the relay.
+# The caller must verify its Config.User is exactly buzz:buzz before building.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+USER root
+ARG EXPECTED_ADMIN_SHA256
+COPY buzz-admin /usr/local/bin/buzz-admin
+RUN chmod 0755 /usr/local/bin/buzz-admin \
+    && test -n "${EXPECTED_ADMIN_SHA256}" \
+    && printf '%s  %s\n' "${EXPECTED_ADMIN_SHA256}" /usr/local/bin/buzz-admin | sha256sum --check --status \
+    && ldd /usr/local/bin/buzz-admin > /tmp/buzz-admin-ldd.txt \
+    && if grep -F 'not found' /tmp/buzz-admin-ldd.txt; then exit 1; else grep_status=$?; test "$grep_status" -eq 1; fi \
+    && rm /tmp/buzz-admin-ldd.txt \
+    && /usr/local/bin/buzz-admin --help >/dev/null
+USER buzz:buzz
+# Keep the migration service's existing command, environment and runtime identity.

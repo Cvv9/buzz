@@ -236,3 +236,53 @@ $EDITOR .env
 curl -fsS "http://127.0.0.1:$(grep -E '^BUZZ_HTTP_PORT=' .env | cut -d= -f2-)/_liveness"
 ./run.sh status
 ```
+
+## Qualified runtime binary updates
+
+Build Rust runtime updates in hosted CI rather than on the production host.
+The Docker workflow exports `qualified-workflow-runtime-linux-amd64` only after
+its integrated Linux workflow harness and runtime smoke tests pass. This
+short-lived artifact contains the stripped `buzz-acp`, `buzz-relay`, and matching `buzz-admin` binaries,
+`SHA256SUMS`, and `provenance.json`; it does not contain runtime credentials.
+
+Before importing an artifact, verify its Actions artifact digest, every file
+hash, the reviewed source head and exact checkout, and the Cargo.lock hash.
+The checkout may be the PR merge commit; the manifest records both identities.
+Use the exact reviewed destination base image and preserve its native adapter,
+authentication, mounts, and service configuration. Actions ZIP extraction can
+lose executable bits: install binaries with mode `0755`, verify their checksums,
+and check libc compatibility before a canary. Use `--help` for ACP only;
+relay has no help flag, so its startup qualification comes from the hosted
+integration tests. `Dockerfile.hosted-workflow-compat` imports only the qualified ACP binary
+and the reviewed entrypoint with a required binary checksum.
+`Dockerfile.hosted-relay-compat` checks the relay hash and shared libraries and
+restores `USER buzz:buzz`; verify that exact user on its reviewed base first.
+Relay activation also requires the actual ignored PostgreSQL retry/recovery tests to pass.
+The migration service must use the qualified `buzz-admin` from the same source
+and artifact as the relay; `Dockerfile.hosted-migrator-compat` preserves its
+exact base/user and checks the imported binary. An older migrator may reject
+newer migration ledger versions, so updating only the main relay pin is unsafe.
+Before replacing the relay, compare every applied SQLx checksum with the reviewed
+source, inspect the pending additive DDL, verify a current database backup, and
+run the matching one-shot migration service. Confirm its success, ledger version,
+required tables and enabled serving fences before starting the relay with the
+original `BUZZ_AUTO_MIGRATE=false` configuration. CI exercises this actual admin
+migration command twice and verifies unchanged checksums and personal read fences.
+For the 63-to-65 upgrade, only migrations64/65 are pending: two accessory tables,
+their existing community write fences, and nullable `started_at`. Keep these
+additive tables on binary rollback; do not discard new read progress data.
+Preserve the prior immutable image and its rollback evidence through acceptance.
+
+A medium reasoning setting requires an advertised reasoning option or an exact
+advertised effort-bearing model binding. Catalogs prefer the latter over a bare
+option that only implies a default. A changed private binding changes the catalog
+digest; refresh the signed controller selection against the new catalog rather
+than rewriting a previously signed method.
+
+On 2026-10-11, a task-owned isolated DB compilation bounded to 3 GB coincided with
+host load around 80 and unresponsive SSH and application health. OOM was not
+proved. Stopping only the verified task compiler restored health without a VM
+or application restart; the interrupted DB baseline supplied no test result.
+The temporary test containers and network were removed, and existing reusable
+caches and the qualified rollback binary were retained. Subsequent qualification
+uses hosted CI artifacts and excludes compilation on the production host.

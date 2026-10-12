@@ -1,16 +1,82 @@
 #!/bin/sh
 set -eu
 
+enforce_subscription_only() {
+  [ "${BUZZ_SUBSCRIPTION_ONLY:-false}" = true ] || return 0
+  # Deployment policy: legacy environment files must never turn a subscription
+  # worker or its children into API-billed workers after a restart.
+  for paid_name in $(env | sed -n -E 's/^(AZURE_FOUNDRY_[A-Z0-9_]+|BUZZ_ACP_FAILOVER_[A-Z0-9_]+)=.*/\1/p'); do
+    unset "${paid_name}"
+  done
+  unset OPENAI_API_KEY CODEX_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY GEMINI_API_KEY
+  export MODEL_PROVIDER=openai
+  if [ -n "${CODEX_CONFIG:-}" ]; then
+    if ! node -e '
+      try {
+        const config = JSON.parse(process.env.CODEX_CONFIG);
+        if (!config || typeof config !== "object" || Array.isArray(config) ||
+            (config.model_provider && config.model_provider !== "openai") ||
+            (config.forced_login_method && config.forced_login_method !== "chatgpt") ||
+            Object.keys(config.model_providers || {}).length) process.exit(1);
+      } catch { process.exit(1); }
+    '; then
+      echo 'Subscription-only workers require the built-in ChatGPT provider' >&2
+      exit 1
+    fi
+  fi
+}
+
+enforce_subscription_only
+
+# Non-inference test hook: report policy booleans only, never credential values.
+if [ "${BUZZ_AGENT_ENTRYPOINT_POLICY_ONLY:-false}" = true ]; then
+  node -e '
+    const names = Object.keys(process.env);
+    const paid = names.filter(name => /^(AZURE_FOUNDRY_|BUZZ_ACP_FAILOVER_)/.test(name) ||
+      ["OPENAI_API_KEY", "CODEX_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY"].includes(name));
+    console.log(JSON.stringify({ subscriptionOnly: process.env.BUZZ_SUBSCRIPTION_ONLY === "true",
+      paidFieldsPresent: paid.length > 0, provider: process.env.MODEL_PROVIDER }));
+  '
+  exit 0
+fi
+
 normalize_codex_api_key() {
   if [ -z "${OPENAI_API_KEY:-}" ] && [ -n "${CODEX_API_KEY:-}" ]; then
     export OPENAI_API_KEY="${CODEX_API_KEY}"
   fi
 }
 
+validate_subscription_auth() {
+  [ "${BUZZ_SUBSCRIPTION_ONLY:-false}" = true ] || return 0
+  if ! node -e '
+    const fs = require("node:fs");
+    try {
+      for (const file of process.argv.slice(1)) {
+        if (!fs.existsSync(file)) continue;
+        const auth = JSON.parse(fs.readFileSync(file, "utf8"));
+        if (auth.auth_mode !== "chatgpt" || auth.OPENAI_API_KEY ||
+            !auth.tokens || typeof auth.tokens.access_token !== "string" ||
+            auth.tokens.access_token.length === 0) process.exit(1);
+      }
+    } catch { process.exit(1); }
+  ' "$@"; then
+    echo 'Subscription-only workers require ChatGPT subscription authentication' >&2
+    exit 1
+  fi
+}
+
+# Authentication validation is read-only and runs before credentials are copied.
+if [ "${BUZZ_AGENT_ENTRYPOINT_AUTH_ONLY:-false}" = true ]; then
+  validate_subscription_auth "${BUZZ_TEST_AUTH_SOURCE}"
+  exit 0
+fi
+
 prepare_codex_auth() {
   ordinary_home=$1
   manual_home=$2
   auth_source=$3
+  validate_subscription_auth "${auth_source}" \
+    "${ordinary_home}/.codex/auth.json" "${manual_home}/.codex/auth.json"
   if [ -n "${OPENAI_API_KEY:-}" ]; then
     rm -f "${ordinary_home}/.codex/auth.json" "${manual_home}/.codex/auth.json"
   elif [ -s "${auth_source}" ]; then

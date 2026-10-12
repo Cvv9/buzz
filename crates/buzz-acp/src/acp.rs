@@ -121,12 +121,22 @@ pub enum AcpError {
 /// preserving the numeric code. When the `message` field is missing or
 /// non-string, fall back to the full JSON object so provider-specific
 /// detail (e.g. a `data` field) is not lost.
+/// The pinned Codex adapter's exact `data.codexErrorInfo=usageLimitExceeded`
+/// schema is normalized to a quota marker even behind a generic message. Other
+/// data is not appended to a string message or interpreted as quota evidence.
 fn agent_error_from_json(error: &serde_json::Value) -> AcpError {
     let code = error.get("code").and_then(|c| c.as_i64()).unwrap_or(-32000);
-    let message = match error.get("message").and_then(|m| m.as_str()) {
+    let mut message = match error.get("message").and_then(|m| m.as_str()) {
         Some(m) => m.to_string(),
         None => error.to_string(),
     };
+    if error
+        .pointer("/data/codexErrorInfo")
+        .and_then(|v| v.as_str())
+        == Some("usageLimitExceeded")
+    {
+        message.push_str(" [codexErrorInfo=usageLimitExceeded; usage_limit]");
+    }
     AcpError::AgentError { code, message }
 }
 
@@ -5240,6 +5250,46 @@ sleep 1"#,
                 assert_eq!(message, "auth denied");
             }
             other => panic!("expected AgentError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_error_from_json_preserves_exact_structured_usage_limit() {
+        let error = serde_json::json!({"code": -32603, "message": "Internal error", "data": {"codexErrorInfo": "usageLimitExceeded", "detail": "provider diagnostic"}});
+        match super::agent_error_from_json(&error) {
+            AcpError::AgentError { code, message } => {
+                assert_eq!(code, -32603);
+                assert_eq!(
+                    message,
+                    "Internal error [codexErrorInfo=usageLimitExceeded; usage_limit]"
+                );
+                assert!(!message.contains("provider diagnostic"));
+            }
+            other => panic!("expected AgentError, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn agent_error_from_json_does_not_promote_arbitrary_data_to_quota() {
+        for data in [
+            serde_json::json!("usageLimitExceeded quota 429"),
+            serde_json::json!({"detail": "usageLimitExceeded quota 429"}),
+            serde_json::json!({"nested": {"codexErrorInfo": "usageLimitExceeded"}}),
+            serde_json::json!({"codexErrorInfo": "usageLimitExceeded quota"}),
+            serde_json::json!({"codexErrorInfo": "unknown"}),
+            serde_json::json!({"codexErrorInfo": ["usageLimitExceeded"]}),
+            serde_json::json!({"codexErrorInfo": {"usageLimitExceeded": {}}}),
+            serde_json::Value::Null,
+        ] {
+            let error =
+                serde_json::json!({"code": -32603, "message": "Internal error", "data": data});
+            match super::agent_error_from_json(&error) {
+                AcpError::AgentError { code, message } => {
+                    assert_eq!(code, -32603);
+                    assert_eq!(message, "Internal error");
+                }
+                other => panic!("expected AgentError, got {other:?}"),
+            }
         }
     }
 

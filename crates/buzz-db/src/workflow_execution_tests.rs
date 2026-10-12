@@ -1,4 +1,6 @@
 //! Real isolated Postgres execution ledger regressions.
+#[path = "workflow_exhaustion_tests.rs"]
+mod workflow_exhaustion_postgres_tests;
 use super::*;
 use crate::workflow_manual::{ManualDecision, ManualTaskSpec};
 use buzz_core::channel::{ChannelType, ChannelVisibility, MemberRole};

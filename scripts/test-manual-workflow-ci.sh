@@ -117,11 +117,32 @@ $ready || { echo 'Fixture services did not become ready' >&2; exit 1; }
 version=$(psql "$DATABASE_URL" -XAt -v ON_ERROR_STOP=1 -c 'SHOW server_version_num')
 [[ "$version" =~ ^17[0-9]{4}$ ]] || { echo "Expected PostgreSQL 17, got $version" >&2; exit 1; }
 printf 'server_version_num=%s\n' "$version" > "$artifacts/postgres-version.txt"
+# Qualify the matching one-shot migrator before serving. The only database
+# available to this container is the disposable fixture created above.
+migrator=$(docker create --name "$name-migrate" --label "buzz.manual-test=$name" --network "$network" \
+  --read-only --tmpfs /tmp:rw,nosuid,nodev,size=128m \
+  -e DATABASE_URL=postgres://buzz:buzz_test_only@postgres:5432/buzz_manual_tests_v1 \
+  --entrypoint /usr/local/bin/buzz-admin "$relay_image" migrate)
+containers+=("$migrator")
+for pass in first second; do
+  timeout 60s docker start --attach "$migrator" > "$artifacts/migrator-$pass.log" 2>&1
+  test "$(docker inspect --format '{{.State.ExitCode}}' "$migrator")" = 0
+  psql "$DATABASE_URL" -XAtw -v ON_ERROR_STOP=1 -c \
+    "SELECT version,success,encode(checksum,'hex') FROM _sqlx_migrations ORDER BY version" > "$artifacts/migrator-$pass-ledger.txt"
+done
+cmp "$artifacts/migrator-first-ledger.txt" "$artifacts/migrator-second-ledger.txt"
+test "$(psql "$DATABASE_URL" -XAtw -v ON_ERROR_STOP=1 -c \
+  'SELECT count(*)=65 AND max(version)=65 AND bool_and(success) FROM _sqlx_migrations')" = t
+test "$(psql "$DATABASE_URL" -XAtw -v ON_ERROR_STOP=1 -c \
+  "SELECT count(*)=2 FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_proc p ON p.oid=t.tgfoid WHERE n.nspname='public' AND c.relname IN ('personal_read_accounts','personal_read_frontiers') AND t.tgname='community_write_fence_'||c.relname AND p.proname='enforce_community_write_fence' AND NOT t.tgisinternal AND t.tgenabled='O' AND t.tgtype=31")" = t
+test "$(psql "$DATABASE_URL" -XAtw -v ON_ERROR_STOP=1 -c \
+  "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema='public' AND table_name='personal_read_accounts' AND column_name='started_at' AND data_type='timestamp with time zone' AND is_nullable='YES')")" = t
+printf 'matching admin migrate: first run, idempotency, ledger65 and personal read fences PASS\n' > "$artifacts/migrator-qualification.txt"
 relay=$(docker create --name "$name-relay" --label "buzz.manual-test=$name" --network "$network" --network-alias host.docker.internal \
   --read-only --tmpfs /tmp:rw,nosuid,nodev,size=128m \
   --tmpfs /var/lib/buzz:rw,nosuid,nodev,uid=1000,gid=1000,size=128m \
   -e DATABASE_URL=postgres://buzz:buzz_test_only@postgres:5432/buzz_manual_tests_v1 -e REDIS_URL=redis://redis:6379 \
-  -e BUZZ_AUTO_MIGRATE=true -e BUZZ_BIND_ADDR=0.0.0.0:15341 -e RELAY_URL=ws://host.docker.internal:15341 \
+  -e BUZZ_AUTO_MIGRATE=false -e BUZZ_BIND_ADDR=0.0.0.0:15341 -e RELAY_URL=ws://host.docker.internal:15341 \
   -e BUZZ_HEALTH_PORT=8080 -e BUZZ_REQUIRE_AUTH_TOKEN=true -e BUZZ_REQUIRE_RELAY_MEMBERSHIP=true \
   -e BUZZ_ALLOW_INSECURE_DEV_PUBKEY=false -e BUZZ_GIT_CONFORMANCE_PROBE=false \
   -e RELAY_OWNER_PUBKEY=79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798 \

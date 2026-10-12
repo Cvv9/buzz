@@ -221,6 +221,73 @@ mod tests {
     }
 
     #[test]
+    fn fresh_catalog_control_uses_explicit_effort_and_rejects_old_bare_revision() {
+        let stable = vec![
+            json!({"category":"model", "configId":"model", "currentValue":"gpt-6.1-sol",
+            "options":[{"value":"gpt-6.1-sol", "displayName":"GPT-6.1-Sol"}]}),
+        ];
+        let unstable = json!({"currentModelId":"gpt-6.1-sol[medium]", "availableModels":[
+            {"modelId":"gpt-6.1-sol[medium]", "name":"GPT-6.1-Sol (medium)"}]});
+        let fresh = normalize_runtime_catalog(&stable, Some(&unstable)).unwrap();
+        let old = normalize_runtime_catalog(&stable, None).unwrap();
+        let selection: RuntimeSelection = serde_json::from_value(
+            json!({"model":"gpt-6.1-sol", "effort":"medium", "runtime_name":"Tinker"}),
+        )
+        .unwrap();
+        let control = ApplyRuntimeDefaultsControl::new(
+            RuntimeRevision::new(9).unwrap(),
+            selection.clone(),
+            fresh.catalog.bindings[0].method.clone(),
+            fresh.digest.clone(),
+        );
+        let agent = Keys::generate();
+        let controller = Keys::generate();
+        let now = Timestamp::now().as_secs();
+        let decoded = decode_runtime_control(
+            &agent,
+            &control_event(&controller, &agent, &control, now),
+            &controller.public_key(),
+            &fresh,
+            now as i64,
+        )
+        .unwrap();
+        assert_eq!(
+            decoded.method,
+            RuntimeSelectionMethod::SetModel {
+                model_id: "gpt-6.1-sol[medium]".into()
+            }
+        );
+        let stale = ApplyRuntimeDefaultsControl::new(
+            RuntimeRevision::new(8).unwrap(),
+            selection,
+            old.catalog.bindings[0].method.clone(),
+            old.digest,
+        );
+        assert_eq!(
+            decode_runtime_control(
+                &agent,
+                &control_event(&controller, &agent, &stale, now),
+                &controller.public_key(),
+                &fresh,
+                now as i64
+            ),
+            Err(RuntimeControlError::StaleCatalog)
+        );
+        let mut wrong = control;
+        wrong.method = old.catalog.bindings[0].method.clone();
+        assert_eq!(
+            decode_runtime_control(
+                &agent,
+                &control_event(&controller, &agent, &wrong, now),
+                &controller.public_key(),
+                &fresh,
+                now as i64
+            ),
+            Err(RuntimeControlError::UnsupportedSelection)
+        );
+    }
+
+    #[test]
     fn accepts_only_the_pinned_controller_and_exact_local_binding() {
         let agent = Keys::generate();
         let controller = Keys::generate();
