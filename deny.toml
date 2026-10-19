@@ -1,5 +1,9 @@
 [advisories]
 ignore = [
+    { id = "RUSTSEC-2024-0449", reason = "transitive via kube-client 2 → serde_yaml; unmaintained-only (no vulnerability). Revisit when upgrading kube-client to a release using a maintained YAML parser" },
+    { id = "RUSTSEC-2026-0370", reason = "transitive via keyring → secret-service/zbus 5 → zvariant; unmaintained-only (no vulnerability). Revisit when the keyring backends support zbus 6" },
+    { id = "RUSTSEC-2026-0371", reason = "transitive via keyring → secret-service/zbus 5 → zbus_names; unmaintained-only (no vulnerability). Revisit when the keyring backends support zbus 6" },
+    { id = "RUSTSEC-2026-0372", reason = "transitive via keyring → secret-service/zbus 5 → zvariant → zvariant_derive; unmaintained-only (no vulnerability). Revisit when the keyring backends support zbus 6" },
     # instant 0.1.13 — unmaintained crate. Transitive dep: nostr → instant.
     # Will be resolved when nostr crate updates its dependencies.
     { id = "RUSTSEC-2024-0384", reason = "transitive dep via nostr; no upstream fix available" },
