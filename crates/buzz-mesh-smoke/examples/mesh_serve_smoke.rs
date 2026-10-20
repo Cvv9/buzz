@@ -10,7 +10,9 @@
 //!   cargo run -p buzz-relay --example mesh_serve_smoke -- <path-to.gguf>
 use std::time::Duration;
 
-use mesh_llm_sdk::{serve, MeshDiscoveryMode};
+use mesh_llm_host_runtime::sdk::{
+    start_embedded_node, EmbeddedMeshDiscoveryMode as MeshDiscoveryMode, EmbeddedMeshNodeConfig,
+};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -19,7 +21,8 @@ async fn main() -> anyhow::Result<()> {
         .ok_or_else(|| anyhow::anyhow!("usage: mesh_serve_smoke <path-to.gguf>"))?;
     eprintln!("[smoke] serving model: {model}");
 
-    let config = serve::EmbeddedServeConfig::builder()
+    let config = EmbeddedMeshNodeConfig::builder()
+        .serve()
         .model(&model)
         .api_port(19337)
         .console_port(13131)
@@ -36,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
         .console_ui(true)
         .build();
 
-    let node = serve::start(config).await?;
+    let node = start_embedded_node(config).await?;
     let base = node.api_base_url().to_string();
     eprintln!("[smoke] node up, api_base_url = {base}");
 

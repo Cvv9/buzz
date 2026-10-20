@@ -26,7 +26,9 @@
 //!     cargo run -p buzz-relay --example mesh_serve_client_smoke
 use std::time::Duration;
 
-use mesh_llm_sdk::{client, serve, MeshDiscoveryMode};
+use mesh_llm_host_runtime::sdk::{
+    start_embedded_node, EmbeddedMeshDiscoveryMode as MeshDiscoveryMode, EmbeddedMeshNodeConfig,
+};
 
 /// Small, real instruct model the mesh project itself uses for CI smoke.
 /// Downloaded on first run; ~100MB.
@@ -51,7 +53,8 @@ async fn main() -> anyhow::Result<()> {
         .map_err(|error| anyhow::anyhow!("MeshLLM host runtime init failed: {error}"))?;
     eprintln!("[smoke] MeshLLM host runtime initialized");
 
-    let serve_cfg = serve::EmbeddedServeConfig::builder()
+    let serve_cfg = EmbeddedMeshNodeConfig::builder()
+        .serve()
         .model(&model)
         .api_port(SERVE_API_PORT)
         .console_port(SERVE_CONSOLE_PORT)
@@ -67,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
         .build();
 
     eprintln!("[smoke] starting serve node...");
-    let serve_node = serve::start(serve_cfg).await?;
+    let serve_node = start_embedded_node(serve_cfg).await?;
     let serve_base = serve_node.api_base_url().to_string();
     eprintln!("[smoke] serve up, api_base_url = {serve_base}");
 
@@ -83,7 +86,8 @@ async fn main() -> anyhow::Result<()> {
     let serve_model_id = wait_for_model(&http, &serve_base).await?;
     eprintln!("[smoke] serve model ready: {serve_model_id}");
 
-    let client_cfg = client::EmbeddedClientConfig::builder()
+    let client_cfg = EmbeddedMeshNodeConfig::builder()
+        .client()
         .api_port(CLIENT_API_PORT)
         .console_port(CLIENT_CONSOLE_PORT)
         .publish(false)
@@ -94,7 +98,7 @@ async fn main() -> anyhow::Result<()> {
         .build();
 
     eprintln!("[smoke] starting client node joined to serve...");
-    let client_node = client::start(client_cfg).await?;
+    let client_node = start_embedded_node(client_cfg).await?;
     let client_base = client_node.api_base_url().to_string();
     eprintln!("[smoke] client up, api_base_url = {client_base}");
 

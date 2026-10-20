@@ -22,7 +22,9 @@
 use std::process::Stdio;
 use std::time::Duration;
 
-use mesh_llm_sdk::{serve, MeshDiscoveryMode};
+use mesh_llm_host_runtime::sdk::{
+    start_embedded_node, EmbeddedMeshDiscoveryMode as MeshDiscoveryMode, EmbeddedMeshNodeConfig,
+};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, Command};
 
@@ -50,7 +52,8 @@ async fn run() -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("host runtime init: {e}"))?;
 
     eprintln!("[e2e] starting serve node with {model} (loading may take a minute)...");
-    let cfg = serve::EmbeddedServeConfig::builder()
+    let cfg = EmbeddedMeshNodeConfig::builder()
+        .serve()
         .model(&model)
         .api_port(API_PORT)
         .console_port(CONSOLE_PORT)
@@ -60,7 +63,7 @@ async fn run() -> anyhow::Result<()> {
         .console_ui(true) // readiness poll needs the console bound
         .startup_timeout(Duration::from_secs(300))
         .build();
-    let node = serve::start(cfg)
+    let node = start_embedded_node(cfg)
         .await
         .map_err(|e| anyhow::anyhow!("serve start: {e}"))?;
     let base = node.api_base_url().to_string();
