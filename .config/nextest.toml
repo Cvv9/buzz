@@ -33,6 +33,9 @@ max-threads = 1
 [[profile.postgres-ci.overrides]]
 filter = "test(/cluster_global_/)"
 test-group = "postgres-cluster-global"
+# Ordinary tests also connect/disconnect and mutate cluster-wide activity.
+# Reserve the entire runner so their backend churn cannot overlap these probes.
+threads-required = "num-test-threads"
 
 [[profile.postgres-ci.scripts]]
 # Script filters are separate from default-filter: they attach the setup and
