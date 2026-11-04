@@ -565,7 +565,8 @@ jobs:
     name: Admin Web
     needs: [changes]
     if: github.event_name == 'push' || needs.changes.outputs.web == 'true'
-    runs-on: ubuntu-latest
+    # Match the OS supported by the pinned Playwright Chromium build.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
