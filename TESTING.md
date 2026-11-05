@@ -32,6 +32,25 @@ just test               # unit + integration (starts Docker if needed)
 cargo test -p buzz-test-client -- --ignored
 ```
 
+### Relay-driven Mesh lifecycle CI
+
+The Linux `Mesh Lifecycle` workflow builds a CPU inference runtime from the exact
+Mesh SDK commit pinned in `crates/buzz-mesh-smoke/Cargo.toml` and `Cargo.lock`.
+`scripts/ci-prepare-mesh-runtime.sh` rejects mismatched pins, checks out that
+immutable revision in the runner temporary directory, and invokes upstream's
+CPU package builder and verifier. Its pinned llama.cpp source and patch stack
+remain owned by that SDK revision. The resulting bundle is supplied through
+`MESH_LLM_NATIVE_RUNTIME_BUNDLE_DIR`; normal checksum and ABI checks remain active.
+This is a Linux server smoke dependency, not a desktop or mobile app build.
+
+A published runtime cannot be assumed compatible with a Git-pinned SDK. The
+current SDK requires Skippy ABI 0.1.70, while the 0.76.1 runtime catalog supplies
+0.1.53. A cold source build adds CPU and disk work, so the job allows 90 minutes
+and limits runtime-build parallelism to two. Failed provisioning or smoke tests
+must fail CI; the smoke step uses explicit Bash with pipefail while retaining its
+log through `tee`. Success requires the full membership, inference and stranger
+rejection assertions, not merely a green workflow badge.
+
 ### Hosted-agent runtime boundary
 
 `e2e_hosted_agent_runtime` exercises the real relay plus the durable runtime
