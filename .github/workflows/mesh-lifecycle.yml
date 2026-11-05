@@ -20,6 +20,7 @@ on:
       - 'Cargo.lock'
       - 'desktop/src-tauri/src/mesh_llm/**'
       - 'scripts/ci-mesh-lifecycle-smoke.sh'
+      - 'scripts/ci-prepare-mesh-runtime.sh'
       - 'scripts/start-relay-for-tests.sh'
       - '.github/workflows/mesh-lifecycle.yml'
       - 'docker-compose.yml'
@@ -35,6 +36,7 @@ on:
       - 'Cargo.lock'
       - 'desktop/src-tauri/src/mesh_llm/**'
       - 'scripts/ci-mesh-lifecycle-smoke.sh'
+      - 'scripts/ci-prepare-mesh-runtime.sh'
       - 'scripts/start-relay-for-tests.sh'
       - '.github/workflows/mesh-lifecycle.yml'
       - 'docker-compose.yml'
@@ -54,7 +56,7 @@ jobs:
   lifecycle-smoke:
     name: Relay-Driven Mesh Lifecycle Smoke
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 90
     permissions:
       contents: read
     steps:
@@ -81,6 +83,16 @@ jobs:
           restore-keys: |
             mesh-lifecycle-${{ runner.os }}-smollm2-135m-
 
+      - name: Build compatible CPU runtime from the pinned SDK source
+        shell: bash
+        env:
+          CMAKE_BUILD_PARALLEL_LEVEL: 2
+          CARGO_BUILD_JOBS: 2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build patchelf pkg-config libssl-dev
+          ./scripts/ci-prepare-mesh-runtime.sh
+
       - name: Start integration services
         run: |
           for attempt in 1 2 3; do
@@ -96,6 +108,7 @@ jobs:
           done
 
       - name: Run relay-driven mesh lifecycle smoke
+        shell: bash
         run: ./scripts/ci-mesh-lifecycle-smoke.sh 2>&1 | tee /tmp/mesh-lifecycle-harness.log
 
       - name: Save mesh runtime + model caches
